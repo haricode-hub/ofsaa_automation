@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Cabinet+Grotesk:wght@100;200;400;500;700;800;900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@100;200;300;400;500;600;700;800&display=swap');
+
+:root {
+  /* Black & White Theme */
+  --bg-primary: #000000;
+  --bg-secondary: #111111;
+  --bg-tertiary: #1a1a1a;
+  --border: #333333;
+  --border-light: #444444;
+  --text-primary: #ffffff;
+  --text-secondary: #aaaaaa;
+  --text-muted: #666666;
+  --accent: #ffffff;
+  --success: #22c55e;
+  --error: #ef4444;
+  --warning: #f59e0b;
+  --info: #3b82f6;
+}
+
+@layer base {
+  html {
+    font-family: 'Cabinet Grotesk', sans-serif;
+  }
+  
+  body {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    @apply min-h-screen overflow-x-hidden;
+  }
+  
+  .font-mono {
+    font-family: 'JetBrains Mono', monospace !important;
+  }
+}
+
+@layer components {
+  .terminal {
+    @apply bg-black border border-gray-800 rounded-lg p-4 font-mono text-sm;
+    background: linear-gradient(135deg, #000000 0%, #0a0a0a 100%);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.1), 0 4px 20px rgba(0,0,0,0.5);
+  }
+  
+  .glass-panel {
+    background: rgba(17, 17, 17, 0.95);
+    backdrop-filter: blur(20px);
+    border: 1px solid var(--border);
+  }
+
+  .shadow-panel {
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.6);
+  }
+
+  /* Custom Scrollbar */
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 8px;
+  }
+  
+  .scrollbar-track-gray-900::-webkit-scrollbar-track {
+    background: #111827;
+    border-radius: 4px;
+  }
+  
+  .scrollbar-thumb-gray-700::-webkit-scrollbar-thumb {
+    background: #374151;
+    border-radius: 4px;
+    border: 1px solid #1f2937;
+  }
+  
+  .scrollbar-thumb-gray-700:hover::-webkit-scrollbar-thumb {
+    background: #4b5563;
+  }
+
+  .animate-blink {
+    animation: blink 1s infinite;
+  }
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+}

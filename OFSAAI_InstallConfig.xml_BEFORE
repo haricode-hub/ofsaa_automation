@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<UserInteractions>
+	<Layer name="GENERAL">		
+		<InteractionGroup name="WebServerType" >
+			<InteractionVariable name="WEBAPPSERVERTYPE">NA</InteractionVariable>
+		</InteractionGroup>
+		<InteractionGroup name="OFSAA Infrastructure Server Details">			
+			<InteractionVariable name="DBSERVER_IP">NA</InteractionVariable>
+		</InteractionGroup>
+		<InteractionGroup name="Database Details" >    					
+			<InteractionVariable name="ORACLE_SID/SERVICE_NAME">NA</InteractionVariable>		
+			<InteractionVariable name="ABS_DRIVER_PATH">NA</InteractionVariable>	  
+		</InteractionGroup>
+		<InteractionGroup name="OLAP Detail">
+		    <InteractionVariable name="OLAP_SERVER_IMPLEMENTATION">0</InteractionVariable>
+		</InteractionGroup>
+		<InteractionGroup name="SFTP Details">
+		    <InteractionVariable name="SFTP_ENABLE">1</InteractionVariable>
+			<InteractionVariable name="FILE_TRANSFER_PORT">22</InteractionVariable>
+		</InteractionGroup>
+		<InteractionGroup name="Locale Detail">
+		   <InteractionVariable name="LOCALE">en_US</InteractionVariable>
+		</InteractionGroup>			
+		<InteractionGroup name="OFSAA Infrastructure Communicating ports" >
+			<InteractionVariable name="JAVAPORT">9999</InteractionVariable>
+			<InteractionVariable name="NATIVEPORT">6666</InteractionVariable>
+			<InteractionVariable name="AGENTPORT">6510</InteractionVariable>
+			<InteractionVariable name="ICCPORT">6507</InteractionVariable>
+			<InteractionVariable name="ICCNATIVEPORT">6509</InteractionVariable>			
+			<InteractionVariable name="OLAPPORT">10101</InteractionVariable>
+			<InteractionVariable name="MSGPORT">6501</InteractionVariable>
+			<InteractionVariable name="ROUTERPORT">6500</InteractionVariable>
+			<InteractionVariable name="AMPORT">6505</InteractionVariable>
+		</InteractionGroup>	
+		<InteractionGroup name="WEB_DETAILS" >
+		    <InteractionVariable name="HTTPS_ENABLE">1</InteractionVariable>
+		    <InteractionVariable name="WEB_SERVER_IP">NA</InteractionVariable>
+			<InteractionVariable name="WEB_SERVER_PORT">443</InteractionVariable>			
+			<InteractionVariable name="CONTEXT_NAME">NA</InteractionVariable>			
+			<InteractionVariable name="WEBAPP_CONTEXT_PATH">NA</InteractionVariable>
+			<InteractionVariable name="WEB_LOCAL_PATH">NA</InteractionVariable>
+		</InteractionGroup>
+		<InteractionGroup name=" Weblogic Setup Details" >
+			<InteractionVariable name="WEBLOGIC_DOMAIN_HOME">NA</InteractionVariable>
+		</InteractionGroup>
+		<InteractionGroup name="OFSAAI FTP Details">		       	       
+			   <InteractionVariable name="OFSAAI_FTPSHARE_PATH">NA</InteractionVariable>		       
+		       <InteractionVariable name="OFSAAI_SFTP_USER_ID">NA</InteractionVariable>
+			   <InteractionVariable name="OFSAAI_SFTP_PRIVATE_KEY">NA</InteractionVariable>
+			   <InteractionVariable name="OFSAAI_SFTP_PASSPHRASE">NA</InteractionVariable>
+		</InteractionGroup>
+		<InteractionGroup name="HIVE_DETAILS" >		    
+			<InteractionVariable name="HIVE_SERVER_PORT">NA</InteractionVariable>			
+			<InteractionVariable name="HIVE_SERVER_FTPDRIVE">NA</InteractionVariable>			
+			<InteractionVariable name="HIVE_SERVER_FTP_USERID">NA</InteractionVariable>
+			<InteractionVariable name="HIVE_SERVER_FTP_PROTOCOL">NA</InteractionVariable>
+			<InteractionVariable name="HIVE_SFTP_PRIVATE_KEY">NA</InteractionVariable>
+			<InteractionVariable name="HIVE_SFTP_PASSPHRASE">NA</InteractionVariable>
+		</InteractionGroup>		
+	</Layer>
+</UserInteractions>

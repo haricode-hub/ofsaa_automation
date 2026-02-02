@@ -1,0 +1,153 @@
+# OFSAA Installation Files
+default.properties
+default.properties_BEFORE
+index.html
+OFS_BD_PACK.xml
+OFS_BD_PACK.xml_BEFORE
+OFS_BD_SCHEMA_IN.xml
+OFS_BD_SCHEMA_IN.xml_BEFORE
+OFSAA*.xml
+OFSAA*_BEFORE
+OFSAAI_InstallConfig.xml
+OFSAAI_InstallConfig.xml_BEFORE
+ofsaainstall.txt
+profile_changed.txt
+CLAUDE_CONCISE.md
+
+# Node.js Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Bun
+.bun/
+
+# Next.js
+.next/
+out/
+build/
+dist/
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs
+logs/
+*.log
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# UV Python package manager
+.uv/
+uv.lock
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# JetBrains IDEs
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+
+# Linux
+*~
+
+# Temporary files
+*.tmp
+*.temp
+*~
+
+# SSH keys and certificates
+*.pem
+*.key
+*.crt
+*.p12
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Backup files
+*.bak
+*.backup
+*_backup
+*_BEFORE
+
+# Installation packages
+*.zip
+*.tar.gz
+*.tar.bz2
+*.rar
+*.7z
+
+# System files
+.Trash-*
+.fuse_hidden*
