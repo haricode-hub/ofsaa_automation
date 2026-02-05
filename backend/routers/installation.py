@@ -1,5 +1,5 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks
-from typing import Optional
+from fastapi import APIRouter, HTTPException, BackgroundTasks, WebSocket
+from typing import Optional, Dict
 import asyncio
 from services.ssh_service import SSHService
 from services.installation_service import InstallationService
@@ -7,12 +7,82 @@ from schemas.installation import InstallationRequest, InstallationResponse, Inst
 from core.logging import TaskLogger
 from core.config import Config, InstallationSteps
 import logging
+import json
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # In-memory storage for installation tasks (use Redis/database in production)
 installation_tasks: dict[str, InstallationStatus] = {}
+
+# WebSocket Manager for real-time communication
+class WebSocketManager:
+    """Manages WebSocket connections for real-time updates and interactive prompts"""
+    
+    def __init__(self):
+        self.active_connections: Dict[str, WebSocket] = {}
+        self.user_input_queue: Dict[str, asyncio.Queue] = {}
+    
+    async def connect(self, task_id: str, websocket: WebSocket):
+        """Connect a WebSocket for a specific task"""
+        await websocket.accept()
+        self.active_connections[task_id] = websocket
+        self.user_input_queue[task_id] = asyncio.Queue()
+        logger.info(f"WebSocket connected for task {task_id}")
+    
+    def disconnect(self, task_id: str):
+        """Disconnect a WebSocket"""
+        if task_id in self.active_connections:
+            del self.active_connections[task_id]
+        if task_id in self.user_input_queue:
+            del self.user_input_queue[task_id]
+        logger.info(f"WebSocket disconnected for task {task_id}")
+    
+    async def send_message(self, task_id: str, message: dict):
+        """Send a message to a specific task's WebSocket"""
+        if task_id in self.active_connections:
+            try:
+                await self.active_connections[task_id].send_json(message)
+            except Exception as e:
+                logger.error(f"Failed to send WebSocket message: {str(e)}")
+                self.disconnect(task_id)
+    
+    async def send_output(self, task_id: str, output: str):
+        """Send command output to WebSocket"""
+        await self.send_message(task_id, {
+            "type": "output",
+            "data": output
+        })
+    
+    async def send_prompt(self, task_id: str, prompt: str):
+        """Send interactive prompt to WebSocket"""
+        await self.send_message(task_id, {
+            "type": "prompt",
+            "data": prompt
+        })
+    
+    async def wait_for_user_input(self, task_id: str, timeout: int = 300) -> str:
+        """Wait for user input from WebSocket"""
+        if task_id not in self.user_input_queue:
+            return ""
+        
+        try:
+            user_input = await asyncio.wait_for(
+                self.user_input_queue[task_id].get(),
+                timeout=timeout
+            )
+            return user_input
+        except asyncio.TimeoutError:
+            logger.warning(f"User input timeout for task {task_id}")
+            return ""
+    
+    async def handle_user_input(self, task_id: str, user_input: str):
+        """Handle user input received from WebSocket"""
+        if task_id in self.user_input_queue:
+            await self.user_input_queue[task_id].put(user_input)
+
+# Create global WebSocket manager instance
+websocket_manager = WebSocketManager()
 
 @router.post("/start", response_model=InstallationResponse)
 async def start_installation(
@@ -348,17 +418,44 @@ async def run_installation_process(task_id: str, host: str, username: str, passw
         task.current_step = InstallationSteps.STEP_NAMES[8]
         task.progress = InstallationSteps.PROGRESS_MAP["installer_setup"]
         task.logs.append("📦 Setting up OFSAA installer from git repository...")
-        task.logs.append("🔍 Downloading installer files and running environment check...")
-        task.logs.append("👤 Interactive mode: You will respond to all prompts through the UI")
         
-        installer_result = await installation_service.extract_installer_files(host, username, password)
+        # Send WebSocket message to inform user about installer download
+        await websocket_manager.send_output(task_id, "")
+        await websocket_manager.send_output(task_id, "=" * 70)
+        await websocket_manager.send_output(task_id, "📦 OFSAA INSTALLER DOWNLOAD & EXTRACTION")
+        await websocket_manager.send_output(task_id, "=" * 70)
+        await websocket_manager.send_output(task_id, "⏳ Estimated time: 5-15 minutes (depending on network speed)")
+        await websocket_manager.send_output(task_id, "📊 Real-time progress will be shown below:")
+        await websocket_manager.send_output(task_id, "")
+        
+        # Create callback to stream output to WebSocket
+        async def output_callback(line: str):
+            await websocket_manager.send_output(task_id, line)
+            # Also add to task logs for persistence
+            task.logs.append(line)
+        
+        installer_result = await installation_service.download_and_extract_installer(
+            host, username, password, on_output=output_callback
+        )
         if not installer_result["success"]:
-            # Don't fail completely - installer setup might be partially successful
             task.logs.append("⚠️ Installer setup had issues, but continuing...")
-            task.logs.extend(installer_result["logs"])
+            await websocket_manager.send_output(task_id, "⚠️ Installer setup had issues, check logs")
         else:
-            task.logs.extend(installer_result["logs"])
-            task.logs.append("✅ OFSAA installer setup and environment check completed!")
+            task.logs.append("✅ OFSAA installer setup completed!")
+            await websocket_manager.send_output(task_id, "")
+            await websocket_manager.send_output(task_id, "✅ Installer download and extraction completed!")
+            await websocket_manager.send_output(task_id, "=" * 70)
+            # Debug: Announce about to run envCheck.sh
+            await websocket_manager.send_output(task_id, "[DEBUG] About to call run_environment_check after installer extraction")
+            env_check_result = await installation_service.run_environment_check(
+                host, username, password, on_output=output_callback
+            )
+            if not env_check_result["success"]:
+                task.logs.append("❌ Environment check failed!")
+                await websocket_manager.send_output(task_id, "❌ Environment check failed!")
+            else:
+                task.logs.append("✅ Environment check completed!")
+                await websocket_manager.send_output(task_id, "✅ Environment check completed!")
         
         task.progress = InstallationSteps.PROGRESS_MAP["environment_check"]
         

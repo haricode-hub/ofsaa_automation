@@ -1,6 +1,7 @@
 import logging
 from typing import Dict, Any
 from services.ssh_service import SSHService
+from services.validation import ValidationService
 
 logger = logging.getLogger(__name__)
 
@@ -9,44 +10,70 @@ class OracleUserSetupService:
     
     def __init__(self, ssh_service: SSHService):
         self.ssh_service = ssh_service
+        self.validation = ValidationService(ssh_service)
     
     async def create_oracle_user_and_oinstall_group(self, host: str, username: str, password: str) -> Dict[str, Any]:
         """
         Create the oracle user and map it to the oinstall group
+        Enhanced with smart validation
         """
         try:
-            command = (
-                "groupadd -f oinstall && "
-                "(id -u oracle &>/dev/null || useradd -g oinstall oracle) && "
-                "echo 'Oracle user and oinstall group setup completed'"
-            )
-            
-            result = await self.ssh_service.execute_command(host, username, password, command)
-            
             logs = []
-            if result["success"]:
-                logs.append("✓ Oracle User and Group Setup")
-                logs.append("  oinstall group created/verified")
-                logs.append("  oracle user created and mapped to oinstall group")
-                logs.append("  User authentication configured")
-                
-                return {
-                    "success": True,
-                    "message": "Oracle user and oinstall group setup completed",
-                    "logs": logs,
-                    "output": result["stdout"]
-                }
+            
+            # Check if oinstall group exists
+            logs.append("→ Checking for oinstall group...")
+            group_check = await self.validation.check_group_exists(host, username, password, "oinstall")
+            
+            if group_check.get('exists'):
+                logs.append("✓ oinstall group already exists, using existing group")
             else:
-                error_msg = f"Oracle user setup failed: {result.get('stderr', 'Unknown error')}"
-                logs.append(f"Oracle user setup failed: {error_msg}")
+                logs.append("Creating oinstall group...")
+                group_cmd = "groupadd oinstall"
+                group_result = await self.ssh_service.execute_command(host, username, password, group_cmd)
+                if group_result.get('success'):
+                    logs.append("✓ oinstall group created successfully")
+                else:
+                    logs.append(f"Failed to create oinstall group: {group_result.get('stderr', '')}")
+                    return {
+                        "success": False,
+                        "error": "Failed to create oinstall group",
+                        "logs": logs
+                    }
+            
+            # Check if oracle user exists
+            logs.append("→ Checking for oracle user...")
+            user_check = await self.validation.check_user_exists(host, username, password, "oracle")
+            
+            if user_check.get('exists'):
+                logs.append("✓ Oracle user already exists, skipping creation")
+                logs.append(f"  User info: {user_check.get('output', '')}")
+            else:
+                logs.append("Creating oracle user and mapping to oinstall group...")
+                user_cmd = "useradd -g oinstall oracle"
+                user_result = await self.ssh_service.execute_command(host, username, password, user_cmd)
                 
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "logs": logs,
-                    "stderr": result.get("stderr", ""),
-                    "returncode": result.get("returncode", -1)
-                }
+                if user_result.get('success') or user_result.get('returncode') == 0:
+                    logs.append("✓ Oracle user created and mapped to oinstall group")
+                else:
+                    # Check if user was created despite error
+                    recheck = await self.validation.check_user_exists(host, username, password, "oracle")
+                    if recheck.get('exists'):
+                        logs.append("✓ Oracle user exists and is configured")
+                    else:
+                        logs.append(f"Failed to create oracle user: {user_result.get('stderr', '')}")
+                        return {
+                            "success": False,
+                            "error": "Failed to create oracle user",
+                            "logs": logs
+                        }
+            
+            logs.append("✓ Oracle User and Group Setup Complete")
+            
+            return {
+                "success": True,
+                "message": "Oracle user and oinstall group setup completed",
+                "logs": logs
+            }
                 
         except Exception as e:
             logger.error(f"Oracle user setup failed: {str(e)}")

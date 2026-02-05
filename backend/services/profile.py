@@ -1,6 +1,7 @@
 import logging
 from typing import Dict, Any
 from services.ssh_service import SSHService
+from services.validation import ValidationService
 
 logger = logging.getLogger(__name__)
 
@@ -9,65 +10,84 @@ class ProfileService:
     
     def __init__(self, ssh_service: SSHService):
         self.ssh_service = ssh_service
+        self.validation = ValidationService(ssh_service)
     
     async def create_profile_file(self, host: str, username: str, password: str) -> Dict[str, Any]:
         """
         Create the .profile file under: /home/oracle/.profile with complete OFSAA template
+        Enhanced with smart validation and backup
         """
         try:
+            logs = []
+            
+            # Check if profile already exists
+            logs.append("→ Checking for existing .profile...")
+            profile_check = await self.validation.check_file_exists(host, username, password, "/home/oracle/.profile")
+            
+            if profile_check.get('exists'):
+                logs.append("✓ .profile already exists, will backup and update with new variables")
+                
+                # Backup existing profile
+                backup_result = await self.validation.backup_file(host, username, password, "/home/oracle/.profile")
+                if backup_result.get('success'):
+                    logs.append("✓ Existing profile backed up")
+                else:
+                    logs.append("Warning: Could not backup existing profile")
+            else:
+                logs.append("Creating new .profile...")
+            
             # Complete OFSAA profile template
             profile_content = '''alias c=clear
-
 alias p="ps -ef | grep $LOGNAME"
-
 alias pp="ps -fu $LOGNAME"
-
 PS1='$PWD>'
-
 export PS1
- 
+
 stty erase ^?
-
 #set -o vi
- 
+
 echo $PATH
-
 export FIC_HOME=/u01/OFSAA/FICHOME 
- 
+
 export JAVA_HOME=/u01/jdk-11.0.16 
-
 export JAVA_BIN=/u01/jdk-11.0.16/bin 
-
 export ANT_HOME=$FIC_HOME/ficweb/apache-ant
 
-#export ANT_HOME=$FIC_HOME/ficweb/apache-ant
- 
 export ORACLE_HOME=/u01/app/oracle/product/19.0.0/client_1 
 export TNS_ADMIN=/u01/app/oracle/product/19.0.0/client_1/network/admin 
 export LANG=en_US.utf8
-
 export NLS_LANG=AMERICAN_AMERICA.AL32UTF8
- 
-export ORACLE_SID=OFSAAPDB
 
+export ORACLE_SID=OFSAAPDB
 export PATH=.:$JAVA_HOME/bin:$ORACLE_HOME/bin:/sbin:/bin:/usr/bin:/usr/kerberos/bin:/usr/local/bin:/usr/sbin:$PATH
 
-#export PATH=$ORACLE_HOME/bin:$PATH:$JAVA_HOME/bin
- 
 export LD_LIBRARY_PATH=$ORACLE_HOME/lib:/lib:/usr/lib
-
 export CLASSPATH=$ORACLE_HOME/jlib:$ORACLE_HOME/rdbms/jlib
-
+export SHELL=/bin/ksh
+echo "********************************************************"
+echo "   THIS IS FCCM SKND SETUP,PLEASE DO NOT MAKE ANY CHANGE   "
+echo "           UNAUTHORISED ACCESS PROHIBITED             "
+echo "                                                      "
+echo "********************************************************"
+echo PROFILE EXECUTED
+echo $PATH
+echo "SHELL Check :: " $SHELL
+set -o emacs
+umask 0027 
+export OS_VERSION="8"
+export DB_CLIENT_VERSION="19.0"
+ulimit -n 16000
+ulimit -u 16000
+ulimit -s 16000
 '''
             
             command = f"mkdir -p /home/oracle && cat > /home/oracle/.profile << 'EOF'\n{profile_content}\nEOF && chown oracle:oinstall /home/oracle/.profile && chmod 644 /home/oracle/.profile"
             
             result = await self.ssh_service.execute_command(host, username, password, command)
             
-            logs = []
-            if result["success"]:
-                logs.append("✓ OFSAA Profile Creation")
-                logs.append("  Complete .profile template created at /home/oracle/.profile")
+            if result.get('success') or result.get('returncode') == 0:
+                logs.append("✓ OFSAA Profile Created/Updated")
+                logs.append("  Complete .profile template at /home/oracle/.profile")
                 logs.append("  Environment variables configured:")
                 logs.append("    • FIC_HOME: /u01/OFSAA/FICHOME")
                 logs.append("    • JAVA_HOME: /u01/jdk-11.0.16")
@@ -75,13 +95,11 @@ export CLASSPATH=$ORACLE_HOME/jlib:$ORACLE_HOME/rdbms/jlib
                 logs.append("    • ORACLE_SID: OFSAAPDB")
                 logs.append("  File ownership set to oracle:oinstall")
                 logs.append("  Shell aliases and PATH configured")
-                logs.append("  Profile ready for OFSAA installation")
                 
                 return {
                     "success": True,
                     "message": "Oracle profile created successfully with OFSAA template",
-                    "logs": logs,
-                    "output": result["stdout"]
+                    "logs": logs
                 }
             else:
                 error_msg = f"Profile creation failed: {result.get('stderr', 'Unknown error')}"
@@ -90,9 +108,7 @@ export CLASSPATH=$ORACLE_HOME/jlib:$ORACLE_HOME/rdbms/jlib
                 return {
                     "success": False,
                     "error": error_msg,
-                    "logs": logs,
-                    "stderr": result.get("stderr", ""),
-                    "returncode": result.get("returncode", -1)
+                    "logs": logs
                 }
                 
         except Exception as e:

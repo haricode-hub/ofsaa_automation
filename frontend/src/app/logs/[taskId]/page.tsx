@@ -17,7 +17,8 @@ import {
   PlayIcon,
   PauseIcon,
   EyeIcon,
-  ClockIcon
+  ClockIcon,
+  PaperAirplaneIcon
 } from '@heroicons/react/24/outline'
 
 interface LogEntry {
@@ -40,8 +41,15 @@ export default function LogsPage() {
   const [isAutoScroll, setIsAutoScroll] = useState(true)
   const [isPaused, setIsPaused] = useState(false)
   
+  // WebSocket and interactive input
+  const [ws, setWs] = useState<WebSocket | null>(null)
+  const [isWaitingForInput, setIsWaitingForInput] = useState(false)
+  const [currentPrompt, setCurrentPrompt] = useState<string>('')
+  const [userInput, setUserInput] = useState<string>('')
+  
   const logsEndRef = useRef<HTMLDivElement>(null)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   const formatLogEntry = (logText: string): LogEntry => {
     const timestamp = new Date().toLocaleTimeString('en-US', { 
@@ -71,6 +79,83 @@ export default function LogsPage() {
     }
     
     return { timestamp, level, message: cleanedText }
+  }
+
+  // WebSocket connection for real-time updates
+  useEffect(() => {
+    if (!taskId) return
+
+    const connectWebSocket = () => {
+      const websocket = new WebSocket(`ws://localhost:8000/ws/${taskId}`)
+      
+      websocket.onopen = () => {
+        console.log('WebSocket connected')
+        setWs(websocket)
+      }
+      
+      websocket.onmessage = (event) => {
+        const data = JSON.parse(event.data)
+        
+        if (data.type === 'output') {
+          // Stream output in real-time
+          const logEntry = formatLogEntry(data.data)
+          setLogs(prev => [...prev, logEntry])
+        } else if (data.type === 'prompt') {
+          // Handle interactive prompt
+          setIsWaitingForInput(true)
+          setCurrentPrompt(data.data)
+          // Focus input field
+          setTimeout(() => inputRef.current?.focus(), 100)
+        }
+      }
+      
+      websocket.onerror = (error) => {
+        console.error('WebSocket error:', error)
+      }
+      
+      websocket.onclose = () => {
+        console.log('WebSocket closed')
+        setWs(null)
+      }
+    }
+
+    // Try WebSocket connection, fallback to polling if it fails
+    try {
+      connectWebSocket()
+    } catch (error) {
+      console.error('WebSocket connection failed, using polling:', error)
+    }
+
+    return () => {
+      if (ws) {
+        ws.close()
+      }
+    }
+  }, [taskId])
+
+  const sendUserInput = () => {
+    if (!ws || !userInput.trim()) return
+    
+    // Send user input via WebSocket
+    ws.send(JSON.stringify({
+      type: 'user_input',
+      input: userInput
+    }))
+    
+    // Add user input to logs
+    const inputLog = formatLogEntry(`> User input: ${userInput}`)
+    setLogs(prev => [...prev, inputLog])
+    
+    // Reset input state
+    setUserInput('')
+    setIsWaitingForInput(false)
+    setCurrentPrompt('')
+  }
+
+  const handleInputKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      sendUserInput()
+    }
   }
 
   useEffect(() => {
@@ -334,30 +419,49 @@ export default function LogsPage() {
                 </div>
               </div>
             ) : (
-              filteredLogs.map((log, index) => (
-                <motion.div 
-                  key={`${index}-${log.timestamp}-${log.message.substring(0, 20)}`}
-                  className="flex items-start gap-4 py-3 px-4 rounded-lg hover:bg-bg-secondary/30 transition-all duration-200 group border-l-2 border-transparent hover:border-text-muted/20"
-                  initial={{ opacity: 0, x: -10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  <span className="text-text-muted/80 shrink-0 w-20 text-xs font-medium tracking-wide">
-                    {log.timestamp}
-                  </span>
-                  <span className={`shrink-0 w-18 text-center rounded-md px-2 py-1 text-xs font-bold uppercase tracking-wider shadow-sm ${
-                    log.level === 'INFO' ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30' :
-                    log.level === 'ERROR' ? 'bg-red-500/20 text-red-300 border border-red-500/30' :
-                    log.level === 'SUCCESS' ? 'bg-green-500/20 text-green-300 border border-green-500/30' :
-                    'bg-yellow-500/20 text-yellow-300 border border-yellow-500/30'
-                  }`}>
-                    {log.level}
-                  </span>
-                  <span className="text-text-primary flex-1 leading-relaxed break-words group-hover:text-white transition-colors duration-200">
-                    {log.message}
-                  </span>
-                </motion.div>
-              ))
+              filteredLogs.map((log, index) => {
+                // Highlight [PROGRESS] lines and parse percentage
+                const progressMatch = log.message.match(/\[PROGRESS\]\s*(\d+)%/);
+                const isProgress = !!progressMatch;
+                const percent = isProgress ? parseInt(progressMatch[1], 10) : null;
+                // If progress found, update progress bar
+                if (isProgress && percent !== null && percent > progress) {
+                  setProgress(percent);
+                }
+                // Section header
+                const isSectionHeader = log.message.startsWith('=') && log.message.length > 10;
+                return (
+                  <motion.div 
+                    key={`${index}-${log.timestamp}-${log.message.substring(0, 20)}`}
+                    className={`flex items-start gap-4 py-3 px-4 rounded-lg transition-all duration-200 group border-l-2 border-transparent ${
+                      isProgress ? 'bg-gradient-to-r from-green-900/40 to-green-700/10 border-green-400/40' :
+                      isSectionHeader ? 'bg-gray-900/80 border-gray-700/40 text-yellow-300 font-bold text-lg tracking-widest' :
+                      'hover:bg-bg-secondary/30 hover:border-text-muted/20'
+                    }`}
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ duration: 0.2 }}
+                  >
+                    <span className="text-text-muted/80 shrink-0 w-20 text-xs font-medium tracking-wide">
+                      {log.timestamp}
+                    </span>
+                    <span className={`shrink-0 w-18 text-center rounded-md px-2 py-1 text-xs font-bold uppercase tracking-wider shadow-sm ${
+                      log.level === 'INFO' ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30' :
+                      log.level === 'ERROR' ? 'bg-red-500/20 text-red-300 border border-red-500/30' :
+                      log.level === 'SUCCESS' ? 'bg-green-500/20 text-green-300 border border-green-500/30' :
+                      'bg-yellow-500/20 text-yellow-300 border border-yellow-500/30'
+                    }`}>
+                      {log.level}
+                    </span>
+                    <span className={`text-text-primary flex-1 leading-relaxed break-words group-hover:text-white transition-colors duration-200 ${isProgress ? 'font-bold text-green-300' : ''}`}>
+                      {log.message}
+                      {isProgress && percent !== null && (
+                        <span className="ml-2 text-green-400 font-mono">{percent}%</span>
+                      )}
+                    </span>
+                  </motion.div>
+                );
+              })
             )}
             
             {/* Live cursor when active */}
@@ -385,6 +489,61 @@ export default function LogsPage() {
             </div>
           </div>
         </div>
+
+        {/* Interactive Input Prompt */}
+        <AnimatePresence>
+          {isWaitingForInput && (
+            <motion.div 
+              className="sticky bottom-0 bg-bg-primary border-t-2 border-warning p-4 lg:p-6 shadow-2xl"
+              initial={{ y: 100, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 100, opacity: 0 }}
+              transition={{ duration: 0.3, ease: "easeOut" }}
+            >
+              <div className="max-w-4xl mx-auto space-y-3">
+                {/* Prompt Message */}
+                <div className="flex items-start gap-3 p-4 bg-warning/10 border border-warning/30 rounded-lg">
+                  <ArrowPathIcon className="w-5 h-5 text-warning mt-0.5 animate-pulse flex-shrink-0" />
+                  <div className="flex-1">
+                    <p className="text-sm font-bold text-warning uppercase tracking-wider mb-1">
+                      Interactive Input Required
+                    </p>
+                    <p className="text-sm text-text-primary font-mono">
+                      {currentPrompt || 'The installation script is waiting for your input...'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Input Field */}
+                <div className="flex gap-3 items-center">
+                  <div className="flex-1 relative">
+                    <input 
+                      ref={inputRef}
+                      value={userInput}
+                      onChange={(e) => setUserInput(e.target.value)}
+                      onKeyPress={handleInputKeyPress}
+                      placeholder="Enter your response and press Enter..."
+                      className="w-full bg-bg-secondary border-2 border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-warning focus:bg-bg-tertiary placeholder-text-muted font-mono"
+                      autoFocus
+                    />
+                  </div>
+                  <button
+                    onClick={sendUserInput}
+                    disabled={!userInput.trim()}
+                    className="bg-warning hover:bg-warning/80 disabled:bg-bg-tertiary disabled:text-text-muted text-black font-bold px-6 py-3 rounded-lg transition-all duration-200 flex items-center gap-2 disabled:cursor-not-allowed"
+                  >
+                    <PaperAirplaneIcon className="w-4 h-4" />
+                    Send Response
+                  </button>
+                </div>
+
+                <p className="text-xs text-text-muted text-center">
+                  💡 Tip: Press <kbd className="px-2 py-1 bg-bg-tertiary rounded border border-border">Enter</kbd> to send your response
+                </p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   )

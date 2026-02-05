@@ -1,9 +1,9 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 import logging
-from routers.installation import router as installation_router
+from routers.installation import router as installation_router, websocket_manager
 from core.logging import setup_logging
 
 # Setup application logging
@@ -29,6 +29,23 @@ app.add_middleware(
 
 # Include routers
 app.include_router(installation_router, prefix="/api/installation", tags=["installation"])
+
+@app.websocket("/ws/{task_id}")
+async def websocket_endpoint(websocket: WebSocket, task_id: str):
+    """WebSocket endpoint for real-time installation updates and interactive prompts"""
+    await websocket_manager.connect(task_id, websocket)
+    try:
+        while True:
+            # Receive user input responses
+            data = await websocket.receive_json()
+            
+            if data.get("type") == "user_input":
+                # Handle user input for interactive prompts
+                await websocket_manager.handle_user_input(task_id, data.get("input", ""))
+                
+    except WebSocketDisconnect:
+        websocket_manager.disconnect(task_id)
+        logger.info(f"WebSocket disconnected for task {task_id}")
 
 @app.get("/")
 async def root():

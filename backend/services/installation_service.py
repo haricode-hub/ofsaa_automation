@@ -76,12 +76,8 @@ class InstallationService:
     async def extract_installer_files(self, host: str, username: str, password: str) -> Dict[str, Any]:
         return await self.installer_service.extract_installer_files(host, username, password)
     
-    # New installer methods
-    async def create_installer_directory(self, host: str, username: str, password: str) -> Dict[str, Any]:
-        return await self.installer_service.create_installer_directory(host, username, password)
-        
-    async def download_and_extract_installer(self, host: str, username: str, password: str) -> Dict[str, Any]:
-        return await self.installer_service.download_and_extract_installer(host, username, password)
+    async def download_and_extract_installer(self, host: str, username: str, password: str, on_output=None) -> Dict[str, Any]:
+        return await self.installer_service.download_and_extract_installer(host, username, password, on_output=on_output)
         
     async def run_environment_check(self, host: str, username: str, password: str) -> Dict[str, Any]:
         return await self.installer_service.run_environment_check(host, username, password)

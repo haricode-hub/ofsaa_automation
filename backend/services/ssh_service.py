@@ -292,3 +292,158 @@ class SSHService:
                 time.sleep(0.1)
         
         return b''.join(data).decode('utf-8', errors='replace').strip()
+    
+    async def execute_interactive_command(
+        self, 
+        host: str, 
+        username: str, 
+        password: str, 
+        command: str,
+        on_output_callback = None,
+        on_prompt_callback = None,
+        timeout: int = 1800  # 30 minutes default for interactive scripts
+    ) -> Dict[str, Any]:
+        """
+        Execute command interactively, streaming output and handling input prompts
+        
+        Args:
+            host: Target hostname
+            username: SSH username
+            password: SSH password
+            command: Command to execute
+            on_output_callback: Async callback for streaming output lines
+            on_prompt_callback: Async callback for handling prompts (returns user input)
+            timeout: Command timeout in seconds
+            
+        Returns:
+            Dict with success, output, and exit code
+        """
+        try:
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, 
+                self._execute_interactive_command_sync,
+                host, username, password, command, on_output_callback, on_prompt_callback, timeout
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Interactive command execution failed: {str(e)}")
+            return {
+                "success": False,
+                "error": f"Interactive command failed: {str(e)}",
+                "command": command
+            }
+    
+    def _execute_interactive_command_sync(
+        self, 
+        host: str, 
+        username: str, 
+        password: str, 
+        command: str,
+        on_output_callback,
+        on_prompt_callback,
+        timeout: int
+    ) -> Dict[str, Any]:
+        """Synchronous interactive command execution"""
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        
+        try:
+            # Connect
+            client.connect(
+                hostname=host,
+                username=username,
+                password=password,
+                timeout=self.connection_timeout,
+                auth_timeout=self.connection_timeout,
+                look_for_keys=False,
+                allow_agent=False
+            )
+            
+            # Get interactive shell channel
+            channel = client.invoke_shell()
+            channel.settimeout(0.5)  # Non-blocking reads
+            
+            all_output = []
+            current_line = ""
+            
+            # Send command
+            channel.send(command + '\n')
+            
+            start_time = time.time()
+            prompt_patterns = [
+                'Enter', 'enter', 'Input', 'input', 'Type', 'type',
+                '[Y/n]', '[y/N]', 'Continue?', 'Proceed?', 'password:', 'Password:'
+            ]
+            
+            while True:
+                # Check timeout
+                if time.time() - start_time > timeout:
+                    logger.warning(f"Interactive command timed out after {timeout}s")
+                    break
+                
+                # Check if command finished
+                if channel.exit_status_ready():
+                    # Read remaining output
+                    while channel.recv_ready():
+                        chunk = channel.recv(4096).decode('utf-8', errors='replace')
+                        all_output.append(chunk)
+                        if on_output_callback:
+                            asyncio.run(on_output_callback(chunk))
+                    break
+                
+                # Read available output
+                try:
+                    if channel.recv_ready():
+                        chunk = channel.recv(4096).decode('utf-8', errors='replace')
+                        all_output.append(chunk)
+                        current_line += chunk
+                        
+                        # Stream output
+                        if on_output_callback:
+                            asyncio.run(on_output_callback(chunk))
+                        
+                        # Check for prompts
+                        if on_prompt_callback and any(pattern in current_line for pattern in prompt_patterns):
+                            # Detected potential prompt
+                            logger.info(f"Potential prompt detected: {current_line[-100:]}")
+                            user_input = asyncio.run(on_prompt_callback(current_line))
+                            
+                            if user_input:
+                                channel.send(user_input + '\n')
+                                current_line = ""  # Reset line buffer
+                        
+                        # Reset line buffer on newline
+                        if '\n' in chunk:
+                            current_line = ""
+                            
+                except socket.timeout:
+                    # No data available, continue
+                    time.sleep(0.1)
+                    continue
+            
+            exit_code = channel.recv_exit_status()
+            channel.close()
+            client.close()
+            
+            full_output = ''.join(all_output)
+            
+            return {
+                "success": exit_code == 0,
+                "output": full_output,
+                "returncode": exit_code,
+                "command": command
+            }
+            
+        except Exception as e:
+            logger.error(f"Interactive command execution error: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e),
+                "command": command,
+                "returncode": -1
+            }
+        finally:
+            try:
+                client.close()
+            except:
+                pass

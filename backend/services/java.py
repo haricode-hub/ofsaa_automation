@@ -1,6 +1,7 @@
 import logging
 from typing import Dict, Any
 from services.ssh_service import SSHService
+from services.validation import ValidationService
 
 logger = logging.getLogger(__name__)
 
@@ -9,68 +10,156 @@ class JavaInstallationService:
     
     def __init__(self, ssh_service: SSHService):
         self.ssh_service = ssh_service
+        self.validation = ValidationService(ssh_service)
     
     async def install_java_from_oracle_kit(self, host: str, username: str, password: str, java_home: str = "/u01/jdk-11.0.16") -> Dict[str, Any]:
         """
-        Install Java from Oracle installer kit and configure environment
+        Install Java from Git repository and configure environment
+        Enhanced with smart validation and Git download
         """
         try:
             logs = []
             
-            # Install Java from installer kit
-            java_install_cmd = f'''
-# Extract and install Java from kit
+            # Step 1: Ensure /u01/installer_kit exists
+            logs.append("→ Checking /u01/installer_kit directory...")
+            installer_kit_check = await self.validation.check_directory_exists(host, username, password, "/u01/installer_kit")
+            
+            if not installer_kit_check.get('exists'):
+                logs.append("Creating /u01/installer_kit directory...")
+                mkdir_cmd = "mkdir -p /u01/installer_kit && chown oracle:oinstall /u01/installer_kit && chmod 755 /u01/installer_kit"
+                mkdir_result = await self.ssh_service.execute_command(host, username, password, mkdir_cmd)
+                if mkdir_result.get('success'):
+                    logs.append("✓ /u01/installer_kit directory created")
+                else:
+                    return {
+                        "success": False,
+                        "error": "Failed to create /u01/installer_kit directory",
+                        "logs": logs
+                    }
+            else:
+                logs.append("✓ /u01/installer_kit directory already exists")
+            
+            # Step 2: Check if Java is already installed
+            logs.append(f"→ Checking for Java at {java_home}...")
+            java_check = await self.validation.check_directory_exists(host, username, password, java_home)
+            
+            if java_check.get('exists'):
+                # Verify it's a working Java installation
+                verify_cmd = f"test -f {java_home}/bin/java && {java_home}/bin/java -version 2>&1 | head -1"
+                verify_result = await self.ssh_service.execute_command(host, username, password, verify_cmd)
+                
+                if verify_result.get('success') and 'java version' in verify_result.get('stdout', '').lower():
+                    logs.append(f"✓ Java already installed at {java_home}")
+                    logs.append(f"  Version: {verify_result.get('stdout', '').strip()}")
+                    
+                    # Update profile with existing Java path
+                    profile_update = f'''
+sed -i 's|export JAVA_HOME=.*|export JAVA_HOME={java_home}|g' /home/oracle/.profile
+sed -i 's|export JAVA_BIN=.*|export JAVA_BIN={java_home}/bin|g' /home/oracle/.profile
+'''
+                    await self.ssh_service.execute_command(host, username, password, profile_update)
+                    logs.append("✓ Profile updated with Java paths")
+                    
+                    return {
+                        "success": True,
+                        "message": "Java already installed, skipping download",
+                        "logs": logs,
+                        "java_home": java_home
+                    }
+            
+            # Step 3: Download Java from Git repository
+            logs.append("Java not found, downloading from Git repository...")
+            logs.append("Repository: https://infrarepo.jmrinfotech.com:8443/ofsaa_agentic/ofsaa_auto_installation")
+            logs.append("File: jdk-11.0.16_linux-x64_bin__1_.tar.gz")
+            
+            download_cmd = f'''
 cd /u01/installer_kit
-if ls jdk-11.0.*.tar.gz 1> /dev/null 2>&1; then
-    JAVA_FILE=$(ls jdk-11.0.*.tar.gz | head -1)
-    echo "Found Java archive: $JAVA_FILE"
+
+# Download Java from Git repository using git archive or wget
+# Try git clone with sparse checkout for specific file
+if command -v git &> /dev/null; then
+    echo "Using git to download..."
     
-    # Extract to target location
-    tar -xzf "$JAVA_FILE" -C /u01/
+    # Clone repository (shallow clone for speed)
+    if [ ! -d "ofsaa_auto_installation" ]; then
+        git clone --depth 1 https://infrarepo.jmrinfotech.com:8443/ofsaa_agentic/ofsaa_auto_installation 2>/dev/null || \\
+        GIT_SSL_NO_VERIFY=true git clone --depth 1 https://infrarepo.jmrinfotech.com:8443/ofsaa_agentic/ofsaa_auto_installation
+    fi
     
-    # Find extracted directory and rename/link to standard path
-    EXTRACTED_DIR=$(find /u01/ -maxdepth 1 -type d -name "jdk-11.0.*" | head -1)
+    # Copy Java file if found
+    if [ -f "ofsaa_auto_installation/jdk-11.0.16_linux-x64_bin__1_.tar.gz" ]; then
+        cp ofsaa_auto_installation/jdk-11.0.16_linux-x64_bin__1_.tar.gz .
+        echo "✓ Java file copied from repository"
+    fi
+fi
+
+# Alternative: Try direct download with wget/curl
+if [ ! -f "jdk-11.0.16_linux-x64_bin__1_.tar.gz" ]; then
+    echo "Trying direct download..."
     
-    if [ -d "$EXTRACTED_DIR" ] && [ "$EXTRACTED_DIR" != "{java_home}" ]; then
-        # Create symbolic link or rename
+    # Try wget
+    if command -v wget &> /dev/null; then
+        wget --no-check-certificate https://infrarepo.jmrinfotech.com:8443/ofsaa_agentic/ofsaa_auto_installation/raw/master/jdk-11.0.16_linux-x64_bin__1_.tar.gz || \\
+        wget --no-check-certificate https://infrarepo.jmrinfotech.com:8443/ofsaa_agentic/ofsaa_auto_installation/raw/main/jdk-11.0.16_linux-x64_bin__1_.tar.gz
+    elif command -v curl &> /dev/null; then
+        curl -k -L -O https://infrarepo.jmrinfotech.com:8443/ofsaa_agentic/ofsaa_auto_installation/raw/master/jdk-11.0.16_linux-x64_bin__1_.tar.gz || \\
+        curl -k -L -O https://infrarepo.jmrinfotech.com:8443/ofsaa_agentic/ofsaa_auto_installation/raw/main/jdk-11.0.16_linux-x64_bin__1_.tar.gz
+    fi
+fi
+
+# Verify download
+if [ -f "jdk-11.0.16_linux-x64_bin__1_.tar.gz" ]; then
+    ls -lh jdk-11.0.16_linux-x64_bin__1_.tar.gz
+    echo "✓ Java archive downloaded successfully"
+else
+    echo "✗ Failed to download Java archive"
+    echo "Available files in /u01/installer_kit:"
+    ls -la
+    exit 1
+fi
+'''
+            
+            download_result = await self.ssh_service.execute_command(host, username, password, download_cmd, timeout=600)
+            
+            if not download_result.get('success'):
+                logs.append(f"Failed to download Java: {download_result.get('stderr', '')}")
+                return {
+                    "success": False,
+                    "error": "Failed to download Java from Git repository",
+                    "logs": logs,
+                    "stderr": download_result.get('stderr', '')
+                }
+            
+            logs.append("✓ Java archive downloaded successfully")
+            
+            # Step 4: Extract and install Java
+            logs.append("✓ Java archive downloaded successfully")
+            
+            # Step 4: Extract and install Java
+            logs.append("Extracting Java archive...")
+            java_install_cmd = f'''
+cd /u01/installer_kit
+
+# Extract Java archive
+echo "Extracting jdk-11.0.16_linux-x64_bin__1_.tar.gz..."
+tar -xzf jdk-11.0.16_linux-x64_bin__1_.tar.gz -C /u01/
+
+# Find extracted directory
+EXTRACTED_DIR=$(find /u01/ -maxdepth 1 -type d -name "jdk-11.0.*" -o -name "jdk1.11.*" | head -1)
+
+if [ -n "$EXTRACTED_DIR" ]; then
+    echo "Found extracted directory: $EXTRACTED_DIR"
+    
+    # If extracted dir is not the target java_home, create link or rename
+    if [ "$EXTRACTED_DIR" != "{java_home}" ]; then
         if [ ! -d "{java_home}" ]; then
-            ln -s "$EXTRACTED_DIR" {java_home} || mv "$EXTRACTED_DIR" {java_home}
+            mv "$EXTRACTED_DIR" {java_home} 2>/dev/null || ln -s "$EXTRACTED_DIR" {java_home}
         fi
     fi
-    
-    echo "Java installation directory: {java_home}"
-    
-elif ls jdk-11*.rpm 1> /dev/null 2>&1; then
-    echo "Found Java RPM package"
-    RPM_FILE=$(ls jdk-11*.rpm | head -1)
-    rpm -ivh "$RPM_FILE"
-    
-    # Find RPM installation path and link to standard location
-    RPM_JAVA_HOME=$(rpm -ql $(rpm -qa | grep jdk) | grep "/bin/java$" | head -1 | sed 's|/bin/java||')
-    if [ -d "$RPM_JAVA_HOME" ] && [ "$RPM_JAVA_HOME" != "{java_home}" ]; then
-        ln -s "$RPM_JAVA_HOME" {java_home}
-    fi
-    
-elif ls *jdk*.zip 1> /dev/null 2>&1; then
-    echo "Found Java ZIP archive"
-    ZIP_FILE=$(ls *jdk*.zip | head -1)
-    unzip -q "$ZIP_FILE" -d /u01/
-    
-    # Find extracted directory
-    EXTRACTED_DIR=$(find /u01/ -maxdepth 1 -type d -name "*jdk*" | head -1)
-    if [ -d "$EXTRACTED_DIR" ] && [ "$EXTRACTED_DIR" != "{java_home}" ]; then
-        ln -s "$EXTRACTED_DIR" {java_home} || mv "$EXTRACTED_DIR" {java_home}
-    fi
-    
-else
-    echo "No Java installation files found in kit"
-    echo "Available files:"
-    ls -la /u01/installer_kit/
-    exit 1
 fi
 
 # Verify installation
-if [ -d "{java_home}" ]; then
+if [ -d "{java_home}" ] && [ -f "{java_home}/bin/java" ]; then
     echo "✓ Java installed at {java_home}"
     {java_home}/bin/java -version 2>&1 | head -3
     
@@ -80,51 +169,52 @@ if [ -d "{java_home}" ]; then
     
     echo "✓ Java installation completed successfully"
 else
-    echo "✗ Java installation failed"
+    echo "✗ Java installation failed - directory or binary not found"
+    ls -la /u01/ | grep jdk
     exit 1
 fi
 '''
             
-            result = await self.ssh_service.execute_command(host, username, password, java_install_cmd)
+            install_result = await self.ssh_service.execute_command(host, username, password, java_install_cmd, timeout=300)
             
-            if result["success"]:
-                logs.extend([
-                    "✓ Java Installation from Oracle Kit",
-                    "  Java archive extracted and installed",
-                    f"  JAVA_HOME: {java_home}",
-                    "  Java binaries configured and tested",
-                    "  Ownership set to oracle:oinstall",
-                    "  Environment ready for OFSAA installation"
-                ])
-                
-                # Update profile with actual Java path
-                profile_update = f'''
-sed -i 's|export JAVA_HOME=.*|export JAVA_HOME={java_home}|g' /home/oracle/.profile
-sed -i 's|export JAVA_BIN=.*|export JAVA_BIN={java_home}/bin|g' /home/oracle/.profile
-echo "Java paths updated in profile"
-'''
-                
-                await self.ssh_service.execute_command(host, username, password, profile_update)
-                
-                return {
-                    "success": True,
-                    "message": "Java installed successfully from Oracle installer kit",
-                    "logs": logs,
-                    "java_home": java_home,
-                    "java_version": result.get("stdout", ""),
-                    "output": result["stdout"]
-                }
-            else:
-                error_msg = f"Java installation failed: {result.get('stderr', 'Unknown error')}"
-                logs.append(f"Java installation failed: {error_msg}")
-                
+            if not install_result.get('success'):
+                logs.append(f"Java extraction failed: {install_result.get('stderr', '')}")
                 return {
                     "success": False,
-                    "error": error_msg,
+                    "error": "Failed to extract and install Java",
                     "logs": logs,
-                    "stderr": result.get("stderr", ""),
-                    "returncode": result.get("returncode", -1)
+                    "stderr": install_result.get('stderr', '')
                 }
+            
+            logs.append("✓ Java extracted and installed")
+            
+            # Step 5: Update profile with Java paths
+            logs.append("Updating .profile with Java paths...")
+            profile_update = f'''
+sed -i 's|export JAVA_HOME=.*|export JAVA_HOME={java_home}|g' /home/oracle/.profile
+sed -i 's|export JAVA_BIN=.*|export JAVA_BIN={java_home}/bin|g' /home/oracle/.profile
+
+# Verify updates
+echo "Profile updated:"
+grep -E "(JAVA_HOME|JAVA_BIN)" /home/oracle/.profile
+'''
+            
+            profile_result = await self.ssh_service.execute_command(host, username, password, profile_update)
+            
+            if profile_result.get('success'):
+                logs.append("✓ Profile updated with Java paths")
+                logs.append(f"  JAVA_HOME={java_home}")
+                logs.append(f"  JAVA_BIN={java_home}/bin")
+            
+            logs.append("✓ Java Installation Complete")
+            
+            return {
+                "success": True,
+                "message": "Java installed successfully from Git repository",
+                "logs": logs,
+                "java_home": java_home,
+                "output": install_result.get("stdout", "")
+            }
                 
         except Exception as e:
             logger.error(f"Java installation failed: {str(e)}")

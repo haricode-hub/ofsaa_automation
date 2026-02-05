@@ -48,6 +48,17 @@ class OracleClientConfig(BaseModel):
     oracle_home: str
     tns_admin: str
     oracle_sid: str
+
+class InteractivePrompt(BaseModel):
+    """Schema for interactive command prompts"""
+    task_id: str
+    prompt_text: str
+    timestamp: str
+
+class InteractiveResponse(BaseModel):
+    """Schema for interactive command responses"""
+    task_id: str
+    response_text: str
     check_only: bool = True  # Default to check existing instead of install
     skip_backups: bool = True  # Skip creating backup files
     
