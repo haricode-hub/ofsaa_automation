@@ -25,14 +25,18 @@ class ProfileService:
             profile_check = await self.validation.check_file_exists(host, username, password, "/home/oracle/.profile")
             
             if profile_check.get('exists'):
-                logs.append("✓ .profile already exists, will backup and update with new variables")
-                
-                # Backup existing profile
-                backup_result = await self.validation.backup_file(host, username, password, "/home/oracle/.profile")
-                if backup_result.get('success'):
-                    logs.append("✓ Existing profile backed up")
+                # Validate profile content; rebuild if corrupted
+                validate_cmd = "grep -n 'EOF' /home/oracle/.profile || true"
+                validate_result = await self.ssh_service.execute_command(host, username, password, validate_cmd)
+                if validate_result.get('stdout', '').strip():
+                    logs.append("⚠ .profile contains stray EOF marker, rebuilding profile")
                 else:
-                    logs.append("Warning: Could not backup existing profile")
+                    logs.append("✓ .profile already exists, skipping creation")
+                    return {
+                        "success": True,
+                        "message": "Profile already exists, skipped creation",
+                        "logs": logs
+                    }
             else:
                 logs.append("Creating new .profile...")
             

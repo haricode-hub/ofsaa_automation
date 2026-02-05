@@ -1,549 +1,234 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
-import { useParams, useRouter } from 'next/navigation'
-import { motion, AnimatePresence } from 'framer-motion'
-import {
-  ArrowLeftIcon,
-  CommandLineIcon,
-  SignalIcon,
-  CheckCircleIcon,
-  ExclamationCircleIcon,
-  ArrowPathIcon,
-  DocumentTextIcon,
-  ServerIcon,
-  MagnifyingGlassIcon,
-  FunnelIcon,
-  PlayIcon,
-  PauseIcon,
-  EyeIcon,
-  ClockIcon,
-  PaperAirplaneIcon
-} from '@heroicons/react/24/outline'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useParams } from 'next/navigation'
+import { BackgroundMatrix } from '@/components/BackgroundMatrix'
 
-interface LogEntry {
-  timestamp: string
-  level: 'INFO' | 'ERROR' | 'SUCCESS' | 'WARNING'
-  message: string
+type StatusType = 'connecting' | 'running' | 'waiting_input' | 'failed' | 'completed'
+
+type StatusPayload = {
+  status: StatusType
+  step?: string
+  progress?: number
 }
+
+const STEPS = [
+  'Creating oracle user and oinstall group',
+  'Creating mount point /u01',
+  'Installing KSH and git',
+  'Creating .profile file',
+  'Installing Java and updating profile',
+  'Creating OFSAA directory structure',
+  'Checking Oracle client and updating profile',
+  'Setting up OFSAA installer and running environment check',
+  'Updating profile with custom variables',
+  'Verifying profile setup'
+]
 
 export default function LogsPage() {
   const params = useParams()
-  const router = useRouter()
-  const taskId = params?.taskId as string
-  
-  const [logs, setLogs] = useState<LogEntry[]>([])
-  const [currentStep, setCurrentStep] = useState<string>('')
+  const taskId = String(params?.taskId || '')
+  const [status, setStatus] = useState<StatusType>('connecting')
+  const [currentStep, setCurrentStep] = useState<string>('Initializing connection')
   const [progress, setProgress] = useState<number>(0)
-  const [status, setStatus] = useState<'idle' | 'running' | 'success' | 'error'>('running')
-  const [filterLevel, setFilterLevel] = useState<string>('all')
-  const [searchQuery, setSearchQuery] = useState('')
-  const [isAutoScroll, setIsAutoScroll] = useState(true)
-  const [isPaused, setIsPaused] = useState(false)
-  
-  // WebSocket and interactive input
-  const [ws, setWs] = useState<WebSocket | null>(null)
-  const [isWaitingForInput, setIsWaitingForInput] = useState(false)
-  const [currentPrompt, setCurrentPrompt] = useState<string>('')
-  const [userInput, setUserInput] = useState<string>('')
-  
-  const logsEndRef = useRef<HTMLDivElement>(null)
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const [prompt, setPrompt] = useState<string>('')
+  const [promptQueue, setPromptQueue] = useState<string[]>([])
+  const [inputText, setInputText] = useState('')
+  const [outputLines, setOutputLines] = useState<string[]>([])
+  const socketRef = useRef<WebSocket | null>(null)
+  const outputEndRef = useRef<HTMLDivElement>(null)
 
-  const formatLogEntry = (logText: string): LogEntry => {
-    const timestamp = new Date().toLocaleTimeString('en-US', { 
-      hour12: false,
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
-    })
-    
-    // Clean log text by removing step indicators and arrows
-    let cleanedText = logText
-      .replace(/^→\s*✓\s*Step\s*\d+:\s*/i, '') // Remove "→ ✓ Step X:" prefix
-      .replace(/^✓\s*Step\s*\d+:\s*/i, '')     // Remove "✓ Step X:" prefix
-      .replace(/^🔨\s*Step\s*\d+:\s*/i, '')     // Remove "🔨 Step X:" prefix
-      .replace(/^Step\s*\d+:\s*/i, '')          // Remove "Step X:" prefix
-      .replace(/^→\s*/g, '')                    // Remove standalone arrows "→"
-      .replace(/\s*→\s*/g, ' ')                 // Remove arrows in middle of text
-      .trim()
-    
-    let level: LogEntry['level'] = 'INFO'
-    if (cleanedText.includes('❌') || cleanedText.includes('ERROR') || cleanedText.includes('failed') || cleanedText.includes('Failed')) {
-      level = 'ERROR'
-    } else if (cleanedText.includes('✅') || cleanedText.includes('SUCCESS') || cleanedText.includes('successful') || cleanedText.includes('Complete')) {
-      level = 'SUCCESS'
-    } else if (cleanedText.includes('⚠️') || cleanedText.includes('WARNING')) {
-      level = 'WARNING'
-    }
-    
-    return { timestamp, level, message: cleanedText }
-  }
-
-  // WebSocket connection for real-time updates
-  useEffect(() => {
-    if (!taskId) return
-
-    const connectWebSocket = () => {
-      const websocket = new WebSocket(`ws://localhost:8000/ws/${taskId}`)
-      
-      websocket.onopen = () => {
-        console.log('WebSocket connected')
-        setWs(websocket)
-      }
-      
-      websocket.onmessage = (event) => {
-        const data = JSON.parse(event.data)
-        
-        if (data.type === 'output') {
-          // Stream output in real-time
-          const logEntry = formatLogEntry(data.data)
-          setLogs(prev => [...prev, logEntry])
-        } else if (data.type === 'prompt') {
-          // Handle interactive prompt
-          setIsWaitingForInput(true)
-          setCurrentPrompt(data.data)
-          // Focus input field
-          setTimeout(() => inputRef.current?.focus(), 100)
-        }
-      }
-      
-      websocket.onerror = (error) => {
-        console.error('WebSocket error:', error)
-      }
-      
-      websocket.onclose = () => {
-        console.log('WebSocket closed')
-        setWs(null)
-      }
-    }
-
-    // Try WebSocket connection, fallback to polling if it fails
-    try {
-      connectWebSocket()
-    } catch (error) {
-      console.error('WebSocket connection failed, using polling:', error)
-    }
-
-    return () => {
-      if (ws) {
-        ws.close()
-      }
-    }
-  }, [taskId])
-
-  const sendUserInput = () => {
-    if (!ws || !userInput.trim()) return
-    
-    // Send user input via WebSocket
-    ws.send(JSON.stringify({
-      type: 'user_input',
-      input: userInput
-    }))
-    
-    // Add user input to logs
-    const inputLog = formatLogEntry(`> User input: ${userInput}`)
-    setLogs(prev => [...prev, inputLog])
-    
-    // Reset input state
-    setUserInput('')
-    setIsWaitingForInput(false)
-    setCurrentPrompt('')
-  }
-
-  const handleInputKeyPress = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
-      sendUserInput()
-    }
-  }
+  const statusLabel = useMemo(() => {
+    if (status === 'waiting_input') return 'waiting for input'
+    if (status === 'connecting') return 'connecting'
+    return status
+  }, [status])
 
   useEffect(() => {
     if (!taskId) return
 
-    const pollStatus = async () => {
+    const ws = new WebSocket(`ws://localhost:8000/ws/${taskId}`)
+    socketRef.current = ws
+
+    ws.onopen = () => {
+      setStatus('running')
+      setOutputLines(prev => [...prev, '[CONNECTED] Live log stream started'])
+    }
+
+    ws.onmessage = event => {
       try {
-        const response = await fetch(`http://localhost:8000/api/installation/status/${taskId}`)
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`)
-        }
-        
-        const statusData = await response.json()
-        
-        setCurrentStep(statusData.current_step || '')
-        setProgress(statusData.progress || 0)
-        
-        // Format and update logs - only add new logs to prevent blinking
-        if (statusData.logs && statusData.logs.length > 0) {
-          const formattedLogs = statusData.logs.map(formatLogEntry)
-          setLogs(prevLogs => {
-            // Compare the actual content to avoid unnecessary updates
-            const prevContent = prevLogs.map((log: LogEntry) => log.message).join('|')
-            const newContent = formattedLogs.map((log: LogEntry) => log.message).join('|')
-            
-            if (prevContent !== newContent) {
-              return formattedLogs
-            }
-            return prevLogs
-          })
-        }
-        
-        if (statusData.status === 'completed') {
-          setStatus('success')
-          if (pollIntervalRef.current) {
-            clearInterval(pollIntervalRef.current)
+        const message = JSON.parse(event.data)
+        if (message.type === 'output') {
+          const chunk = String(message.data || '')
+          const lines = chunk.split(/\r?\n/).filter(l => l.length > 0)
+          if (lines.length) {
+            setOutputLines(prev => [...prev, ...lines])
           }
-          
-          const successEntry = formatLogEntry('System preparation completed - Ready for OFSAA installation!')
-          setLogs(prev => [...prev, successEntry])
-        } else if (statusData.status === 'failed') {
-          setStatus('error')
-          if (pollIntervalRef.current) {
-            clearInterval(pollIntervalRef.current)
+        }
+        if (message.type === 'prompt') {
+          const promptText = String(message.data || '')
+          const lines = promptText.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+          if (lines.length <= 1) {
+            setPrompt(lines[0] || promptText)
+            setStatus('waiting_input')
+          } else {
+            setPrompt(lines[0])
+            setPromptQueue(lines.slice(1))
+            setStatus('waiting_input')
           }
-          
-          const errorEntry = formatLogEntry(`Installation failed: ${statusData.error || 'Unknown error'}`)
-          setLogs(prev => [...prev, errorEntry])
         }
-      } catch (error) {
-        console.error('Failed to poll status:', error)
-        setStatus('error')
-        if (pollIntervalRef.current) {
-          clearInterval(pollIntervalRef.current)
+        if (message.type === 'status') {
+          const data = message.data as StatusPayload
+          if (data?.status) setStatus(data.status)
+          if (data?.step) setCurrentStep(data.step)
+          if (typeof data?.progress === 'number') setProgress(data.progress)
         }
-        
-        const errorEntry = formatLogEntry('Connection to backend lost')
-        setLogs(prev => [...prev, errorEntry])
+      } catch {
+        // Ignore malformed frames
       }
     }
 
-    // Start polling immediately
-    pollStatus()
-    
-    // Continue polling every 1.5 seconds
-    pollIntervalRef.current = setInterval(pollStatus, 1500)
+    ws.onclose = () => {
+      if (status !== 'completed' && status !== 'failed') {
+        setStatus('connecting')
+      }
+    }
 
     return () => {
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current)
-      }
+      ws.close()
     }
   }, [taskId])
 
-  // Auto-scroll to bottom when new logs arrive
   useEffect(() => {
-    if (isAutoScroll && logsEndRef.current) {
-      logsEndRef.current.scrollIntoView({ behavior: 'smooth' })
-    }
-  }, [logs, isAutoScroll])
+    outputEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [outputLines])
 
-  const filteredLogs = logs.filter(log => {
-    const matchesFilter = filterLevel === 'all' || log.level === filterLevel
-    const matchesSearch = searchQuery === '' || 
-      log.message.toLowerCase().includes(searchQuery.toLowerCase())
-    return matchesFilter && matchesSearch
-  })
-
-  const getStatusIcon = () => {
-    switch (status) {
-      case 'running':
-        return <ArrowPathIcon className="w-5 h-5 text-warning animate-spin" />
-      case 'success':
-        return <CheckCircleIcon className="w-5 h-5 text-success" />
-      case 'error':
-        return <ExclamationCircleIcon className="w-5 h-5 text-error" />
-      default:
-        return <CommandLineIcon className="w-5 h-5 text-text-muted" />
+  const handleSendInput = () => {
+    if (!inputText || !socketRef.current) return
+    socketRef.current.send(JSON.stringify({ type: 'user_input', input: inputText }))
+    setOutputLines(prev => [...prev, `> ${inputText}`])
+    setInputText('')
+    if (promptQueue.length > 0) {
+      const [nextPrompt, ...rest] = promptQueue
+      setPrompt(nextPrompt)
+      setPromptQueue(rest)
+      setStatus('waiting_input')
+    } else {
+      setPrompt('')
+      setStatus('running')
     }
   }
 
-  const getStatusText = () => {
-    switch (status) {
-      case 'running':
-        return 'Installation in Progress'
-      case 'success':
-        return 'System Preparation Complete'
-      case 'error':
-        return 'Installation Failed'
-      default:
-        return 'Initializing...'
-    }
-  }
+  const statusColor = (() => {
+    if (status === 'failed') return 'text-error'
+    if (status === 'completed') return 'text-success'
+    if (status === 'waiting_input') return 'text-warning'
+    return 'text-text-primary'
+  })()
 
   return (
     <div className="relative min-h-screen bg-bg-primary">
-      <div className="h-screen flex flex-col">
-        
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 lg:p-6 border-b border-border bg-bg-secondary">
+      <BackgroundMatrix />
+
+      <div className="relative z-10 min-h-screen flex flex-col">
+        {/* Top Status Bar */}
+        <div className="px-4 lg:px-8 py-4 border-b border-border flex items-center justify-between bg-bg-secondary/60 backdrop-blur">
           <div className="flex items-center gap-4">
-            <button
-              onClick={() => router.push('/')}
-              className="p-2 hover:bg-bg-tertiary rounded-lg transition-colors"
-            >
-              <ArrowLeftIcon className="w-5 h-5 text-text-muted hover:text-text-primary" />
-            </button>
-            
-            <div className="flex items-center gap-3">
-              {getStatusIcon()}
-              <div>
-                <h1 className="text-xl lg:text-2xl font-bold text-text-primary tracking-tight">
-                  {getStatusText()}
-                </h1>
-                <p className="text-sm text-text-muted font-mono">Task ID: {taskId}</p>
-              </div>
+            <div className={`text-sm font-bold uppercase tracking-widest ${statusColor}`}>
+              {statusLabel}
             </div>
-            
-            {status === 'running' && (
-              <div className="flex items-center gap-2 text-sm text-text-secondary">
-                <SignalIcon className="w-4 h-4 text-success animate-pulse" />
-                <span className="font-mono">LIVE</span>
-              </div>
-            )}
+            <div className="text-xs text-text-muted">Task: {taskId.slice(0, 8)}...</div>
           </div>
-          
-          <div className="text-xs font-mono text-text-muted">
-            Task: {taskId}
+          <div className="text-xs text-text-secondary flex items-center gap-3">
+            <span>Progress</span>
+            <div className="w-40 h-1 bg-bg-tertiary rounded">
+              <div
+                className="h-1 bg-white rounded"
+                style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
+              />
+            </div>
+            <span>{progress}%</span>
           </div>
         </div>
 
-        {/* Status Bar */}
-        {currentStep && (
-          <div className="px-4 lg:px-6 py-4 bg-bg-secondary border-b border-border">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <ServerIcon className="w-4 h-4 text-text-secondary" />
-                <span className="text-sm font-medium text-text-primary">{currentStep}</span>
-              </div>
-              {progress > 0 && (
-                <span className="text-sm font-mono text-text-secondary">{progress}%</span>
-              )}
+        {/* Main Layout */}
+        <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4 p-4 lg:p-8">
+          {/* Left Panel - Steps */}
+          <div className="glass-panel rounded-xl p-4 lg:p-6 shadow-panel">
+            <div className="text-xs font-bold uppercase tracking-widest text-text-secondary mb-4">
+              Step Tracker
             </div>
-            {progress > 0 && (
-              <div className="w-full bg-bg-tertiary rounded-full h-3 overflow-hidden">
-                <motion.div 
-                  className="h-full bg-gradient-to-r from-white to-gray-300 rounded-full"
-                  initial={{ width: 0 }}
-                  animate={{ width: `${progress}%` }}
-                  transition={{ duration: 0.5, ease: "easeOut" }}
-                />
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Controls */}
-        <div className="flex items-center gap-3 px-4 lg:px-6 py-3 bg-bg-secondary border-b border-border">
-          {/* Search */}
-          <div className="relative flex-1 max-w-sm">
-            <MagnifyingGlassIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
-            <input
-              type="text"
-              placeholder="Search logs..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 text-sm bg-bg-tertiary border border-border rounded-lg text-text-primary placeholder-text-muted focus:outline-none focus:border-white"
-            />
-          </div>
-
-          {/* Filter */}
-          <div className="relative">
-            <FunnelIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted" />
-            <select
-              value={filterLevel}
-              onChange={(e) => setFilterLevel(e.target.value)}
-              className="pl-9 pr-8 py-2 text-sm bg-bg-tertiary border border-border rounded-lg text-text-primary focus:outline-none focus:border-white appearance-none cursor-pointer"
-            >
-              <option value="all">All Levels</option>
-              <option value="INFO">Info</option>
-              <option value="SUCCESS">Success</option>
-              <option value="WARNING">Warning</option>
-              <option value="ERROR">Error</option>
-            </select>
-          </div>
-
-          {/* Controls */}
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => setIsPaused(!isPaused)}
-              className="p-2 hover:bg-bg-tertiary rounded-lg transition-colors"
-              title={isPaused ? "Resume" : "Pause"}
-            >
-              {isPaused ? 
-                <PlayIcon className="w-4 h-4 text-text-muted hover:text-text-primary" /> :
-                <PauseIcon className="w-4 h-4 text-text-muted hover:text-text-primary" />
-              }
-            </button>
-            <button
-              onClick={() => setIsAutoScroll(!isAutoScroll)}
-              className="p-2 hover:bg-bg-tertiary rounded-lg transition-colors"
-              title={isAutoScroll ? "Disable auto-scroll" : "Enable auto-scroll"}
-            >
-              <EyeIcon className={`w-4 h-4 transition-colors ${
-                isAutoScroll ? "text-success" : "text-text-muted hover:text-text-primary"
-              }`} />
-            </button>
-          </div>
-        </div>
-
-        {/* Log Content - Scrollable Area */}
-        <div className="flex-1 min-h-0 bg-gray-950 relative">
-          <div className="h-full overflow-y-auto scrollbar-thin scrollbar-track-gray-900 scrollbar-thumb-gray-700 hover:scrollbar-thumb-gray-600">
-            <div className="p-4 lg:p-6">
-              {/* Terminal header */}
-              <div className="flex items-center gap-2 mb-4 pb-3 border-b border-gray-800 sticky top-0 bg-gray-950 z-10">
-                <div className="flex gap-1.5">
-                  <div className="w-3 h-3 rounded-full bg-error" />
-                  <div className="w-3 h-3 rounded-full bg-warning" />
-                  <div className="w-3 h-3 rounded-full bg-success" />
-                </div>
-                <DocumentTextIcon className="w-4 h-4 text-text-muted ml-2" />
-                <span className="text-sm font-mono text-text-muted">installation.log</span>
-                <div className="flex-1" />
-                <div className="flex items-center gap-2 text-sm font-mono text-text-muted">
-                  <ClockIcon className="w-4 h-4" />
-                  <span>{new Date().toLocaleTimeString()}</span>
-                </div>
-              </div>
-          
-          {/* Log entries */}
-          <div className="space-y-2 text-sm lg:text-base font-mono">
-            {filteredLogs.length === 0 ? (
-              <div className="flex items-center justify-center py-16 text-text-muted">
-                <div className="text-center">
-                  <CommandLineIcon className="w-16 h-16 mx-auto mb-6 opacity-50" />
-                  <p className="text-xl mb-3 font-medium">No logs to display</p>
-                  {searchQuery && (
-                    <p className="text-sm opacity-75">Try adjusting your search or filter criteria</p>
-                  )}
-                </div>
-              </div>
-            ) : (
-              filteredLogs.map((log, index) => {
-                // Highlight [PROGRESS] lines and parse percentage
-                const progressMatch = log.message.match(/\[PROGRESS\]\s*(\d+)%/);
-                const isProgress = !!progressMatch;
-                const percent = isProgress ? parseInt(progressMatch[1], 10) : null;
-                // If progress found, update progress bar
-                if (isProgress && percent !== null && percent > progress) {
-                  setProgress(percent);
-                }
-                // Section header
-                const isSectionHeader = log.message.startsWith('=') && log.message.length > 10;
+            <div className="space-y-3 text-sm">
+              {STEPS.map(step => {
+                const isActive = currentStep === step
+                const isCompleted =
+                  progress >= 100 ||
+                  (progress > 0 && STEPS.indexOf(step) < STEPS.indexOf(currentStep))
                 return (
-                  <motion.div 
-                    key={`${index}-${log.timestamp}-${log.message.substring(0, 20)}`}
-                    className={`flex items-start gap-4 py-3 px-4 rounded-lg transition-all duration-200 group border-l-2 border-transparent ${
-                      isProgress ? 'bg-gradient-to-r from-green-900/40 to-green-700/10 border-green-400/40' :
-                      isSectionHeader ? 'bg-gray-900/80 border-gray-700/40 text-yellow-300 font-bold text-lg tracking-widest' :
-                      'hover:bg-bg-secondary/30 hover:border-text-muted/20'
+                  <div
+                    key={step}
+                    className={`flex items-start gap-3 ${
+                      isActive ? 'text-white' : isCompleted ? 'text-text-secondary' : 'text-text-muted'
                     }`}
-                    initial={{ opacity: 0, x: -10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ duration: 0.2 }}
                   >
-                    <span className="text-text-muted/80 shrink-0 w-20 text-xs font-medium tracking-wide">
-                      {log.timestamp}
-                    </span>
-                    <span className={`shrink-0 w-18 text-center rounded-md px-2 py-1 text-xs font-bold uppercase tracking-wider shadow-sm ${
-                      log.level === 'INFO' ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30' :
-                      log.level === 'ERROR' ? 'bg-red-500/20 text-red-300 border border-red-500/30' :
-                      log.level === 'SUCCESS' ? 'bg-green-500/20 text-green-300 border border-green-500/30' :
-                      'bg-yellow-500/20 text-yellow-300 border border-yellow-500/30'
-                    }`}>
-                      {log.level}
-                    </span>
-                    <span className={`text-text-primary flex-1 leading-relaxed break-words group-hover:text-white transition-colors duration-200 ${isProgress ? 'font-bold text-green-300' : ''}`}>
-                      {log.message}
-                      {isProgress && percent !== null && (
-                        <span className="ml-2 text-green-400 font-mono">{percent}%</span>
-                      )}
-                    </span>
-                  </motion.div>
-                );
-              })
-            )}
-            
-            {/* Live cursor when active */}
-            {status === 'running' && !isPaused && (
-              <motion.div 
-                className="flex items-center gap-4 py-2 px-3"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-              >
-                <span className="text-text-muted shrink-0 w-24 text-sm">
-                  {new Date().toLocaleTimeString('en-US', { 
-                    hour12: false, 
-                    hour: '2-digit', 
-                    minute: '2-digit', 
-                    second: '2-digit' 
-                  })}
-                </span>
-                <div className="w-3 h-5 bg-success animate-blink ml-20" />
-                <span className="text-text-muted text-sm animate-pulse">Waiting for output...</span>
-              </motion.div>
-            )}
-            
-            <div ref={logsEndRef} />
+                    <div
+                      className={`mt-1 h-2 w-2 rounded-full ${
+                        isActive ? 'bg-white' : isCompleted ? 'bg-success' : 'bg-border'
+                      }`}
+                    />
+                    <div className="leading-snug">{step}</div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Center Panel - Live Terminal */}
+          <div className="flex min-h-0 flex-col glass-panel rounded-xl shadow-panel overflow-hidden">
+            <div className="px-4 py-3 border-b border-border bg-bg-secondary/50">
+              <div className="text-xs uppercase tracking-widest text-text-secondary">Live Terminal Output</div>
+              <div className="text-sm text-text-primary mt-1">{currentStep}</div>
+            </div>
+            <div className="flex-1 min-h-0 terminal overflow-y-auto scrollbar-thin scrollbar-track-gray-900 scrollbar-thumb-gray-700">
+              {outputLines.map((line, idx) => (
+                <div key={`${idx}-${line}`} className="whitespace-pre-wrap leading-relaxed">
+                  {line}
+                </div>
+              ))}
+              <div ref={outputEndRef} />
+            </div>
+
+            {/* Bottom Input */}
+            <div className="border-t border-border bg-bg-secondary/70 px-4 py-3">
+              <div className="text-xs text-text-secondary mb-2">
+                {prompt ? `Prompt: ${prompt}` : 'Waiting for prompt...'}
+              </div>
+              <div className="flex gap-3">
+                <textarea
+                  value={inputText}
+                  onChange={e => setInputText(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      handleSendInput()
+                    }
+                  }}
+                  placeholder="Type response. Use Shift+Enter for multi-line. Press Enter to send."
+                  rows={2}
+                  className="flex-1 bg-bg-tertiary border border-border rounded-md px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-white resize-none"
+                  disabled={status !== 'waiting_input'}
+                />
+                <button
+                  onClick={handleSendInput}
+                  disabled={status !== 'waiting_input' || !inputText}
+                  className="px-4 py-2 rounded-md bg-white text-black text-sm font-bold disabled:opacity-50"
+                >
+                  Send
+                </button>
               </div>
             </div>
           </div>
         </div>
-
-        {/* Interactive Input Prompt */}
-        <AnimatePresence>
-          {isWaitingForInput && (
-            <motion.div 
-              className="sticky bottom-0 bg-bg-primary border-t-2 border-warning p-4 lg:p-6 shadow-2xl"
-              initial={{ y: 100, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              exit={{ y: 100, opacity: 0 }}
-              transition={{ duration: 0.3, ease: "easeOut" }}
-            >
-              <div className="max-w-4xl mx-auto space-y-3">
-                {/* Prompt Message */}
-                <div className="flex items-start gap-3 p-4 bg-warning/10 border border-warning/30 rounded-lg">
-                  <ArrowPathIcon className="w-5 h-5 text-warning mt-0.5 animate-pulse flex-shrink-0" />
-                  <div className="flex-1">
-                    <p className="text-sm font-bold text-warning uppercase tracking-wider mb-1">
-                      Interactive Input Required
-                    </p>
-                    <p className="text-sm text-text-primary font-mono">
-                      {currentPrompt || 'The installation script is waiting for your input...'}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Input Field */}
-                <div className="flex gap-3 items-center">
-                  <div className="flex-1 relative">
-                    <input 
-                      ref={inputRef}
-                      value={userInput}
-                      onChange={(e) => setUserInput(e.target.value)}
-                      onKeyPress={handleInputKeyPress}
-                      placeholder="Enter your response and press Enter..."
-                      className="w-full bg-bg-secondary border-2 border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-warning focus:bg-bg-tertiary placeholder-text-muted font-mono"
-                      autoFocus
-                    />
-                  </div>
-                  <button
-                    onClick={sendUserInput}
-                    disabled={!userInput.trim()}
-                    className="bg-warning hover:bg-warning/80 disabled:bg-bg-tertiary disabled:text-text-muted text-black font-bold px-6 py-3 rounded-lg transition-all duration-200 flex items-center gap-2 disabled:cursor-not-allowed"
-                  >
-                    <PaperAirplaneIcon className="w-4 h-4" />
-                    Send Response
-                  </button>
-                </div>
-
-                <p className="text-xs text-text-muted text-center">
-                  💡 Tip: Press <kbd className="px-2 py-1 bg-bg-tertiary rounded border border-border">Enter</kbd> to send your response
-                </p>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
       </div>
     </div>
   )

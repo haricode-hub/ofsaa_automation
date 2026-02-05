@@ -17,7 +17,75 @@ class OracleClientService:
         """
         try:
             logs = []
+
+            # Skip if profile already has valid ORACLE_HOME and sqlplus exists
+            precheck_cmd = '''
+if [ -f "/home/oracle/.profile" ]; then
+  ORACLE_HOME_IN_PROFILE=$(grep -E "^export ORACLE_HOME=" /home/oracle/.profile | tail -1 | cut -d= -f2)
+  if [ -n "$ORACLE_HOME_IN_PROFILE" ]; then
+    if [ "$ORACLE_HOME_IN_PROFILE" = "/usr" ] || [ "$ORACLE_HOME_IN_PROFILE" = "/usr/bin" ]; then
+      exit 1
+    fi
+    if [ -f "$ORACLE_HOME_IN_PROFILE/bin/sqlplus" ]; then
+      echo "PROFILE_ORACLE_HOME=$ORACLE_HOME_IN_PROFILE"
+      exit 0
+    fi
+  fi
+fi
+exit 1
+'''
+            precheck = await self.ssh_service.execute_command(host, username, password, precheck_cmd)
+            if precheck.get("success") and "PROFILE_ORACLE_HOME=" in precheck.get("stdout", ""):
+                oracle_home_existing = precheck["stdout"].strip().split("PROFILE_ORACLE_HOME=", 1)[-1].strip()
+                logs.append(f"✓ ORACLE_HOME already set in profile: {oracle_home_existing}")
+                logs.append("✓ Oracle client already configured, skipping update")
+                return {
+                    "success": True,
+                    "message": "Oracle client already configured, skipped",
+                    "logs": logs,
+                    "oracle_home": oracle_home_existing
+                }
             
+            # Prefer a known Oracle client path if present
+            preferred_home_cmd = 'test -f /u01/app/oracle/product/19.0.0/client_1/bin/sqlplus && echo "/u01/app/oracle/product/19.0.0/client_1"'
+            preferred_result = await self.ssh_service.execute_command(host, username, password, preferred_home_cmd)
+            if preferred_result.get("success") and preferred_result.get("stdout", "").strip():
+                oracle_home_existing = preferred_result.get("stdout", "").strip()
+                logs.append(f"✓ Preferred ORACLE_HOME detected: {oracle_home_existing}")
+                logs.append("Updating .profile with preferred Oracle client path")
+                oracle_home = oracle_home_existing
+                tns_admin = f"{oracle_home}/network/admin"
+                profile_update = f'''
+# Update Oracle environment variables in .profile (in-place, no backup)
+echo "Updating Oracle environment variables in .profile..."
+cat > /tmp/oracle_env_temp << 'EOF'
+# Oracle Client Environment Variables
+export ORACLE_HOME={oracle_home}
+export TNS_ADMIN={tns_admin}
+export ORACLE_SID={oracle_sid}
+export PATH=$ORACLE_HOME/bin:$PATH
+export LD_LIBRARY_PATH=$ORACLE_HOME/lib:$LD_LIBRARY_PATH
+EOF
+if [ -f "/home/oracle/.profile" ]; then
+    sed -i '/^# Oracle Client Environment Variables/,/^export LD_LIBRARY_PATH.*ORACLE_HOME/d' /home/oracle/.profile 2>/dev/null
+    sed -i '/^export ORACLE_HOME=/d; /^export TNS_ADMIN=/d; /^export ORACLE_SID=/d' /home/oracle/.profile 2>/dev/null
+else
+    touch /home/oracle/.profile
+    chown oracle:oinstall /home/oracle/.profile
+fi
+echo "" >> /home/oracle/.profile
+cat /tmp/oracle_env_temp >> /home/oracle/.profile
+rm -f /tmp/oracle_env_temp
+echo "✓ Oracle environment variables updated in .profile"
+'''
+                await self.ssh_service.execute_command(host, username, password, profile_update)
+                return {
+                    "success": True,
+                    "message": "Oracle client configured from preferred path",
+                    "logs": logs,
+                    "oracle_home": oracle_home_existing
+                }
+
             # Step 1: Check for existing Oracle installations
             logs.append("Checking for existing Oracle client installations...")
             check_oracle_cmd = '''
@@ -52,15 +120,18 @@ if command -v oracle >/dev/null 2>&1; then
     echo "Oracle binary found in PATH: $oracle_path"
 fi
 
-# Check for sqlplus
+# Check for sqlplus (ignore /usr/bin/sqlplus)
 if command -v sqlplus >/dev/null 2>&1; then
     sqlplus_path=$(which sqlplus)
     echo "SQL*Plus found: $sqlplus_path"
-    # Try to determine ORACLE_HOME from sqlplus location
     if [[ "$sqlplus_path" == */bin/sqlplus ]]; then
         potential_home="${sqlplus_path%/bin/sqlplus}"
-        echo "Potential ORACLE_HOME from sqlplus: $potential_home"
-        FOUND_INSTALLATIONS+=("$potential_home")
+        if [ "$potential_home" != "/usr" ] && [ "$potential_home" != "/usr/bin" ]; then
+            echo "Potential ORACLE_HOME from sqlplus: $potential_home"
+            FOUND_INSTALLATIONS+=("$potential_home")
+        else
+            echo "Skipping non-Oracle sqlplus at $sqlplus_path"
+        fi
     fi
 fi
 

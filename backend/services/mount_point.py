@@ -43,11 +43,14 @@ class MountPointService:
                 "/u01/installer_kit"
             ]
             
+            all_subdirs_exist = True
+            
             for subdir in subdirs:
                 subdir_check = await self.validation.check_directory_exists(host, username, password, subdir)
                 if subdir_check.get('exists'):
                     logs.append(f"✓ {subdir} already exists")
                 else:
+                    all_subdirs_exist = False
                     logs.append(f"Creating {subdir}...")
                     create_cmd = f"mkdir -p {subdir}"
                     create_result = await self.ssh_service.execute_command(host, username, password, create_cmd)
@@ -55,6 +58,15 @@ class MountPointService:
                         logs.append(f"✓ {subdir} created")
                     else:
                         logs.append(f"Warning: Could not create {subdir}")
+            
+            if u01_check.get('exists') and all_subdirs_exist:
+                logs.append("✓ All mount point directories already exist, skipping ownership updates")
+                logs.append("✓ Mount Point Setup Complete")
+                return {
+                    "success": True,
+                    "message": "Mount point /u01 already configured, skipped",
+                    "logs": logs
+                }
             
             # Set ownership and permissions
             logs.append("Setting ownership and permissions...")

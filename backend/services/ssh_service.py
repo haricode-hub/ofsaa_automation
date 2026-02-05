@@ -6,8 +6,14 @@ from paramiko.ssh_exception import AuthenticationException, SSHException, NoVali
 import socket
 import threading
 import time
+import re
 
 logger = logging.getLogger(__name__)
+
+ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+
+def _strip_ansi(text: str) -> str:
+    return ANSI_ESCAPE_RE.sub("", text)
 
 class SSHService:
     """Service for handling SSH connections and command execution using paramiko"""
@@ -301,6 +307,8 @@ class SSHService:
         command: str,
         on_output_callback = None,
         on_prompt_callback = None,
+        input_poll_callback = None,
+        on_status_callback = None,
         timeout: int = 1800  # 30 minutes default for interactive scripts
     ) -> Dict[str, Any]:
         """
@@ -322,7 +330,7 @@ class SSHService:
             result = await asyncio.get_event_loop().run_in_executor(
                 None, 
                 self._execute_interactive_command_sync,
-                host, username, password, command, on_output_callback, on_prompt_callback, timeout
+                host, username, password, command, on_output_callback, on_prompt_callback, input_poll_callback, on_status_callback, timeout
             )
             return result
         except Exception as e:
@@ -341,6 +349,8 @@ class SSHService:
         command: str,
         on_output_callback,
         on_prompt_callback,
+        input_poll_callback,
+        on_status_callback,
         timeout: int
     ) -> Dict[str, Any]:
         """Synchronous interactive command execution"""
@@ -365,6 +375,8 @@ class SSHService:
             
             all_output = []
             current_line = ""
+            waiting_for_input = False
+            last_input_check = 0.0
             
             # Send command
             channel.send(command + '\n')
@@ -372,7 +384,8 @@ class SSHService:
             start_time = time.time()
             prompt_patterns = [
                 'Enter', 'enter', 'Input', 'input', 'Type', 'type',
-                '[Y/n]', '[y/N]', 'Continue?', 'Proceed?', 'password:', 'Password:'
+                '[Y/n]', '[y/N]', 'Continue?', 'Proceed?', 'password:', 'Password:',
+                'Press', 'press', 'Are you sure', 'Confirm', 'confirm'
             ]
             
             while True:
@@ -403,23 +416,69 @@ class SSHService:
                             asyncio.run(on_output_callback(chunk))
                         
                         # Check for prompts
-                        if on_prompt_callback and any(pattern in current_line for pattern in prompt_patterns):
-                            # Detected potential prompt
-                            logger.info(f"Potential prompt detected: {current_line[-100:]}")
-                            user_input = asyncio.run(on_prompt_callback(current_line))
-                            
-                            if user_input:
-                                channel.send(user_input + '\n')
-                                current_line = ""  # Reset line buffer
-                        
-                        # Reset line buffer on newline
-                        if '\n' in chunk:
-                            current_line = ""
-                            
+                        # Prompt detection (line-by-line)
+                        if on_prompt_callback and not waiting_for_input:
+                            if "\n" in current_line or "\r" in current_line:
+                                lines = current_line.splitlines()
+                                if current_line.endswith(("\n", "\r")):
+                                    complete_lines = lines
+                                    current_line = ""
+                                else:
+                                    complete_lines = lines[:-1]
+                                    current_line = lines[-1] if lines else ""
+                            else:
+                                complete_lines = []
+
+                            for line in complete_lines:
+                                cleaned = _strip_ansi(line).strip()
+                                prompt_detected = any(pattern in cleaned for pattern in prompt_patterns)
+                                if cleaned.endswith((':', '?', '>', ']')):
+                                    prompt_detected = True
+                                if prompt_detected:
+                                    logger.info(f"Potential prompt detected: {cleaned[-100:]}")
+                                    waiting_for_input = True
+                                    if on_status_callback:
+                                        asyncio.run(on_status_callback("waiting_input"))
+                                    asyncio.run(on_prompt_callback(cleaned))
+                                    break
+
+                            # Handle prompts that are printed without newline
+                            if not waiting_for_input and current_line:
+                                cleaned_current = _strip_ansi(current_line).strip()
+                                prompt_detected = any(pattern in cleaned_current for pattern in prompt_patterns)
+                                if cleaned_current.endswith((':', '?', '>', ']')):
+                                    prompt_detected = True
+                                if prompt_detected:
+                                    logger.info(f"Potential prompt detected: {cleaned_current[-100:]}")
+                                    waiting_for_input = True
+                                    if on_status_callback:
+                                        asyncio.run(on_status_callback("waiting_input"))
+                                    asyncio.run(on_prompt_callback(cleaned_current))
+
                 except socket.timeout:
                     # No data available, continue
                     time.sleep(0.1)
                     continue
+
+                # Poll for user input from UI (non-blocking)
+                now = time.time()
+                if input_poll_callback and waiting_for_input and (now - last_input_check) > 0.2:
+                    last_input_check = now
+                    try:
+                        user_input = asyncio.run(input_poll_callback())
+                    except Exception:
+                        user_input = ""
+                    if user_input:
+                        # If multi-line input is provided, send line-by-line with small delays
+                        if '\n' in user_input:
+                            for part in user_input.splitlines():
+                                channel.send(part + '\n')
+                                time.sleep(0.1)
+                        else:
+                            channel.send(user_input + '\n')
+                        waiting_for_input = False
+                        if on_status_callback:
+                            asyncio.run(on_status_callback("running"))
             
             exit_code = channel.recv_exit_status()
             channel.close()

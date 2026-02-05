@@ -76,11 +76,34 @@ class InstallationService:
     async def extract_installer_files(self, host: str, username: str, password: str) -> Dict[str, Any]:
         return await self.installer_service.extract_installer_files(host, username, password)
     
-    async def download_and_extract_installer(self, host: str, username: str, password: str, on_output=None) -> Dict[str, Any]:
-        return await self.installer_service.download_and_extract_installer(host, username, password, on_output=on_output)
+    async def download_and_extract_installer(self, host: str, username: str, password: str, 
+                                             on_output=None, on_prompt=None, input_poll=None, on_status=None,
+                                             run_envcheck_inline: bool = False, timeout: int = 7200,
+                                             db_user: str = None, db_pass: str = None, db_sid: str = None) -> Dict[str, Any]:
+        return await self.installer_service.download_and_extract_installer(
+            host, username, password,
+            on_output=on_output,
+            on_prompt=on_prompt,
+            input_poll=input_poll,
+            on_status=on_status,
+            run_envcheck_inline=run_envcheck_inline,
+            timeout=timeout,
+            db_user=db_user,
+            db_pass=db_pass,
+            db_sid=db_sid
+        )
         
-    async def run_environment_check(self, host: str, username: str, password: str) -> Dict[str, Any]:
-        return await self.installer_service.run_environment_check(host, username, password)
+    async def run_environment_check(self, host: str, username: str, password: str,
+                                    on_output=None, on_prompt=None, input_poll=None, on_status=None,
+                                    timeout: int = 7200) -> Dict[str, Any]:
+        return await self.installer_service.run_environment_check(
+            host, username, password,
+            on_output=on_output,
+            on_prompt=on_prompt,
+            input_poll=input_poll,
+            on_status=on_status,
+            timeout=timeout
+        )
     
     # Complete Installation Workflow
     async def run_complete_installation(self, host: str, username: str, password: str, 

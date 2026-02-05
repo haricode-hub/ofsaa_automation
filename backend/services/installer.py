@@ -75,7 +75,15 @@ fi
             }
     
     async def download_and_extract_installer(self, host: str, username: str, password: str, 
-                                             on_output: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+                                             on_output: Optional[Callable[[str], None]] = None,
+                                             on_prompt: Optional[Callable[[str], None]] = None,
+                                             input_poll: Optional[Callable[[], None]] = None,
+                                             on_status: Optional[Callable[[str], None]] = None,
+                                             run_envcheck_inline: bool = False,
+                                             timeout: int = 7200,
+                                             db_user: Optional[str] = None,
+                                             db_pass: Optional[str] = None,
+                                             db_sid: Optional[str] = None) -> Dict[str, Any]:
         """
         Download OFSAA installer from git repository and extract - specifically looks for p33940349_81100_Linux-x86-64.zip
         
@@ -85,7 +93,114 @@ fi
         try:
             logs = []
             
-            download_cmd = f"""
+            db_input_block = ""
+            if db_user and db_pass and db_sid:
+                # Use base64 to safely pass credentials with special chars
+                import base64
+                db_user_b64 = base64.b64encode(db_user.encode("utf-8")).decode("utf-8")
+                db_pass_b64 = base64.b64encode(db_pass.encode("utf-8")).decode("utf-8")
+                db_sid_b64 = base64.b64encode(db_sid.encode("utf-8")).decode("utf-8")
+                db_input_block = (
+                    f"DB_USER_B64='{db_user_b64}'\n"
+                    f"DB_PASS_B64='{db_pass_b64}'\n"
+                    f"DB_SID_B64='{db_sid_b64}'\n"
+                    "DB_USER=$(printf %s \"$DB_USER_B64\" | base64 -d)\n"
+                    "DB_PASS=$(printf %s \"$DB_PASS_B64\" | base64 -d)\n"
+                    "DB_SID=$(printf %s \"$DB_SID_B64\" | base64 -d)\n"
+                    "DB_INPUT=$(printf \"%s\\n%s\\n%s\\n\" \"$DB_USER\" \"$DB_PASS\" \"$DB_SID\")\n"
+                )
+
+            envcheck_block = (
+                "# Inline envCheck execution after unzip\n"
+                "echo \"[INFO] Starting envCheck.sh after installer step...\"\n"
+                "if [ -f /u01/installer_kit/OFS_BD_PACK/OFS_AAI/bin/envCheck.sh ]; then\n"
+                "    chmod -R 775 /u01/installer_kit/OFS_BD_PACK\n"
+                "    chmod 775 /u01/installer_kit/OFS_BD_PACK/OFS_AAI/bin/envCheck.sh\n"
+                "    echo \"✓ Permissions set to 775 for OFS_BD_PACK\"\n"
+                "    echo \"✓ Permissions set to 775 for envCheck.sh\"\n"
+                "    if [ ! -f /home/oracle/.profile ]; then\n"
+                "        echo \"❌ /home/oracle/.profile not found\"\n"
+                "        exit 1\n"
+                "    fi\n"
+                "    # Clean stray EOF markers if present\n"
+                "    sed -i '/EOF/d' /home/oracle/.profile\n"
+                "    # Force ORACLE_HOME to preferred client if present\n"
+                "    if [ -f /u01/app/oracle/product/19.0.0/client_1/bin/sqlplus ]; then\n"
+                "        sed -i 's|^export ORACLE_HOME=.*|export ORACLE_HOME=/u01/app/oracle/product/19.0.0/client_1|g' /home/oracle/.profile\n"
+                "        sed -i 's|^export TNS_ADMIN=.*|export TNS_ADMIN=/u01/app/oracle/product/19.0.0/client_1/network/admin|g' /home/oracle/.profile\n"
+                "    fi\n"
+                "    # Create sqlplus wrapper to force SYSDBA when SYS is used (case-insensitive)\n"
+                "    WRAP_DIR=/tmp/ofsaa_sqlplus_wrap\n"
+                "    mkdir -p \"$WRAP_DIR\"\n"
+                "    cat > \"$WRAP_DIR/sqlplus\" << 'EOSQL'\n"
+                "#!/bin/bash\n"
+                "REAL_SQLPLUS=/u01/app/oracle/product/19.0.0/client_1/bin/sqlplus\n"
+                "if [ -n \"$FORCE_SYSDBA\" ] && [ -n \"$1\" ]; then\n"
+                "  lower=$(printf \"%s\" \"$1\" | tr 'A-Z' 'a-z')\n"
+                "  case \"$lower\" in\n"
+                "    sys/*)\n"
+                "      exec \"$REAL_SQLPLUS\" \"$1 as sysdba\" \"${@:2}\"\n"
+                "      ;;\n"
+                "  esac\n"
+                "fi\n"
+                "exec \"$REAL_SQLPLUS\" \"$@\"\n"
+                "EOSQL\n"
+                "    chmod +x \"$WRAP_DIR/sqlplus\"\n"
+                "    echo \"\\n=== Starting OFSAA Environment Check ===\"\n"
+                "    echo \">>> Starting envCheck.sh -s now...\"\n"
+                "    echo \"Executing: ./envCheck.sh -s\"\n"
+                "    echo \"\"\n"
+                "    export HOME=/home/oracle\n"
+                f"{db_input_block}"
+                "    if [ -n \"$DB_INPUT\" ]; then\n"
+                "        # Run in a pseudo-tty so envCheck can prompt/read correctly\n"
+                "        if command -v script >/dev/null 2>&1; then\n"
+                "            script -q -c \"printf \\\"%s\\\" \\\"$DB_INPUT\\\" | sudo -u oracle bash -lc 'export FORCE_SYSDBA=1; export PATH=/tmp/ofsaa_sqlplus_wrap:$PATH; source /home/oracle/.profile; cd /u01/installer_kit/OFS_BD_PACK/OFS_AAI/bin; ./envCheck.sh -s 2>&1'\" /dev/null\n"
+                "        else\n"
+                "            printf \"%s\" \"$DB_INPUT\" | sudo -u oracle bash -lc 'export FORCE_SYSDBA=1; export PATH=/tmp/ofsaa_sqlplus_wrap:$PATH; source /home/oracle/.profile; cd /u01/installer_kit/OFS_BD_PACK/OFS_AAI/bin; ./envCheck.sh -s 2>&1'\n"
+                "        fi\n"
+                "    else\n"
+                "        if command -v script >/dev/null 2>&1; then\n"
+                "            script -q -c \"sudo -u oracle bash -lc 'export FORCE_SYSDBA=1; export PATH=/tmp/ofsaa_sqlplus_wrap:$PATH; source /home/oracle/.profile; cd /u01/installer_kit/OFS_BD_PACK/OFS_AAI/bin; ./envCheck.sh -s 2>&1'\" /dev/null\n"
+                "        else\n"
+                "            sudo -u oracle bash -lc 'export FORCE_SYSDBA=1; export PATH=/tmp/ofsaa_sqlplus_wrap:$PATH; source /home/oracle/.profile; cd /u01/installer_kit/OFS_BD_PACK/OFS_AAI/bin; ./envCheck.sh -s 2>&1'\n"
+                "        fi\n"
+                "    fi\n"
+                "    EXIT_CODE=$?\n"
+                "    echo \"\"\n"
+                "    echo \"=== Environment Check Completed ===\"\n"
+                "    echo \"Exit Code: $EXIT_CODE\"\n"
+                "    if [ $EXIT_CODE -eq 0 ]; then\n"
+                "        echo \"✓ Environment check PASSED\"\n"
+                "    else\n"
+                "        echo \"⚠ Environment check completed with warnings (Exit Code: $EXIT_CODE)\"\n"
+                "    fi\n"
+                "    exit $EXIT_CODE\n"
+                "else\n"
+                "    echo \"❌ envCheck.sh NOT FOUND\"\n"
+                "    find /u01/installer_kit -name \"envCheck.sh\" 2>/dev/null || echo \"No envCheck.sh found anywhere\"\n"
+                "    exit 1\n"
+                "fi\n"
+            )
+
+            # If installer already extracted, skip download/unzip and only run envCheck
+            precheck_cmd = "test -d /u01/installer_kit/OFS_BD_PACK && echo 'EXTRACTED' || echo 'NOT_EXTRACTED'"
+            precheck = await self.ssh_service.execute_command(host, username, password, precheck_cmd)
+            if precheck.get("success") and "EXTRACTED" in precheck.get("stdout", ""):
+                logs.append("✓ Installer already extracted, skipping download/unzip")
+                if run_envcheck_inline:
+                    download_cmd = f"""
+echo "✓ Installer already extracted, skipping download/unzip"
+{envcheck_block}
+"""
+                else:
+                    return {
+                        "success": True,
+                        "message": "Installer already extracted, skipped download",
+                        "logs": logs
+                    }
+            else:
+                download_cmd = f"""
 # Download OFSAA installer from git repository
 echo "=== OFSAA Installer Download & Extract Process ==="
 echo "Target directory: /u01/installer_kit"
@@ -212,6 +327,7 @@ fi
 
 echo "[PROGRESS] 100% - Installation complete!"
 echo "\\n✓ Installer download and extraction completed"
+{envcheck_block if run_envcheck_inline else ""}
 """
             
             # Use execute_interactive_command if callback provided, otherwise use regular command
@@ -219,10 +335,13 @@ echo "\\n✓ Installer download and extraction completed"
                 result = await self.ssh_service.execute_interactive_command(
                     host, username, password, download_cmd, 
                     on_output_callback=on_output,
-                    timeout=600
+                    on_prompt_callback=on_prompt,
+                    input_poll_callback=input_poll,
+                    on_status_callback=on_status,
+                    timeout=timeout
                 )
             else:
-                result = await self.ssh_service.execute_command(host, username, password, download_cmd, timeout=600)
+                result = await self.ssh_service.execute_command(host, username, password, download_cmd, timeout=timeout)
             
             if result["success"]:
                 logs.extend([
@@ -259,7 +378,11 @@ echo "\\n✓ Installer download and extraction completed"
             }
     
     async def run_environment_check(self, host: str, username: str, password: str, 
-                               on_output: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+                               on_output: Optional[Callable[[str], None]] = None,
+                               on_prompt: Optional[Callable[[str], None]] = None,
+                               input_poll: Optional[Callable[[], None]] = None,
+                               on_status: Optional[Callable[[str], None]] = None,
+                               timeout: int = 7200) -> Dict[str, Any]:
         """
         Run OFSAA environment check script and stream ALL output in real-time
         """
@@ -305,10 +428,11 @@ echo "\\n✓ Installer download and extraction completed"
             logs.append("\n=== Setting Script Permissions ===")
             
             prep_cmd = """
-    cd /u01/installer_kit/OFS_BD_PACK/OFS_AAI/bin
-    chmod 775 envCheck.sh
+    chmod -R 775 /u01/installer_kit/OFS_BD_PACK
+    chmod 775 /u01/installer_kit/OFS_BD_PACK/OFS_AAI/bin/envCheck.sh
+    echo "✓ Permissions set to 775 for OFS_BD_PACK"
     echo "✓ Permissions set to 775 for envCheck.sh"
-    echo "Current directory: $(pwd)"
+    echo "Current directory: /u01/installer_kit/OFS_BD_PACK/OFS_AAI/bin"
     echo "Running as user: $(whoami)"
     """
             
@@ -320,29 +444,40 @@ echo "\\n✓ Installer download and extraction completed"
                         if on_output:
                             await on_output(line.strip())
             
-            # Step 3: Run envCheck.sh WITHOUT -s flag for verbose output
+            # Step 3: Run envCheck.sh with -s flag (interactive)
             if on_output:
                 await on_output("\n=== Starting OFSAA Environment Check ===")
                 await on_output("This will verify system prerequisites for OFSAA installation...")
                 await on_output("=" * 60)
+                await on_output(">>> Starting envCheck.sh -s now...")
             
             logs.append("\n=== Starting OFSAA Environment Check ===")
             logs.append("=" * 60)
+            logs.append(">>> Starting envCheck.sh -s now...")
             
             # Run WITH -s flag for summary/silent mode as required
             env_check_cmd = """
-    cd /u01/installer_kit/OFS_BD_PACK/OFS_AAI/bin
+    if [ ! -f /home/oracle/.profile ]; then
+        echo "❌ /home/oracle/.profile not found"
+        exit 1
+    fi
+
+    # Clean stray EOF markers if present
+    sed -i '/EOF/d' /home/oracle/.profile
+    # Force ORACLE_HOME to preferred client if present
+    if [ -f /u01/app/oracle/product/19.0.0/client_1/bin/sqlplus ]; then
+        sed -i 's|^export ORACLE_HOME=.*|export ORACLE_HOME=/u01/app/oracle/product/19.0.0/client_1|g' /home/oracle/.profile
+        sed -i 's|^export TNS_ADMIN=.*|export TNS_ADMIN=/u01/app/oracle/product/19.0.0/client_1/network/admin|g' /home/oracle/.profile
+    fi
 
     echo "Executing: ./envCheck.sh -s"
     echo ""
 
-    # Run the script with -s flag and capture output in real-time
-    ./envCheck.sh -s 2>&1 | while IFS= read -r line; do
-        echo "$line"
-    done
+    export HOME=/home/oracle
+    sudo -u oracle bash -lc 'source /home/oracle/.profile; cd /u01/installer_kit/OFS_BD_PACK/OFS_AAI/bin; ./envCheck.sh -s 2>&1'
 
     # Capture exit code
-    EXIT_CODE=${PIPESTATUS[0]}
+    EXIT_CODE=$?
     echo ""
     echo "=== Environment Check Completed ==="
     echo "Exit Code: $EXIT_CODE"
@@ -360,12 +495,15 @@ echo "\\n✓ Installer download and extraction completed"
                 result = await self.ssh_service.execute_interactive_command(
                     host, username, password, env_check_cmd,
                     on_output_callback=on_output,
-                    timeout=600
+                    on_prompt_callback=on_prompt,
+                    input_poll_callback=input_poll,
+                    on_status_callback=on_status,
+                    timeout=timeout
                 )
             else:
                 result = await self.ssh_service.execute_command(
                     host, username, password, env_check_cmd, 
-                    timeout=600
+                    timeout=timeout
                 )
             
             # Process output

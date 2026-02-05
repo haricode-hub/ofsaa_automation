@@ -231,6 +231,17 @@ grep -E "(JAVA_HOME|JAVA_BIN)" /home/oracle/.profile
         try:
             logs = []
             
+            # Skip if main OFSAA directories already exist
+            fichome_check = await self.validation.check_directory_exists(host, username, password, "/u01/OFSAA/FICHOME")
+            ftpshare_check = await self.validation.check_directory_exists(host, username, password, "/u01/OFSAA/FTPSHARE")
+            if fichome_check.get('exists') and ftpshare_check.get('exists'):
+                logs.append("✓ OFSAA directory structure already exists, skipping creation")
+                return {
+                    "success": True,
+                    "message": "OFSAA directory structure already exists, skipped",
+                    "logs": logs
+                }
+            
             # Create OFSAA directory structure
             logs.append("Creating OFSAA directory structure...")
             create_dirs_cmd = f'''

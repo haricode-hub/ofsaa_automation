@@ -60,6 +60,17 @@ class WebSocketManager:
             "type": "prompt",
             "data": prompt
         })
+
+    async def send_status(self, task_id: str, status: str, step: str = "", progress: int = None):
+        """Send status updates to WebSocket"""
+        await self.send_message(task_id, {
+            "type": "status",
+            "data": {
+                "status": status,
+                "step": step,
+                "progress": progress
+            }
+        })
     
     async def wait_for_user_input(self, task_id: str, timeout: int = 300) -> str:
         """Wait for user input from WebSocket"""
@@ -284,81 +295,114 @@ async def run_installation_process(task_id: str, host: str, username: str, passw
         ssh_service = SSHService()
         installation_service = InstallationService(ssh_service)
         
+        async def stream_logs(logs):
+            for line in logs:
+                if line:
+                    await websocket_manager.send_output(task_id, line)
+
+        last_announced_step = None
+
+        async def update_status(status: str, step: str = "", progress: int = None):
+            nonlocal last_announced_step
+            await websocket_manager.send_status(task_id, status, step, progress)
+            if status == "running" and step and step != last_announced_step:
+                await websocket_manager.send_output(task_id, f"== {step} ==")
+                last_announced_step = step
+        
         # Test SSH connection first
         task.current_step = "Testing SSH connection"
         task.progress = InstallationSteps.PROGRESS_MAP["connection_test"]
         task.logs.append("🔗 Testing SSH connection to target server...")
         task.logs.append(f"Target host: {host}")
         task.logs.append(f"Username: {username}")
+        await update_status("running", task.current_step, task.progress)
         
         connection_test = await ssh_service.test_connection(host, username, password)
         if not connection_test["success"]:
             task.status = "failed"
             task.error = connection_test["error"]
             task.logs.append(f"❌ Connection failed: {connection_test['error']}")
+            await update_status("failed", task.current_step, task.progress)
             return
         
         task.logs.append("✅ SSH connection successful")
         task.progress = InstallationSteps.PROGRESS_MAP["connection_test"]
+        await stream_logs(["✅ SSH connection successful"])
         
         # Oracle User Setup
         task.current_step = InstallationSteps.STEP_NAMES[1]
         task.progress = InstallationSteps.PROGRESS_MAP["oracle_user_setup"]
         task.logs.append("🔨 Creating oracle user and oinstall group...")
+        await update_status("running", task.current_step, task.progress)
         
         oracle_user_result = await installation_service.create_oracle_user_and_oinstall_group(host, username, password)
         if not oracle_user_result["success"]:
             task.status = "failed"
             task.error = oracle_user_result["error"]
             task.logs.extend(oracle_user_result["logs"])
+            await stream_logs(oracle_user_result.get("logs", []))
+            await update_status("failed", task.current_step, task.progress)
             return
         
         task.logs.extend(oracle_user_result["logs"])
+        await stream_logs(oracle_user_result.get("logs", []))
         task.progress = InstallationSteps.PROGRESS_MAP["oracle_user_setup"]
         
         # Mount Point Creation
         task.current_step = InstallationSteps.STEP_NAMES[2]
         task.progress = InstallationSteps.PROGRESS_MAP["mount_point_creation"]
         task.logs.append("🔨 Creating mount point /u01...")
+        await update_status("running", task.current_step, task.progress)
         
         mount_point_result = await installation_service.create_mount_point(host, username, password)
         if not mount_point_result["success"]:
             task.status = "failed"
             task.error = mount_point_result["error"]
             task.logs.extend(mount_point_result["logs"])
+            await stream_logs(mount_point_result.get("logs", []))
+            await update_status("failed", task.current_step, task.progress)
             return
         
         task.logs.extend(mount_point_result["logs"])
+        await stream_logs(mount_point_result.get("logs", []))
         task.progress = InstallationSteps.PROGRESS_MAP["mount_point_creation"]
         
         # Package Installation
         task.current_step = InstallationSteps.STEP_NAMES[3]
         task.progress = InstallationSteps.PROGRESS_MAP["packages_installation"]
         task.logs.append("🔨 Installing KSH (Korn Shell) and git...")
+        await update_status("running", task.current_step, task.progress)
         
         packages_result = await installation_service.install_ksh_and_git(host, username, password)
         if not packages_result["success"]:
             task.status = "failed"
             task.error = packages_result["error"]
             task.logs.extend(packages_result["logs"])
+            await stream_logs(packages_result.get("logs", []))
+            await update_status("failed", task.current_step, task.progress)
             return
         
         task.logs.extend(packages_result["logs"])
+        await stream_logs(packages_result.get("logs", []))
         task.progress = InstallationSteps.PROGRESS_MAP["packages_installation"]
         
         # Profile Creation
         task.current_step = InstallationSteps.STEP_NAMES[4]
         task.progress = InstallationSteps.PROGRESS_MAP["profile_creation"]
         task.logs.append("🔨 Creating .profile file at /home/oracle/.profile...")
+        await update_status("running", task.current_step, task.progress)
         
         profile_result = await installation_service.create_profile_file(host, username, password)
         if not profile_result["success"]:
             task.status = "failed"
             task.error = profile_result["error"]
             task.logs.extend(profile_result["logs"])
+            await stream_logs(profile_result.get("logs", []))
+            await update_status("failed", task.current_step, task.progress)
             return
         
         task.logs.extend(profile_result["logs"])
+        await stream_logs(profile_result.get("logs", []))
         task.progress = InstallationSteps.PROGRESS_MAP["profile_creation"]
         
         # Java Installation (Required prerequisite for Oracle Client)
@@ -366,6 +410,7 @@ async def run_installation_process(task_id: str, host: str, username: str, passw
         task.progress = InstallationSteps.PROGRESS_MAP["java_installation"]
         task.logs.append("🔨 Installing Java from Oracle installer kit...")
         task.logs.append("📋 Note: Java must be installed before Oracle Client")
+        await update_status("running", task.current_step, task.progress)
         
         java_home_path = java_home or "/u01/jdk-11.0.16"
         java_result = await installation_service.install_java_from_oracle_kit(host, username, password, java_home_path)
@@ -373,11 +418,15 @@ async def run_installation_process(task_id: str, host: str, username: str, passw
             task.status = "failed"
             task.error = java_result["error"]
             task.logs.extend(java_result["logs"])
+            await stream_logs(java_result.get("logs", []))
+            await update_status("failed", task.current_step, task.progress)
             return
         
         task.logs.extend(java_result["logs"])
         task.logs.append("✅ Java installation completed successfully!")
         task.logs.append("🔒 PREREQUISITE MET: Java is now available for Oracle Client")
+        await stream_logs(java_result.get("logs", []))
+        await stream_logs(["✅ Java installation completed successfully!", "🔒 PREREQUISITE MET: Java is now available for Oracle Client"])
         task.progress = InstallationSteps.PROGRESS_MAP["java_installation"]
         
         # OFSAA Directory Structure Creation
@@ -385,16 +434,21 @@ async def run_installation_process(task_id: str, host: str, username: str, passw
         task.progress = InstallationSteps.PROGRESS_MAP["ofsaa_directories"]
         task.logs.append("📁 Creating OFSAA directory structure...")
         task.logs.append("🏠 Setting up FICHOME and FTPSHARE directories...")
+        await update_status("running", task.current_step, task.progress)
         
         ofsaa_dirs_result = await installation_service.create_ofsaa_directories(host, username, password, fic_home)
         if not ofsaa_dirs_result["success"]:
             task.status = "failed"
             task.error = ofsaa_dirs_result["error"]
             task.logs.extend(ofsaa_dirs_result["logs"])
+            await stream_logs(ofsaa_dirs_result.get("logs", []))
+            await update_status("failed", task.current_step, task.progress)
             return
         
         task.logs.extend(ofsaa_dirs_result["logs"])
         task.logs.append("✅ OFSAA directory structure created successfully!")
+        await stream_logs(ofsaa_dirs_result.get("logs", []))
+        await stream_logs(["✅ OFSAA directory structure created successfully!"])
         task.progress = InstallationSteps.PROGRESS_MAP["ofsaa_directories"]
         
         # Oracle Client Check (Optimized - no installation, just check and configure)
@@ -403,21 +457,26 @@ async def run_installation_process(task_id: str, host: str, username: str, passw
         task.logs.append("🔍 Scanning for existing Oracle client installations...")
         task.logs.append("⚡ Optimized mode: Checking existing installations (no new files created)")
         task.logs.append("🔍 Searching common Oracle installation paths...")
+        await update_status("running", task.current_step, task.progress)
         
         oracle_client_result = await installation_service.check_existing_oracle_client_and_update_profile(host, username, password, oracle_sid)
         if not oracle_client_result["success"]:
             task.status = "failed"
             task.error = oracle_client_result["error"]
             task.logs.extend(oracle_client_result["logs"])
+            await stream_logs(oracle_client_result.get("logs", []))
+            await update_status("failed", task.current_step, task.progress)
             return
         
         task.logs.extend(oracle_client_result["logs"])
+        await stream_logs(oracle_client_result.get("logs", []))
         task.progress = InstallationSteps.PROGRESS_MAP["oracle_client_check"]
         
         # OFSAA Installer Setup and Environment Check
         task.current_step = InstallationSteps.STEP_NAMES[8]
         task.progress = InstallationSteps.PROGRESS_MAP["installer_setup"]
         task.logs.append("📦 Setting up OFSAA installer from git repository...")
+        await update_status("running", task.current_step, task.progress)
         
         # Send WebSocket message to inform user about installer download
         await websocket_manager.send_output(task_id, "")
@@ -433,29 +492,54 @@ async def run_installation_process(task_id: str, host: str, username: str, passw
             await websocket_manager.send_output(task_id, line)
             # Also add to task logs for persistence
             task.logs.append(line)
+
+        async def prompt_callback(prompt: str):
+            await websocket_manager.send_prompt(task_id, prompt)
+
+        async def input_poll_callback():
+            return await websocket_manager.wait_for_user_input(task_id, timeout=0.2)
+
+        async def status_callback(status: str):
+            await update_status(status, task.current_step, task.progress)
         
+        # Collect DB credentials upfront to avoid prompt timing issues
+        await websocket_manager.send_prompt(task_id, "Enter Oracle DB user name (for envCheck)")
+        db_user = await websocket_manager.wait_for_user_input(task_id, timeout=900)
+        await websocket_manager.send_prompt(task_id, "Enter Oracle DB password (for envCheck)")
+        db_pass = await websocket_manager.wait_for_user_input(task_id, timeout=900)
+        await websocket_manager.send_prompt(task_id, "Enter Oracle DB SID/SERVICE name (for envCheck)")
+        db_sid = await websocket_manager.wait_for_user_input(task_id, timeout=900)
+
         installer_result = await installation_service.download_and_extract_installer(
-            host, username, password, on_output=output_callback
+            host, username, password,
+            on_output=output_callback,
+            on_prompt=prompt_callback,
+            input_poll=input_poll_callback,
+            on_status=status_callback,
+            run_envcheck_inline=True,
+            timeout=7200,
+            db_user=db_user or None,
+            db_pass=db_pass or None,
+            db_sid=db_sid or None
         )
         if not installer_result["success"]:
-            task.logs.append("⚠️ Installer setup had issues, but continuing...")
-            await websocket_manager.send_output(task_id, "⚠️ Installer setup had issues, check logs")
+            task.logs.append("⚠️ Installer setup had issues, but attempting envCheck anyway...")
+            await websocket_manager.send_output(task_id, "⚠️ Installer setup had issues, attempting envCheck anyway...")
         else:
             task.logs.append("✅ OFSAA installer setup completed!")
             await websocket_manager.send_output(task_id, "")
             await websocket_manager.send_output(task_id, "✅ Installer download and extraction completed!")
             await websocket_manager.send_output(task_id, "=" * 70)
-            # Debug: Announce about to run envCheck.sh
-            await websocket_manager.send_output(task_id, "[DEBUG] About to call run_environment_check after installer extraction")
-            env_check_result = await installation_service.run_environment_check(
-                host, username, password, on_output=output_callback
-            )
-            if not env_check_result["success"]:
-                task.logs.append("❌ Environment check failed!")
-                await websocket_manager.send_output(task_id, "❌ Environment check failed!")
-            else:
-                task.logs.append("✅ Environment check completed!")
-                await websocket_manager.send_output(task_id, "✅ Environment check completed!")
+
+        # envCheck runs inline as part of installer step now
+        if not installer_result["success"]:
+            task.logs.append("❌ Environment check failed!")
+            await websocket_manager.send_output(task_id, "❌ Environment check failed!")
+            await update_status("failed", task.current_step, task.progress)
+        else:
+            task.logs.append("✅ Environment check completed!")
+            await websocket_manager.send_output(task_id, "✅ Environment check completed!")
+            await update_status("running", task.current_step, task.progress)
         
         task.progress = InstallationSteps.PROGRESS_MAP["environment_check"]
         
@@ -463,6 +547,7 @@ async def run_installation_process(task_id: str, host: str, username: str, passw
         task.current_step = InstallationSteps.STEP_NAMES[9]
         task.progress = InstallationSteps.PROGRESS_MAP["profile_update"]
         task.logs.append("🔨 Updating profile with custom variables...")
+        await update_status("running", task.current_step, task.progress)
         
         custom_variables_result = await installation_service.update_profile_with_custom_variables(
             host, username, password, fic_home, java_home, java_bin, oracle_sid
@@ -471,39 +556,34 @@ async def run_installation_process(task_id: str, host: str, username: str, passw
             task.status = "failed"
             task.error = custom_variables_result["error"]
             task.logs.extend(custom_variables_result["logs"])
+            await stream_logs(custom_variables_result.get("logs", []))
+            await update_status("failed", task.current_step, task.progress)
             return
         
         task.logs.extend(custom_variables_result["logs"])
+        await stream_logs(custom_variables_result.get("logs", []))
         task.progress = 97
-        
-        # Extract Installer Files
-        task.current_step = "Extracting installer files"
-        task.progress = 98
-        task.logs.append("🔨 Extracting installer files...")
-        
-        installer_result = await installation_service.extract_installer_files(host, username, password)
-        if not installer_result["success"]:
-            task.logs.append("⚠️ Installer extraction failed - may need manual file upload")
-            task.logs.extend(installer_result["logs"])
-        else:
-            task.logs.extend(installer_result["logs"])
         
         # Profile Verification
         task.current_step = InstallationSteps.STEP_NAMES[10]
         task.progress = InstallationSteps.PROGRESS_MAP["verification"]
         task.logs.append("🔍 Verifying profile setup...")
+        await update_status("running", task.current_step, task.progress)
         
         verify_result = await installation_service.verify_profile_setup(host, username, password)
         if verify_result["success"]:
             task.logs.extend(verify_result["logs"])
+            await stream_logs(verify_result.get("logs", []))
         else:
             task.logs.append("⚠️ Profile verification had issues, but continuing...")
             task.logs.extend(verify_result["logs"])
+            await stream_logs(verify_result.get("logs", []))
         
         # Complete
         task.progress = InstallationSteps.PROGRESS_MAP["completed"]
         task.current_step = "OFSAA environment setup completed successfully"
         task.status = "completed"
+        await update_status("completed", task.current_step, task.progress)
         task.logs.append("")
         task.logs.append("🎉 OFSAA Environment Setup Completed Successfully!")
         task.logs.append("=" * 50)

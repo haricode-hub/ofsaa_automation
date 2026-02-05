@@ -28,17 +28,22 @@ class OracleUserSetupService:
                 logs.append("✓ oinstall group already exists, using existing group")
             else:
                 logs.append("Creating oinstall group...")
-                group_cmd = "groupadd oinstall"
+                # -f makes groupadd succeed even if the group already exists
+                group_cmd = "groupadd -f oinstall"
                 group_result = await self.ssh_service.execute_command(host, username, password, group_cmd)
                 if group_result.get('success'):
-                    logs.append("✓ oinstall group created successfully")
+                    logs.append("✓ oinstall group created (or already exists)")
                 else:
-                    logs.append(f"Failed to create oinstall group: {group_result.get('stderr', '')}")
-                    return {
-                        "success": False,
-                        "error": "Failed to create oinstall group",
-                        "logs": logs
-                    }
+                    stderr_text = (group_result.get('stderr', '') or '').lower()
+                    if "already exists" in stderr_text:
+                        logs.append("✓ oinstall group already exists, continuing")
+                    else:
+                        logs.append(f"Failed to create oinstall group: {group_result.get('stderr', '')}")
+                        return {
+                            "success": False,
+                            "error": "Failed to create oinstall group",
+                            "logs": logs
+                        }
             
             # Check if oracle user exists
             logs.append("→ Checking for oracle user...")
