@@ -3,14 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 import logging
-from routers import installation
+from routers.installation import router as installation_router
+from core.logging import setup_logging
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-
+# Setup application logging
+setup_logging()
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
@@ -31,7 +28,7 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(installation.router, prefix="/api/installation", tags=["installation"])
+app.include_router(installation_router, prefix="/api/installation", tags=["installation"])
 
 @app.get("/")
 async def root():

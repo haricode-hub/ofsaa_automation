@@ -18,6 +18,11 @@ interface InstallationData {
   host: string
   username: string
   password: string
+  // Profile variables
+  fic_home: string
+  java_home: string
+  java_bin: string
+  oracle_sid: string
 }
 
 export function InstallationForm() {
@@ -25,7 +30,12 @@ export function InstallationForm() {
   const [formData, setFormData] = useState<InstallationData>({
     host: '',
     username: '',
-    password: ''
+    password: '',
+    // Profile variables with defaults
+    fic_home: '/u01/OFSAA/FICHOME',
+    java_home: '', // Will be auto-detected if empty
+    java_bin: '', // Will be auto-detected if empty
+    oracle_sid: 'ORCL'
   })
   const [isLoading, setIsLoading] = useState(false)
   const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle')
@@ -44,7 +54,11 @@ export function InstallationForm() {
         body: JSON.stringify({
           host: formData.host,
           username: formData.username,
-          password: formData.password
+          password: formData.password,
+          fic_home: formData.fic_home,
+          java_home: formData.java_home || null,
+          java_bin: formData.java_bin || null,
+          oracle_sid: formData.oracle_sid
         })
       })
       
@@ -171,11 +185,81 @@ export function InstallationForm() {
           />
         </motion.div>
 
+        {/* Profile Variables Section */}
+        <motion.div 
+          className="border-t border-border pt-6 space-y-4"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.4 }}
+        >
+          <div className="text-sm font-bold text-text-primary uppercase tracking-wider mb-4">
+            📋 Profile Configuration
+          </div>
+
+          {/* FIC_HOME Field */}
+          <div className="space-y-2">
+            <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+              FIC_HOME Path
+            </label>
+            <input
+              type="text"
+              value={formData.fic_home}
+              onChange={handleInputChange('fic_home')}
+              placeholder="/u01/OFSAA/FICHOME"
+              className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+              required
+            />
+          </div>
+
+          {/* JAVA_HOME Field */}
+          <div className="space-y-2">
+            <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+              JAVA_HOME (Optional - Auto-detected if empty)
+            </label>
+            <input
+              type="text"
+              value={formData.java_home}
+              onChange={handleInputChange('java_home')}
+              placeholder="Leave empty for auto-detection"
+              className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+            />
+          </div>
+
+          {/* JAVA_BIN Field */}
+          <div className="space-y-2">
+            <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+              JAVA_BIN (Optional - Auto-detected if empty)
+            </label>
+            <input
+              type="text"
+              value={formData.java_bin}
+              onChange={handleInputChange('java_bin')}
+              placeholder="Leave empty for auto-detection"
+              className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+            />
+          </div>
+
+          {/* ORACLE_SID Field */}
+          <div className="space-y-2">
+            <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+              Oracle SID
+            </label>
+            <input
+              type="text"
+              value={formData.oracle_sid}
+              onChange={handleInputChange('oracle_sid')}
+              placeholder="ORCL"
+              className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+              required
+            />
+          </div>
+        </motion.div>
+
         {/* Submit Button */}
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.4 }}
+          transition={{ duration: 0.4, delay: 0.5 }}
         >
           <button
             type="submit"

@@ -51,16 +51,26 @@ export default function LogsPage() {
       second: '2-digit'
     })
     
+    // Clean log text by removing step indicators and arrows
+    let cleanedText = logText
+      .replace(/^→\s*✓\s*Step\s*\d+:\s*/i, '') // Remove "→ ✓ Step X:" prefix
+      .replace(/^✓\s*Step\s*\d+:\s*/i, '')     // Remove "✓ Step X:" prefix
+      .replace(/^🔨\s*Step\s*\d+:\s*/i, '')     // Remove "🔨 Step X:" prefix
+      .replace(/^Step\s*\d+:\s*/i, '')          // Remove "Step X:" prefix
+      .replace(/^→\s*/g, '')                    // Remove standalone arrows "→"
+      .replace(/\s*→\s*/g, ' ')                 // Remove arrows in middle of text
+      .trim()
+    
     let level: LogEntry['level'] = 'INFO'
-    if (logText.includes('❌') || logText.includes('ERROR') || logText.includes('failed') || logText.includes('Failed')) {
+    if (cleanedText.includes('❌') || cleanedText.includes('ERROR') || cleanedText.includes('failed') || cleanedText.includes('Failed')) {
       level = 'ERROR'
-    } else if (logText.includes('✅') || logText.includes('SUCCESS') || logText.includes('successful') || logText.includes('Complete')) {
+    } else if (cleanedText.includes('✅') || cleanedText.includes('SUCCESS') || cleanedText.includes('successful') || cleanedText.includes('Complete')) {
       level = 'SUCCESS'
-    } else if (logText.includes('⚠️') || logText.includes('WARNING')) {
+    } else if (cleanedText.includes('⚠️') || cleanedText.includes('WARNING')) {
       level = 'WARNING'
     }
     
-    return { timestamp, level, message: logText }
+    return { timestamp, level, message: cleanedText }
   }
 
   useEffect(() => {
@@ -326,7 +336,7 @@ export default function LogsPage() {
             ) : (
               filteredLogs.map((log, index) => (
                 <motion.div 
-                  key={`${log.message}-${log.timestamp}`}
+                  key={`${index}-${log.timestamp}-${log.message.substring(0, 20)}`}
                   className="flex items-start gap-4 py-3 px-4 rounded-lg hover:bg-bg-secondary/30 transition-all duration-200 group border-l-2 border-transparent hover:border-text-muted/20"
                   initial={{ opacity: 0, x: -10 }}
                   animate={{ opacity: 1, x: 0 }}

@@ -70,12 +70,12 @@ class SSHService:
             
             for i, params in enumerate(connection_attempts, 1):
                 try:
-                    print(f"🔄 Connection attempt {i}/2...")
+                    print(f" Connection attempt {i}/2...")
                     client.connect(**params)
-                    print(f"✅ Connection attempt {i} successful!")
+                    print(f" Connection attempt {i} successful!")
                     break
                 except Exception as attempt_error:
-                    print(f"❌ Connection attempt {i} failed: {str(attempt_error)}")
+                    print(f" Connection attempt {i} failed: {str(attempt_error)}")
                     if i == len(connection_attempts):
                         raise attempt_error
                     client.close()
@@ -109,8 +109,8 @@ class SSHService:
                 
         except AuthenticationException as e:
             logger.error(f"SSH authentication failed for {username}@{host}: {str(e)}")
-            print(f"🚫 Authentication Error: {str(e)}")
-            print(f"💡 Possible causes:")
+            print(f" Authentication Error: {str(e)}")
+            print(f"Possible causes:")
             print(f"   - Wrong username (try 'oracle' instead of 'Oracle')")
             print(f"   - Wrong password") 
             print(f"   - Account locked/disabled")
@@ -122,8 +122,8 @@ class SSHService:
         except paramiko.SSHException as e:
             if "Connection lost" in str(e) or "Server connection dropped" in str(e):
                 logger.error(f"SSH connection dropped by server {host}: {str(e)}")
-                print(f"🔌 Connection dropped by server: {str(e)}")
-                print(f"💡 This usually means:")
+                print(f" Connection dropped by server: {str(e)}")
+                print(f" This usually means:")
                 print(f"   - Server security policy rejected the connection")
                 print(f"   - Account is disabled or restricted")
                 print(f"   - SSH server configuration issue")
@@ -133,7 +133,7 @@ class SSHService:
                 }
             else:
                 logger.error(f"SSH protocol error with {host}: {str(e)}")
-                print(f"🛠️  SSH Protocol Error: {str(e)}")
+                print(f" SSH Protocol Error: {str(e)}")
                 return {
                     "success": False,
                     "error": f"SSH error: {str(e)}"
@@ -180,12 +180,12 @@ class SSHService:
             except:
                 pass
     
-    async def execute_command(self, host: str, username: str, password: str, command: str) -> Dict[str, Any]:
-        """Execute a command on the remote host via SSH"""
+    async def execute_command(self, host: str, username: str, password: str, command: str, timeout: int = None) -> Dict[str, Any]:
+        """Execute a command on the remote host via SSH with optional custom timeout"""
         try:
             logger.info(f"Executing SSH command on {host}: {command}")
             result = await asyncio.get_event_loop().run_in_executor(
-                None, self._execute_command_sync, host, username, password, command
+                None, self._execute_command_sync, host, username, password, command, timeout
             )
             return result
         except Exception as e:
@@ -196,10 +196,13 @@ class SSHService:
                 "command": command
             }
     
-    def _execute_command_sync(self, host: str, username: str, password: str, command: str) -> Dict[str, Any]:
-        """Synchronous SSH command execution"""
+    def _execute_command_sync(self, host: str, username: str, password: str, command: str, timeout: int = None) -> Dict[str, Any]:
+        """Synchronous SSH command execution with optional custom timeout"""
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        
+        # Use custom timeout or default
+        cmd_timeout = timeout if timeout is not None else self.command_timeout
         
         try:
             # Connect
@@ -214,11 +217,11 @@ class SSHService:
             )
             
             # Execute command with timeout
-            stdin, stdout, stderr = client.exec_command(command, timeout=self.command_timeout)
+            stdin, stdout, stderr = client.exec_command(command, timeout=cmd_timeout)
             
             # Read output with timeout
-            stdout_data = self._read_with_timeout(stdout, self.command_timeout)
-            stderr_data = self._read_with_timeout(stderr, self.command_timeout)
+            stdout_data = self._read_with_timeout(stdout, cmd_timeout)
+            stderr_data = self._read_with_timeout(stderr, cmd_timeout)
             
             exit_status = stdout.channel.recv_exit_status()
             
@@ -244,7 +247,7 @@ class SSHService:
         except socket.timeout:
             return {
                 "success": False,
-                "error": f"Command timed out after {self.command_timeout} seconds",
+                "error": f"Command timed out after {cmd_timeout} seconds",
                 "command": command,
                 "returncode": -1,
                 "stdout": "",

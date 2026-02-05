@@ -51,24 +51,56 @@ start.bat
 - **Error Handling**: Comprehensive error reporting and recovery
 - **Cross-platform**: Windows/Linux SSH support
 
-## 📋 Installation Commands
+## 📋 OFSAA Installation Steps
 
-The system executes these SSH commands automatically:
+The system executes these SSH commands automatically in sequence:
 
 1. **Oracle User Setup**:
    ```bash
-   groupadd -f oinstall; id -u oracle &>/dev/null || useradd -g oinstall oracle; mkdir -p /u01/OFSAA/FICHOME /u01/OFSAA/FTPSHARE /u01/installer_kit; chown -R oracle:oinstall /u01
+   groupadd -f oinstall && (id -u oracle &>/dev/null || useradd -g oinstall oracle)
    ```
 
-2. **Package Installation**:
+2. **Mount Point Creation**:
    ```bash
-   yum install -y ksh unzip git
+   mkdir -p /u01/OFSAA/FICHOME /u01/OFSAA/FTPSHARE /u01/installer_kit && chown -R oracle:oinstall /u01 && chmod -R 755 /u01
    ```
 
-3. **Installer Extraction**:
+3. **Package Installation**:
    ```bash
-   sudo -u oracle bash -c 'cd /u01/installer_kit && unzip -o *.zip'
+   yum install -y ksh git unzip
    ```
+
+4. **Profile File Creation**:
+   ```bash
+   mkdir -p /home/oracle && touch /home/oracle/.profile && chown oracle:oinstall /home/oracle/.profile
+   ```
+
+5. **Java Installation**:
+   ```bash
+   yum install -y java-1.8.0-openjdk-devel
+   # Updates .profile with JAVA_HOME and JAVA_BIN
+   ```
+
+6. **Oracle Client Setup**:
+   ```bash
+   mkdir -p /opt/oracle/instantclient_19_8 /opt/oracle/network/admin
+   # Updates .profile with ORACLE_HOME, TNS_ADMIN, ORACLE_SID
+   ```
+
+7. **Profile Variables Update**:
+   - FIC_HOME (configurable via UI)
+   - JAVA_HOME (auto-detected or custom)
+   - JAVA_BIN (auto-detected or custom)  
+   - ORACLE_SID (configurable via UI)
+
+## 🎛️ Profile Configuration
+
+The installation form includes fields for customizing environment variables:
+
+- **FIC_HOME**: OFSAA installation directory (default: `/u01/OFSAA/FICHOME`)
+- **JAVA_HOME**: Java installation path (auto-detected if left empty)
+- **JAVA_BIN**: Java binaries path (auto-detected if left empty)
+- **ORACLE_SID**: Oracle System Identifier (default: `ORCL`)
 
 ## 🏗️ Project Structure
 
