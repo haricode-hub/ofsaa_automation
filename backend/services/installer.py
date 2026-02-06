@@ -157,12 +157,28 @@ class InstallerService:
         on_output_callback: Optional[Callable[[str], Any]] = None,
         on_prompt_callback: Optional[Callable[[str], Any]] = None,
     ) -> dict:
-        osc_path = "/u01/installer_kit/OFS_BD_PACK/schema_creator/bin/osc.sh"
-        check = await self.ssh_service.execute_command(host, username, password, f"test -x {osc_path}")
-        if not check["success"]:
-            return {"success": False, "logs": [], "error": "osc.sh not found or not executable"}
+        # Support both directory spellings used in environments
+        # (seen in docs): /u01/installer_kit and /u01/Installation_Kit
+        osc_candidates = [
+            "/u01/installer_kit/OFS_BD_PACK/schema_creator/bin/osc.sh",
+            "/u01/Installation_Kit/OFS_BD_PACK/schema_creator/bin/osc.sh",
+        ]
+        osc_path = None
+        for candidate in osc_candidates:
+            check = await self.ssh_service.execute_command(host, username, password, f"test -x {candidate}")
+            if check["success"]:
+                osc_path = candidate
+                break
+        if osc_path is None:
+            return {"success": False, "logs": [], "error": "osc.sh not found or not executable in expected locations"}
 
-        inner_cmd = f"source /home/oracle/.profile >/dev/null 2>&1; cd $(dirname {osc_path}) && ./osc.sh -S"
+        # User requirement: run from schema_creator/bin and use lowercase -s
+        # Some kits also accept -S; if -s fails, we retry with -S.
+        inner_cmd = (
+            "source /home/oracle/.profile >/dev/null 2>&1; "
+            f"cd $(dirname {osc_path}) && "
+            "(./osc.sh -s || ./osc.sh -S)"
+        )
         if username == "oracle":
             command = f"bash -lc {shell_escape(inner_cmd)}"
         else:

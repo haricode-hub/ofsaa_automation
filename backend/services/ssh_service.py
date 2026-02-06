@@ -114,10 +114,22 @@ class SSHService:
         loop: asyncio.AbstractEventLoop,
     ) -> Dict[str, Any]:
         patterns = list(prompt_patterns or [
-            "Enter", "enter", "Input", "input", "Type", "type",
-            "Please", "please",
-            "Password", "password", "Continue", "Proceed", "[Y/n]", "[y/N]",
-            "SID", "sid", "Username", "username",
+            # Keep these fairly specific to avoid false prompts like:
+            # "Validating the input XML file..." (contains 'input' but is not a prompt).
+            "Please enter",
+            "Enter ",
+            "Password",
+            "password",
+            "Username",
+            "username",
+            "SID",
+            "sid",
+            "Continue",
+            "Proceed",
+            "[Y/n]",
+            "[y/N]",
+            # Common OFSAA scripts (envCheck/osc) prompts
+            "Y/N", "(Y/N)", "Do you wish", "Do you want", "ONLINE mode",
         ])
 
         def schedule_output(text: str) -> None:
@@ -166,9 +178,13 @@ class SSHService:
                         schedule_output(data)
 
                         last_line = buffer.splitlines()[-1] if buffer.splitlines() else buffer
-                        # Be strict: only treat output as a prompt if it contains known prompt keywords.
-                        # This avoids false prompts like "[INFO] VerInfo ...:" getting routed to the UI input box.
-                        is_prompt = any(p in last_line for p in patterns)
+                        stripped = last_line.strip()
+                        # Be strict: consider it a prompt only when it both:
+                        # 1) contains a known prompt keyword, AND
+                        # 2) looks like an actual prompt line (ends with ':' or '?' or contains (Y/N)).
+                        has_keyword = any(p in last_line for p in patterns)
+                        looks_like_prompt = stripped.endswith((':', '?')) or "(Y/N)" in last_line or "Y/N" in last_line
+                        is_prompt = has_keyword and looks_like_prompt
 
                         if is_prompt and last_line.strip() and last_line != last_prompt:
                             last_prompt = last_line
