@@ -250,7 +250,8 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
         task.status = "completed"
         task.progress = 100
         await update_status(task_id, "completed", steps[9], 100)
-        await append_output(task_id, "[OK] Installation completed successfully")
+        # UI requirement: keep final message focused on envCheck completion.
+        await append_output(task_id, "[OK] envCheck completed")
 
     except asyncio.TimeoutError as exc:
         await handle_failure("Installation timed out", str(exc))
