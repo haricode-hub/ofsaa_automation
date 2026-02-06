@@ -245,35 +245,12 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await handle_failure("osc.sh execution failed", osc_result.get("error"))
             return
 
-        # Step 10: Profile overrides from UI/config
-        await update_status(task_id, "running", steps[9], InstallationSteps.progress_for_index(9))
-        result = await installation_service.update_profile_with_custom_variables(
-            request.host,
-            request.username,
-            request.password,
-            request.fic_home,
-            request.java_home,
-            request.java_bin,
-            request.oracle_sid,
-        )
-        await append_output(task_id, "\n".join(result.get("logs", [])))
-        if not result.get("success"):
-            await handle_failure("Profile overrides failed", result.get("error"))
-            return
-
-        # Step 11: Verify profile
-        await update_status(task_id, "running", steps[10], InstallationSteps.progress_for_index(10))
-        result = await installation_service.verify_profile_setup(request.host, request.username, request.password)
-        await append_output(task_id, "\n".join(result.get("logs", [])))
-        if not result.get("success"):
-            await handle_failure("Profile verification failed", result.get("error"))
-            return
-
         task.status = "completed"
         task.progress = 100
-        await update_status(task_id, "completed", steps[10], 100)
-        # UI requirement: keep final message focused on envCheck completion.
-        await append_output(task_id, "[OK] envCheck completed")
+        await update_status(task_id, "completed", steps[8], 100)
+        await append_output(task_id, "[OK] osc.sh completed")
+        await append_output(task_id, "[OK] Schema creation completed")
+        return
 
     except asyncio.TimeoutError as exc:
         await handle_failure("Installation timed out", str(exc))

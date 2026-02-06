@@ -30,11 +30,9 @@ class InstallationSteps:
         "Checking Oracle client and updating profile",
         "Setting up OFSAA installer and running environment check",
         "Applying config XMLs/properties and running osc.sh",
-        "Updating profile with custom variables",
-        "Verifying profile setup",
     ]
 
-    PROGRESS_VALUES = [9, 18, 27, 36, 45, 54, 63, 72, 85, 95, 100]
+    PROGRESS_VALUES = [12, 24, 36, 48, 60, 70, 80, 90, 100]
 
     @classmethod
     def progress_for_index(cls, index: int) -> int:

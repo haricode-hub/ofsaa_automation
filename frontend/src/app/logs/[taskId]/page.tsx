@@ -21,9 +21,7 @@ const STEPS = [
   'Creating OFSAA directory structure',
   'Checking Oracle client and updating profile',
   'Setting up OFSAA installer and running environment check',
-  'Applying config XMLs/properties and running osc.sh',
-  'Updating profile with custom variables',
-  'Verifying profile setup'
+  'Applying config XMLs/properties and running osc.sh'
 ]
 
 export default function LogsPage() {
