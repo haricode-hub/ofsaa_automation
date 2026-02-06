@@ -12,6 +12,23 @@ class InstallationRequest(BaseModel):
     java_bin: Optional[str] = Field(default=None, description="Custom JAVA_BIN path (optional)")
     oracle_sid: Optional[str] = Field(default="ORCL", description="Oracle SID")
 
+    # OFS_BD_SCHEMA_IN.xml user-driven inputs (optional)
+    schema_jdbc_host: Optional[str] = Field(default=None, description="DB host for JDBC_URL")
+    schema_jdbc_port: Optional[int] = Field(default=1521, description="DB port for JDBC_URL")
+    schema_jdbc_service: Optional[str] = Field(default=None, description="DB service/SID for JDBC_URL")
+    schema_host: Optional[str] = Field(default=None, description="Value for <HOST> in OFS_BD_SCHEMA_IN.xml")
+    schema_setup_env: Optional[str] = Field(default=None, description="SETUPINFO NAME (DEV/UAT/PROD etc.)")
+    schema_apply_same_for_all: Optional[str] = Field(default="Y", description="PASSWORD APPLYSAMEFORALL (Y/N)")
+    schema_default_password: Optional[str] = Field(default=None, description="PASSWORD DEFAULT value")
+    schema_datafile_dir: Optional[str] = Field(
+        default=None,
+        description="Base directory for TABLESPACE DATAFILE paths; filename will be preserved",
+    )
+    schema_tablespace_autoextend: Optional[str] = Field(default=None, description="TABLESPACE AUTOEXTEND (ON/OFF)")
+    schema_external_directory_value: Optional[str] = Field(default=None, description="DIRECTORY VALUE path")
+    schema_config_schema_name: Optional[str] = Field(default=None, description="SCHEMA TYPE=CONFIG NAME value")
+    schema_atomic_schema_name: Optional[str] = Field(default=None, description="SCHEMA TYPE=ATOMIC NAME value (applies to all)")
+
 class InstallationResponse(BaseModel):
     """Schema for installation response"""
     task_id: str

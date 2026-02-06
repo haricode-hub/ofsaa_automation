@@ -14,7 +14,7 @@ export default function HomePage() {
         
         {/* Installation Form Panel */}
         <motion.div 
-          className="glass-panel rounded-2xl p-6 lg:p-12 w-full max-w-md lg:max-w-lg shadow-panel relative overflow-hidden mb-8"
+          className="glass-panel rounded-2xl p-6 lg:p-10 w-full max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl shadow-panel relative overflow-hidden mb-8 max-h-[calc(100vh-2rem)]"
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6, ease: "easeOut" }}
@@ -30,7 +30,7 @@ export default function HomePage() {
           <div className="relative z-10">
             {/* Header */}
             <motion.div 
-              className="text-center mb-8 lg:mb-10"
+              className="text-center mb-6 lg:mb-8"
               initial={{ opacity: 0, y: 15 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.5, delay: 0.1 }}
@@ -46,11 +46,13 @@ export default function HomePage() {
             </motion.div>
 
             {/* Installation Form */}
-            <InstallationForm />
+            <div className="max-h-none lg:max-h-[62vh] overflow-visible lg:overflow-y-auto lg:pr-2 scrollbar-thin scrollbar-track-gray-900 scrollbar-thumb-gray-700">
+              <InstallationForm />
+            </div>
 
             {/* Footer */}
             <motion.div 
-              className="flex items-center justify-center gap-2 mt-8 text-xs text-text-muted"
+              className="flex items-center justify-center gap-2 mt-6 text-xs text-text-muted"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               transition={{ duration: 0.4, delay: 0.8 }}

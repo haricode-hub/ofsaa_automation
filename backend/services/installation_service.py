@@ -61,8 +61,42 @@ class InstallationService:
     async def set_installer_permissions(self, host: str, username: str, password: str) -> dict:
         return await self.installer.set_permissions(host, username, password)
 
-    async def apply_installer_config_files(self, host: str, username: str, password: str) -> dict:
-        return await self.installer.apply_config_files_from_repo(host, username, password)
+    async def apply_installer_config_files(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        schema_jdbc_host: Optional[str] = None,
+        schema_jdbc_port: Optional[int] = None,
+        schema_jdbc_service: Optional[str] = None,
+        schema_host: Optional[str] = None,
+        schema_setup_env: Optional[str] = None,
+        schema_apply_same_for_all: Optional[str] = None,
+        schema_default_password: Optional[str] = None,
+        schema_datafile_dir: Optional[str] = None,
+        schema_tablespace_autoextend: Optional[str] = None,
+        schema_external_directory_value: Optional[str] = None,
+        schema_config_schema_name: Optional[str] = None,
+        schema_atomic_schema_name: Optional[str] = None,
+    ) -> dict:
+        return await self.installer.apply_config_files_from_repo(
+            host,
+            username,
+            password,
+            schema_jdbc_host=schema_jdbc_host,
+            schema_jdbc_port=schema_jdbc_port,
+            schema_jdbc_service=schema_jdbc_service,
+            schema_host=schema_host,
+            schema_setup_env=schema_setup_env,
+            schema_apply_same_for_all=schema_apply_same_for_all,
+            schema_default_password=schema_default_password,
+            schema_datafile_dir=schema_datafile_dir,
+            schema_tablespace_autoextend=schema_tablespace_autoextend,
+            schema_external_directory_value=schema_external_directory_value,
+            schema_config_schema_name=schema_config_schema_name,
+            schema_atomic_schema_name=schema_atomic_schema_name,
+        )
 
     async def run_osc_schema_creator(self, host: str, username: str, password: str, **kwargs) -> dict:
         return await self.installer.run_osc_schema_creator(host, username, password, **kwargs)

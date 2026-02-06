@@ -226,7 +226,21 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
         # Step 9: Apply XML/properties from repo and run schema creator (osc.sh -S)
         await update_status(task_id, "running", steps[8], InstallationSteps.progress_for_index(8))
         cfg_result = await installation_service.apply_installer_config_files(
-            request.host, request.username, request.password
+            request.host,
+            request.username,
+            request.password,
+            schema_jdbc_host=request.schema_jdbc_host,
+            schema_jdbc_port=request.schema_jdbc_port,
+            schema_jdbc_service=request.schema_jdbc_service,
+            schema_host=request.schema_host,
+            schema_setup_env=request.schema_setup_env,
+            schema_apply_same_for_all=request.schema_apply_same_for_all,
+            schema_default_password=request.schema_default_password,
+            schema_datafile_dir=request.schema_datafile_dir,
+            schema_tablespace_autoextend=request.schema_tablespace_autoextend,
+            schema_external_directory_value=request.schema_external_directory_value,
+            schema_config_schema_name=request.schema_config_schema_name,
+            schema_atomic_schema_name=request.schema_atomic_schema_name,
         )
         await append_output(task_id, "\n".join(cfg_result.get("logs", [])))
         if not cfg_result.get("success"):

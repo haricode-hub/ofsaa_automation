@@ -1,4 +1,7 @@
 from typing import Any, Callable, Optional
+import os
+import re
+import time
 
 from core.config import Config
 from .ssh_service import SSHService
@@ -74,7 +77,25 @@ class InstallerService:
             return {"success": False, "logs": [], "error": result.get("stderr") or "Failed to set permissions"}
         return {"success": True, "logs": ["[OK] Permissions set on OFS_BD_PACK"]}
 
-    async def apply_config_files_from_repo(self, host: str, username: str, password: str) -> dict:
+    async def apply_config_files_from_repo(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        schema_jdbc_host: Optional[str] = None,
+        schema_jdbc_port: Optional[int] = None,
+        schema_jdbc_service: Optional[str] = None,
+        schema_host: Optional[str] = None,
+        schema_setup_env: Optional[str] = None,
+        schema_apply_same_for_all: Optional[str] = None,
+        schema_default_password: Optional[str] = None,
+        schema_datafile_dir: Optional[str] = None,
+        schema_tablespace_autoextend: Optional[str] = None,
+        schema_external_directory_value: Optional[str] = None,
+        schema_config_schema_name: Optional[str] = None,
+        schema_atomic_schema_name: Optional[str] = None,
+    ) -> dict:
         """
         Fetch required XML/properties from the git repo and place them into the extracted kit locations.
         """
@@ -118,6 +139,45 @@ class InstallerService:
         if not check_kit["success"]:
             return {"success": False, "logs": logs, "error": f"Installer kit not found: {kit_dir}"}
 
+        # If user provided schema inputs, patch the repo copy of OFS_BD_SCHEMA_IN.xml before copying into the kit.
+        user_wants_schema_patch = any(
+            v is not None and str(v) != ""
+            for v in [
+                schema_jdbc_host,
+                schema_jdbc_service,
+                schema_host,
+                schema_setup_env,
+                schema_default_password,
+                schema_datafile_dir,
+                schema_tablespace_autoextend,
+                schema_external_directory_value,
+                schema_config_schema_name,
+                schema_atomic_schema_name,
+            ]
+        )
+        if user_wants_schema_patch:
+            patch_result = await self._patch_ofs_bd_schema_in_repo(
+                host,
+                username,
+                password,
+                repo_dir=repo_dir,
+                schema_jdbc_host=schema_jdbc_host,
+                schema_jdbc_port=schema_jdbc_port,
+                schema_jdbc_service=schema_jdbc_service,
+                schema_host=schema_host,
+                schema_setup_env=schema_setup_env,
+                schema_apply_same_for_all=schema_apply_same_for_all,
+                schema_default_password=schema_default_password,
+                schema_datafile_dir=schema_datafile_dir,
+                schema_tablespace_autoextend=schema_tablespace_autoextend,
+                schema_external_directory_value=schema_external_directory_value,
+                schema_config_schema_name=schema_config_schema_name,
+                schema_atomic_schema_name=schema_atomic_schema_name,
+            )
+            logs.extend(patch_result.get("logs", []))
+            if not patch_result.get("success"):
+                return {"success": False, "logs": logs, "error": patch_result.get("error") or "Failed to patch schema XML"}
+
         for filename, dest_path in mappings:
             find_cmd = (
                 f"src=$(find {repo_dir} -type f -name '{filename}' "
@@ -147,6 +207,181 @@ class InstallerService:
                 }
             logs.append(f"[OK] Updated kit file: {dest_path}")
 
+        return {"success": True, "logs": logs}
+
+    async def _read_remote_file(self, host: str, username: str, password: str, path: str) -> dict:
+        result = await self.ssh_service.execute_command(host, username, password, f"cat {path}")
+        if not result.get("success"):
+            return {"success": False, "error": result.get("stderr") or f"Failed to read {path}"}
+        return {"success": True, "content": result.get("stdout", "")}
+
+    async def _write_remote_file(self, host: str, username: str, password: str, path: str, content: str) -> dict:
+        cmd = f"cat <<'EOF' > {path}\n{content}\nEOF"
+        result = await self.ssh_service.execute_command(host, username, password, cmd, get_pty=True)
+        if not result.get("success"):
+            return {"success": False, "error": result.get("stderr") or f"Failed to write {path}"}
+        return {"success": True}
+
+    def _patch_ofs_bd_schema_in_content(
+        self,
+        content: str,
+        *,
+        schema_jdbc_host: Optional[str],
+        schema_jdbc_port: Optional[int],
+        schema_jdbc_service: Optional[str],
+        schema_host: Optional[str],
+        schema_setup_env: Optional[str],
+        schema_apply_same_for_all: Optional[str],
+        schema_default_password: Optional[str],
+        schema_datafile_dir: Optional[str],
+        schema_tablespace_autoextend: Optional[str],
+        schema_external_directory_value: Optional[str],
+        schema_config_schema_name: Optional[str],
+        schema_atomic_schema_name: Optional[str],
+    ) -> str:
+        updated = content
+
+        if schema_jdbc_host and schema_jdbc_port and schema_jdbc_service:
+            jdbc_url = f"jdbc:oracle:thin:@//{schema_jdbc_host}:{schema_jdbc_port}/{schema_jdbc_service}"
+            updated = re.sub(
+                r"<JDBC_URL>.*?</JDBC_URL>",
+                f"<JDBC_URL>{jdbc_url}</JDBC_URL>",
+                updated,
+                flags=re.DOTALL,
+            )
+
+        if schema_host:
+            updated = re.sub(r"<HOST>.*?</HOST>", f"<HOST>{schema_host}</HOST>", updated, flags=re.DOTALL)
+
+        if schema_setup_env:
+            updated = re.sub(
+                r'(<SETUPINFO\b[^>]*\bNAME=")[^"]*(")',
+                rf"\g<1>{schema_setup_env}\g<2>",
+                updated,
+            )
+
+        if schema_apply_same_for_all:
+            updated = re.sub(
+                r'(<PASSWORD\b[^>]*\bAPPLYSAMEFORALL=")[^"]*(")',
+                rf"\g<1>{schema_apply_same_for_all}\g<2>",
+                updated,
+            )
+
+        if schema_default_password is not None:
+            updated = re.sub(
+                r'(<PASSWORD\b[^>]*\bDEFAULT=")[^"]*(")',
+                rf"\g<1>{schema_default_password}\g<2>",
+                updated,
+            )
+
+        if schema_tablespace_autoextend:
+            updated = re.sub(
+                r'(\bAUTOEXTEND=")[^"]*(")',
+                rf"\g<1>{schema_tablespace_autoextend}\g<2>",
+                updated,
+            )
+
+        if schema_datafile_dir:
+            base_dir = schema_datafile_dir.rstrip("/")
+
+            def _repl_datafile(m: re.Match) -> str:
+                prefix, path, suffix = m.group(1), m.group(2), m.group(3)
+                filename = os.path.basename(path)
+                return f'{prefix}{base_dir}/{filename}{suffix}'
+
+            updated = re.sub(r'(\bDATAFILE=")([^"]+)(")', _repl_datafile, updated)
+
+        if schema_external_directory_value:
+            updated = re.sub(
+                r'(<DIRECTORY\b[^>]*\bID="OFS_BD_PACK_EXTERNAL_DIRECTORY_1"[^>]*\bVALUE=")[^"]*(")',
+                rf"\g<1>{schema_external_directory_value}\g<2>",
+                updated,
+            )
+
+        if schema_config_schema_name:
+            updated = re.sub(
+                r'(<SCHEMA\b[^>]*\bTYPE="CONFIG"[^>]*\bNAME=")[^"]*(")',
+                rf"\g<1>{schema_config_schema_name}\g<2>",
+                updated,
+            )
+
+        if schema_atomic_schema_name:
+            updated = re.sub(
+                r'(<SCHEMA\b[^>]*\bTYPE="ATOMIC"[^>]*\bNAME=")[^"]*(")',
+                rf"\g<1>{schema_atomic_schema_name}\g<2>",
+                updated,
+            )
+
+        return updated
+
+    async def _patch_ofs_bd_schema_in_repo(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        repo_dir: str,
+        schema_jdbc_host: Optional[str],
+        schema_jdbc_port: Optional[int],
+        schema_jdbc_service: Optional[str],
+        schema_host: Optional[str],
+        schema_setup_env: Optional[str],
+        schema_apply_same_for_all: Optional[str],
+        schema_default_password: Optional[str],
+        schema_datafile_dir: Optional[str],
+        schema_tablespace_autoextend: Optional[str],
+        schema_external_directory_value: Optional[str],
+        schema_config_schema_name: Optional[str],
+        schema_atomic_schema_name: Optional[str],
+    ) -> dict:
+        logs: list[str] = []
+
+        # locate file within repo
+        find_cmd = (
+            f"src=$(find {repo_dir} -type f -name 'OFS_BD_SCHEMA_IN.xml' ! -name '*_BEFORE*' -print | head -n 1); "
+            "if [ -z \"$src\" ]; then echo 'NOT_FOUND'; exit 2; fi; "
+            "echo $src"
+        )
+        src_result = await self.ssh_service.execute_command(host, username, password, find_cmd)
+        if not src_result.get("success") or "NOT_FOUND" in (src_result.get("stdout") or ""):
+            return {"success": False, "logs": logs, "error": "OFS_BD_SCHEMA_IN.xml not found in repo"}
+
+        src_path = (src_result.get("stdout") or "").splitlines()[0].strip()
+        logs.append(f"[INFO] Patching repo XML: {src_path}")
+
+        read = await self._read_remote_file(host, username, password, src_path)
+        if not read.get("success"):
+            return {"success": False, "logs": logs, "error": read.get("error")}
+
+        original = read.get("content", "")
+        patched = self._patch_ofs_bd_schema_in_content(
+            original,
+            schema_jdbc_host=schema_jdbc_host,
+            schema_jdbc_port=schema_jdbc_port,
+            schema_jdbc_service=schema_jdbc_service,
+            schema_host=schema_host,
+            schema_setup_env=schema_setup_env,
+            schema_apply_same_for_all=schema_apply_same_for_all,
+            schema_default_password=schema_default_password,
+            schema_datafile_dir=schema_datafile_dir,
+            schema_tablespace_autoextend=schema_tablespace_autoextend,
+            schema_external_directory_value=schema_external_directory_value,
+            schema_config_schema_name=schema_config_schema_name,
+            schema_atomic_schema_name=schema_atomic_schema_name,
+        )
+
+        if patched == original:
+            logs.append("[INFO] No changes needed for OFS_BD_SCHEMA_IN.xml")
+            return {"success": True, "logs": logs}
+
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        backup_cmd = f"cp -f {src_path} {src_path}.backup.{ts}"
+        await self.ssh_service.execute_command(host, username, password, backup_cmd, get_pty=True)
+        write = await self._write_remote_file(host, username, password, src_path, patched)
+        if not write.get("success"):
+            return {"success": False, "logs": logs, "error": write.get("error")}
+
+        logs.append("[OK] Updated OFS_BD_SCHEMA_IN.xml in repo (local clone)")
         return {"success": True, "logs": logs}
 
     async def run_osc_schema_creator(
