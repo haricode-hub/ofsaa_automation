@@ -1,82 +1,52 @@
-import logging
-from typing import Dict, Any
-from services.ssh_service import SSHService
-from services.validation import ValidationService
+from typing import List
 
-logger = logging.getLogger(__name__)
+from .ssh_service import SSHService
+from .validation import ValidationService
 
-class PackageInstallationService:
-    """Service for package installation - Step 3"""
-    
-    def __init__(self, ssh_service: SSHService):
+
+class PackageService:
+    """Install required OS packages."""
+
+    def __init__(self, ssh_service: SSHService, validation: ValidationService) -> None:
         self.ssh_service = ssh_service
-        self.validation = ValidationService(ssh_service)
-    
-    async def install_ksh_and_git(self, host: str, username: str, password: str) -> Dict[str, Any]:
-        """
-        Install KSH (KORN SHELL) and git with smart validation
-        """
-        try:
-            logs = []
-            packages_to_install = []
-            
-            # Check KSH
-            logs.append("→ Checking for KSH (Korn Shell)...")
-            ksh_check = await self.validation.check_package_installed(host, username, password, "ksh")
-            
-            if ksh_check.get('installed'):
-                logs.append(ksh_check.get('message', '✓ KSH already installed'))
+        self.validation = validation
+
+    async def ensure_packages(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        packages: List[str],
+    ) -> dict:
+        logs: list[str] = []
+        missing: list[str] = []
+
+        for pkg in packages:
+            status = await self.validation.check_package_installed(host, username, password, pkg)
+            if status.get("installed"):
+                logs.append(f"[OK] {pkg} already installed")
             else:
-                logs.append("KSH not found, will install")
-                packages_to_install.append("ksh")
-            
-            # Check git
-            logs.append("→ Checking for git...")
-            git_check = await self.validation.check_package_installed(host, username, password, "git")
-            
-            if git_check.get('installed'):
-                git_version = await self.validation.get_package_version(host, username, password, "git")
-                logs.append(git_version.get('message', '✓ Git already installed'))
-            else:
-                logs.append("Git not found, will install")
-                packages_to_install.append("git")
-            
-            # Check unzip
-            logs.append("→ Checking for unzip...")
-            unzip_check = await self.validation.check_package_installed(host, username, password, "unzip")
-            
-            if unzip_check.get('installed'):
-                logs.append("✓ Unzip already installed")
-            else:
-                logs.append("Unzip not found, will install")
-                packages_to_install.append("unzip")
-            
-            # Install missing packages
-            if packages_to_install:
-                logs.append(f"Installing packages: {', '.join(packages_to_install)}")
-                command = f"yum install -y {' '.join(packages_to_install)}"
-                result = await self.ssh_service.execute_command(host, username, password, command, timeout=300)
-                
-                if result.get('success') or result.get('returncode') == 0:
-                    logs.append(f"✓ Packages installed successfully: {', '.join(packages_to_install)}")
-                else:
-                    logs.append(f"Warning: Package installation may have had issues")
-                    logs.append(f"  {result.get('stderr', '')[:200]}")
-            else:
-                logs.append("✓ All required packages already installed")
-            
-            logs.append("✓ Package Installation Complete")
-            
-            return {
-                "success": True,
-                "message": "Package installation completed",
-                "logs": logs
-            }
-                
-        except Exception as e:
-            logger.error(f"Package installation failed: {str(e)}")
+                missing.append(pkg)
+
+        if not missing:
+            return {"success": True, "logs": logs}
+
+        pkg_list = " ".join(missing)
+        install_cmd = (
+            "if command -v dnf >/dev/null 2>&1; then "
+            f"dnf install -y {pkg_list}; "
+            "elif command -v yum >/dev/null 2>&1; then "
+            f"yum install -y {pkg_list}; "
+            "else echo 'No supported package manager found' && exit 1; fi"
+        )
+        result = await self.ssh_service.execute_command(
+            host, username, password, install_cmd, timeout=1800, get_pty=True
+        )
+        if not result["success"]:
             return {
                 "success": False,
-                "error": f"Package installation failed: {str(e)}",
-                "logs": [f"ERROR: Exception in package installation: {str(e)}"]
+                "logs": logs,
+                "error": result.get("stderr") or "Package installation failed",
             }
+        logs.append(f"[OK] Installed packages: {pkg_list}")
+        return {"success": True, "logs": logs}

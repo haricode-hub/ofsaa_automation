@@ -1,269 +1,176 @@
-import logging
-from typing import Dict, Any
+from typing import Optional
+
+from core.config import Config
 from services.ssh_service import SSHService
 from services.validation import ValidationService
+from services.utils import sed_escape
 
-logger = logging.getLogger(__name__)
 
 class ProfileService:
-    """Service for profile creation - Step 4"""
-    
-    def __init__(self, ssh_service: SSHService):
+    """Manage /home/oracle/.profile creation and updates."""
+
+    def __init__(self, ssh_service: SSHService, validation: ValidationService) -> None:
         self.ssh_service = ssh_service
-        self.validation = ValidationService(ssh_service)
-    
-    async def create_profile_file(self, host: str, username: str, password: str) -> Dict[str, Any]:
-        """
-        Create the .profile file under: /home/oracle/.profile with complete OFSAA template
-        Enhanced with smart validation and backup
-        """
-        try:
-            logs = []
-            
-            # Check if profile already exists
-            logs.append("→ Checking for existing .profile...")
-            profile_check = await self.validation.check_file_exists(host, username, password, "/home/oracle/.profile")
-            
-            if profile_check.get('exists'):
-                # Validate profile content; rebuild if corrupted
-                validate_cmd = "grep -n 'EOF' /home/oracle/.profile || true"
-                validate_result = await self.ssh_service.execute_command(host, username, password, validate_cmd)
-                if validate_result.get('stdout', '').strip():
-                    logs.append("⚠ .profile contains stray EOF marker, rebuilding profile")
-                else:
-                    logs.append("✓ .profile already exists, skipping creation")
-                    return {
-                        "success": True,
-                        "message": "Profile already exists, skipped creation",
-                        "logs": logs
-                    }
-            else:
-                logs.append("Creating new .profile...")
-            
-            # Complete OFSAA profile template
-            profile_content = '''alias c=clear
-alias p="ps -ef | grep $LOGNAME"
-alias pp="ps -fu $LOGNAME"
-PS1='$PWD>'
-export PS1
+        self.validation = validation
 
-stty erase ^?
-#set -o vi
+    def _profile_template(self) -> str:
+        return (
+            "alias c=clear\n"
+            "alias p=\"ps -ef | grep $LOGNAME\"\n"
+            "alias pp=\"ps -fu $LOGNAME\"\n"
+            "PS1='$PWD>'\n"
+            "export PS1\n"
+            "\n"
+            "stty erase ^?\n"
+            "\n"
+            "echo $PATH\n"
+            f"export FIC_HOME={Config.DEFAULT_FIC_HOME}\n"
+            "\n"
+            f"export JAVA_HOME={Config.DEFAULT_JAVA_HOME}\n"
+            f"export JAVA_BIN={Config.DEFAULT_JAVA_BIN}\n"
+            "export ANT_HOME=$FIC_HOME/ficweb/apache-ant\n"
+            "\n"
+            f"export ORACLE_HOME={Config.DEFAULT_ORACLE_HOME}\n"
+            f"export TNS_ADMIN={Config.DEFAULT_TNS_ADMIN}\n"
+            "\n"
+            "export LANG=en_US.utf8\n"
+            "export NLS_LANG=AMERICAN_AMERICA.AL32UTF8\n"
+            "\n"
+            f"export ORACLE_SID={Config.DEFAULT_ORACLE_SID}\n"
+            "\n"
+            "export PATH=.:$JAVA_HOME/bin:$ORACLE_HOME/bin:/sbin:/bin:/usr/bin:/usr/kerberos/bin:/usr/local/bin:/usr/sbin:$PATH\n"
+            "\n"
+            "export LD_LIBRARY_PATH=$ORACLE_HOME/lib:/lib:/usr/lib\n"
+            "export CLASSPATH=$ORACLE_HOME/jlib:$ORACLE_HOME/rdbms/jlib\n"
+            "export SHELL=/bin/ksh\n"
+            "\n"
+            "echo \"********************************************************\"\n"
+            "echo \"   THIS IS FCCM SKND SETUP,PLEASE DO NOT MAKE ANY CHANGE   \"\n"
+            "echo \"********************************************************\"\n"
+            "\n"
+            "echo PROFILE EXECUTED\n"
+            "echo $PATH\n"
+            "echo \"SHELL Check :: \" $SHELL\n"
+            "\n"
+            "set -o emacs\n"
+            "umask 0027\n"
+            "\n"
+            "export OS_VERSION=\"8\"\n"
+            "export DB_CLIENT_VERSION=\"19.0\"\n"
+            "\n"
+            "ulimit -n 16000\n"
+            "ulimit -u 16000\n"
+            "ulimit -s 16000\n"
+        )
 
-echo $PATH
-export FIC_HOME=/u01/OFSAA/FICHOME 
+    async def create_profile_file(self, host: str, username: str, password: str) -> dict:
+        logs: list[str] = []
+        profile_path = "/home/oracle/.profile"
 
-export JAVA_HOME=/u01/jdk-11.0.16 
-export JAVA_BIN=/u01/jdk-11.0.16/bin 
-export ANT_HOME=$FIC_HOME/ficweb/apache-ant
+        exists = await self.validation.check_file_exists(host, username, password, profile_path)
+        if exists.get("exists"):
+            backup = await self.validation.backup_file(host, username, password, profile_path)
+            logs.append(f"[INFO] Existing profile backed up: {backup.get('message')}")
 
-export ORACLE_HOME=/u01/app/oracle/product/19.0.0/client_1 
-export TNS_ADMIN=/u01/app/oracle/product/19.0.0/client_1/network/admin 
-export LANG=en_US.utf8
-export NLS_LANG=AMERICAN_AMERICA.AL32UTF8
-
-export ORACLE_SID=OFSAAPDB
-export PATH=.:$JAVA_HOME/bin:$ORACLE_HOME/bin:/sbin:/bin:/usr/bin:/usr/kerberos/bin:/usr/local/bin:/usr/sbin:$PATH
-
-export LD_LIBRARY_PATH=$ORACLE_HOME/lib:/lib:/usr/lib
-export CLASSPATH=$ORACLE_HOME/jlib:$ORACLE_HOME/rdbms/jlib
-export SHELL=/bin/ksh
-echo "********************************************************"
-echo "   THIS IS FCCM SKND SETUP,PLEASE DO NOT MAKE ANY CHANGE   "
-echo "           UNAUTHORISED ACCESS PROHIBITED             "
-echo "                                                      "
-echo "********************************************************"
-echo PROFILE EXECUTED
-echo $PATH
-echo "SHELL Check :: " $SHELL
-set -o emacs
-umask 0027 
-export OS_VERSION="8"
-export DB_CLIENT_VERSION="19.0"
-ulimit -n 16000
-ulimit -u 16000
-ulimit -s 16000
-'''
-            
-            command = f"mkdir -p /home/oracle && cat > /home/oracle/.profile << 'EOF'\n{profile_content}\nEOF && chown oracle:oinstall /home/oracle/.profile && chmod 644 /home/oracle/.profile"
-            
-            result = await self.ssh_service.execute_command(host, username, password, command)
-            
-            if result.get('success') or result.get('returncode') == 0:
-                logs.append("✓ OFSAA Profile Created/Updated")
-                logs.append("  Complete .profile template at /home/oracle/.profile")
-                logs.append("  Environment variables configured:")
-                logs.append("    • FIC_HOME: /u01/OFSAA/FICHOME")
-                logs.append("    • JAVA_HOME: /u01/jdk-11.0.16")
-                logs.append("    • ORACLE_HOME: /u01/app/oracle/product/19.0.0/client_1")
-                logs.append("    • ORACLE_SID: OFSAAPDB")
-                logs.append("  File ownership set to oracle:oinstall")
-                logs.append("  Shell aliases and PATH configured")
-                
-                return {
-                    "success": True,
-                    "message": "Oracle profile created successfully with OFSAA template",
-                    "logs": logs
-                }
-            else:
-                error_msg = f"Profile creation failed: {result.get('stderr', 'Unknown error')}"
-                logs.append(f"Profile creation failed: {error_msg}")
-                
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "logs": logs
-                }
-                
-        except Exception as e:
-            logger.error(f"Profile creation failed: {str(e)}")
+        template = self._profile_template()
+        cmd = (
+            f"cat <<'EOF' > {profile_path}\n"
+            f"{template}\n"
+            "EOF\n"
+            f"chown oracle:oinstall {profile_path}\n"
+            f"chmod 644 {profile_path}"
+        )
+        result = await self.ssh_service.execute_command(host, username, password, cmd, get_pty=True)
+        if not result["success"]:
             return {
                 "success": False,
-                "error": f"Profile creation failed: {str(e)}",
-                "logs": [f"ERROR: Exception in profile creation: {str(e)}"]
+                "logs": logs,
+                "error": result.get("stderr") or "Failed to create .profile",
             }
-            
-    async def update_profile_with_custom_variables(self, host: str, username: str, password: str, 
-                                                   fic_home: str = "/u01/OFSAA/FICHOME", 
-                                                   custom_java_home: str = None,
-                                                   custom_java_bin: str = None,
-                                                   custom_oracle_sid: str = None) -> Dict[str, Any]:
-        """
-        Update profile with frontend overrides for FIC_HOME, JAVA_HOME, JAVA_BIN, ORACLE_SID
-        If no frontend values provided, use profile template defaults
-        """
-        try:
-            logs = []
-            
-            # Use frontend values or profile template defaults
-            final_fic_home = fic_home if fic_home != "/u01/OFSAA/FICHOME" else "/u01/OFSAA/FICHOME"
-            final_java_home = custom_java_home if custom_java_home else "/u01/jdk-11.0.16"
-            final_java_bin = custom_java_bin if custom_java_bin else "/u01/jdk-11.0.16/bin"
-            final_oracle_sid = custom_oracle_sid if custom_oracle_sid else "OFSAAPDB"
-            
-            logs.append(f"Applying frontend overrides or using profile defaults")
-            
-            # Replace variables in existing profile
-            replacement_cmd = f'''
-# Update profile variables with frontend overrides or defaults
-sed -i 's|export FIC_HOME=.*|export FIC_HOME={final_fic_home}|g' /home/oracle/.profile
-sed -i 's|export JAVA_HOME=.*|export JAVA_HOME={final_java_home}|g' /home/oracle/.profile
-sed -i 's|export JAVA_BIN=.*|export JAVA_BIN={final_java_bin}|g' /home/oracle/.profile
-sed -i 's|export ORACLE_SID=.*|export ORACLE_SID={final_oracle_sid}|g' /home/oracle/.profile
 
-# Verify updates
-echo "Profile variables updated:"
-grep -E "(FIC_HOME|JAVA_HOME|JAVA_BIN|ORACLE_SID)=" /home/oracle/.profile
-'''
-            
-            update_result = await self.ssh_service.execute_command(host, username, password, replacement_cmd)
-            
-            if update_result["success"]:
-                logs.extend([
-                    "✓ Custom Profile Variables Updated",
-                    f"  FIC_HOME: {final_fic_home}",
-                    f"  JAVA_HOME: {final_java_home}", 
-                    f"  JAVA_BIN: {final_java_bin}",
-                    f"  ORACLE_SID: {final_oracle_sid}",
-                    "  Profile variables synchronized with frontend preferences",
-                    "  Environment ready for OFSAA installation"
-                ])
-                
-                return {
-                    "success": True,
-                    "message": "Profile updated with custom variables successfully",
-                    "logs": logs,
-                    "final_variables": {
-                        "fic_home": final_fic_home,
-                        "java_home": final_java_home,
-                        "java_bin": final_java_bin,
-                        "oracle_sid": final_oracle_sid
-                    },
-                    "verification_output": update_result.get("stdout", "")
-                }
-            else:
-                error_msg = f"Profile variable update failed: {update_result.get('stderr', 'Unknown error')}"
-                logs.append(f"Profile variable update failed: {error_msg}")
-                
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "logs": logs,
-                    "stderr": update_result.get("stderr", ""),
-                    "returncode": update_result.get("returncode", -1)
-                }
-                
-        except Exception as e:
-            logger.error(f"Profile variables update failed: {str(e)}")
+        logs.append("[OK] .profile created with default configuration")
+        return {"success": True, "logs": logs}
+
+    async def update_profile_variable(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        variable: str,
+        value: str,
+    ) -> dict:
+        profile_path = "/home/oracle/.profile"
+        escaped_value = sed_escape(value)
+        cmd = (
+            f"if grep -q '^export {variable}=' {profile_path}; then "
+            f"sed -i 's|^export {variable}=.*|export {variable}={escaped_value}|' {profile_path}; "
+            f"else echo 'export {variable}={value}' >> {profile_path}; fi"
+        )
+        result = await self.ssh_service.execute_command(host, username, password, cmd, get_pty=True)
+        if not result["success"]:
             return {
                 "success": False,
-                "error": f"Profile variables update failed: {str(e)}",
-                "logs": [f"ERROR: Exception in profile variables update: {str(e)}"]
+                "error": result.get("stderr") or f"Failed to update {variable}",
             }
-            
-    async def verify_profile_setup(self, host: str, username: str, password: str) -> Dict[str, Any]:
-        """
-        Verify the profile setup by sourcing it and checking environment variables
-        """
-        try:
-            command = (
-                "sudo -u oracle bash -c '"
-                "source /home/oracle/.profile && "
-                "echo \"=== Profile Verification ===\"; "
-                "echo \"FIC_HOME: $FIC_HOME\"; "
-                "echo \"JAVA_HOME: $JAVA_HOME\"; "
-                "echo \"JAVA_BIN: $JAVA_BIN\"; "
-                "echo \"ORACLE_HOME: $ORACLE_HOME\"; "
-                "echo \"ORACLE_SID: $ORACLE_SID\"; "
-                "echo \"TNS_ADMIN: $TNS_ADMIN\"; "
-                "echo \"Java Version: $(java -version 2>&1 | head -1)\"; "
-                "echo \"Profile verification completed\"'"
-            )
-            
-            result = await self.ssh_service.execute_command(host, username, password, command)
-            
-            logs = []
-            if result["success"]:
-                logs.append("✓ Profile Verification Completed")
-                logs.append("  Environment variables are properly set")
-                logs.append("  Profile sourcing works correctly")
-                logs.append("  Java installation verified")
-                
-                # Parse the output to extract variables
-                output_lines = result["stdout"].split('\n')
-                env_vars = {}
-                for line in output_lines:
-                    if ':' in line and any(var in line for var in ['FIC_HOME', 'JAVA_HOME', 'JAVA_BIN', 'ORACLE_HOME', 'ORACLE_SID', 'TNS_ADMIN']):
-                        key, value = line.split(':', 1)
-                        env_vars[key.strip()] = value.strip()
-                
-                logs.append("  Environment Summary:")
-                for key, value in env_vars.items():
-                    logs.append(f"    • {key}: {value}")
-                
-                return {
-                    "success": True,
-                    "message": "Profile verification completed successfully",
-                    "logs": logs,
-                    "environment_variables": env_vars,
-                    "output": result["stdout"]
-                }
-            else:
-                error_msg = f"Profile verification failed: {result.get('stderr', 'Unknown error')}"
-                logs.append(f"Profile verification failed: {error_msg}")
-                
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "logs": logs,
-                    "stderr": result.get("stderr", ""),
-                    "returncode": result.get("returncode", -1)
-                }
-                
-        except Exception as e:
-            logger.error(f"Profile verification failed: {str(e)}")
+        return {"success": True}
+
+    async def update_profile_with_custom_variables(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        fic_home: Optional[str],
+        java_home: Optional[str],
+        java_bin: Optional[str],
+        oracle_sid: Optional[str],
+    ) -> dict:
+        logs: list[str] = []
+
+        if fic_home:
+            result = await self.update_profile_variable(host, username, password, "FIC_HOME", fic_home)
+            if not result["success"]:
+                return {"success": False, "logs": logs, "error": result.get("error")}
+            logs.append(f"[OK] Updated FIC_HOME to {fic_home}")
+
+        if java_home:
+            result = await self.update_profile_variable(host, username, password, "JAVA_HOME", java_home)
+            if not result["success"]:
+                return {"success": False, "logs": logs, "error": result.get("error")}
+            logs.append(f"[OK] Updated JAVA_HOME to {java_home}")
+
+        if java_bin:
+            result = await self.update_profile_variable(host, username, password, "JAVA_BIN", java_bin)
+            if not result["success"]:
+                return {"success": False, "logs": logs, "error": result.get("error")}
+            logs.append(f"[OK] Updated JAVA_BIN to {java_bin}")
+
+        if oracle_sid:
+            result = await self.update_profile_variable(host, username, password, "ORACLE_SID", oracle_sid)
+            if not result["success"]:
+                return {"success": False, "logs": logs, "error": result.get("error")}
+            logs.append(f"[OK] Updated ORACLE_SID to {oracle_sid}")
+
+        if not logs:
+            logs.append("[INFO] No custom profile overrides provided")
+
+        return {"success": True, "logs": logs}
+
+    async def verify_profile_setup(self, host: str, username: str, password: str) -> dict:
+        cmd = (
+            "bash -lc 'source /home/oracle/.profile >/dev/null 2>&1; "
+            "echo FIC_HOME=$FIC_HOME; "
+            "echo JAVA_HOME=$JAVA_HOME; "
+            "echo JAVA_BIN=$JAVA_BIN; "
+            "echo ORACLE_HOME=$ORACLE_HOME; "
+            "echo TNS_ADMIN=$TNS_ADMIN; "
+            "echo ORACLE_SID=$ORACLE_SID'"
+        )
+        result = await self.ssh_service.execute_command(host, username, password, cmd, get_pty=True)
+        if not result["success"]:
             return {
                 "success": False,
-                "error": f"Profile verification failed: {str(e)}",
-                "logs": [f"ERROR: Exception in profile verification: {str(e)}"]
+                "logs": [],
+                "error": result.get("stderr") or "Profile verification failed",
             }
+        logs = ["[OK] Profile verification output:"] + result.get("stdout", "").splitlines()
+        return {"success": True, "logs": logs}

@@ -67,12 +67,8 @@ This document explains how the automated OFSAA setup runs from Step 1 through en
   6. Run envCheck in a pseudo‑TTY (via `script -q -c`) to satisfy `stty`
 
 ### DB Credential Handling
-Before envCheck runs, the backend asks for DB credentials in the UI:
-- Username
-- Password
-- SID/Service
-
-These are piped into envCheck automatically to avoid prompt timing issues.
+envCheck is fully interactive. The user must type responses in the UI
+when the script prompts for DB user/password/SID. No auto‑piping.
 
 ## Step 9 — Profile Overrides
 - **Purpose**: Apply UI overrides for `FIC_HOME`, `JAVA_HOME`, `JAVA_BIN`, `ORACLE_SID`

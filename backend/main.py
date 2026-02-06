@@ -1,60 +1,71 @@
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import uvicorn
+import json
 import logging
-from routers.installation import router as installation_router, websocket_manager
-from core.logging import setup_logging
 
-# Setup application logging
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
+
+from core.logging import setup_logging
+from routers.installation import router as installation_router, installation_tasks, websocket_manager
+
+
 setup_logging()
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="OFSAA Installation API",
-    description="Backend API for Oracle Financial Services installation automation",
-    version="1.0.0"
+    description="Backend API for OFSAA installation automation",
+    version="1.0.0",
 )
 
-logger.info("Starting OFSAA Installation API...")
-
-# CORS middleware for frontend communication
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Next.js dev server
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include routers
 app.include_router(installation_router, prefix="/api/installation", tags=["installation"])
 
-@app.websocket("/ws/{task_id}")
-async def websocket_endpoint(websocket: WebSocket, task_id: str):
-    """WebSocket endpoint for real-time installation updates and interactive prompts"""
-    await websocket_manager.connect(task_id, websocket)
-    try:
-        while True:
-            # Receive user input responses
-            data = await websocket.receive_json()
-            
-            if data.get("type") == "user_input":
-                # Handle user input for interactive prompts
-                await websocket_manager.handle_user_input(task_id, data.get("input", ""))
-                
-    except WebSocketDisconnect:
-        websocket_manager.disconnect(task_id)
-        logger.info(f"WebSocket disconnected for task {task_id}")
 
 @app.get("/")
 async def root():
     return {"message": "OFSAA Installation API is running"}
 
+
 @app.get("/health")
 async def health_check():
-    return {"status": "healthy", "service": "ofsaa-installation-backend"}
+    return {"status": "healthy"}
+
+
+@app.websocket("/ws/{task_id}")
+async def websocket_endpoint(websocket: WebSocket, task_id: str):
+    await websocket_manager.connect(task_id, websocket)
+    logger.info("WebSocket connected for task %s", task_id)
+
+    # Push current status if task exists
+    task = installation_tasks.get(task_id)
+    if task:
+        await websocket_manager.send_status(task_id, task.status, task.current_step, task.progress)
+        if task.logs:
+            await websocket_manager.send_output(task_id, "\n".join(task.logs[-20:]))
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                message = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+
+            if message.get("type") == "user_input":
+                input_text = str(message.get("input", ""))
+                websocket_manager.enqueue_user_input(task_id, input_text)
+    except WebSocketDisconnect:
+        websocket_manager.disconnect(task_id)
+        logger.info("WebSocket disconnected for task %s", task_id)
+
 
 if __name__ == "__main__":
-    logger.info("Starting Uvicorn server...")
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, log_level="info")
