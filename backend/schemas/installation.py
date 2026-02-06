@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 class InstallationRequest(BaseModel):
     """Schema for installation request"""
@@ -28,6 +28,48 @@ class InstallationRequest(BaseModel):
     schema_external_directory_value: Optional[str] = Field(default=None, description="DIRECTORY VALUE path")
     schema_config_schema_name: Optional[str] = Field(default=None, description="SCHEMA TYPE=CONFIG NAME value")
     schema_atomic_schema_name: Optional[str] = Field(default=None, description="SCHEMA TYPE=ATOMIC NAME value (applies to all)")
+
+    # OFS_BD_PACK.xml user-driven inputs (optional): APP_ID -> ENABLE flag (True => YES, False => blank)
+    pack_app_enable: Optional[Dict[str, bool]] = Field(default=None, description="Application enablement map for OFS_BD_PACK.xml")
+
+    # default.properties user-driven inputs (optional)
+    prop_base_country: Optional[str] = Field(default=None, description="BASE_COUNTRY")
+    prop_default_jurisdiction: Optional[str] = Field(default=None, description="DEFAULT_JURISDICTION")
+    prop_smtp_host: Optional[str] = Field(default=None, description="SMTP_HOST")
+    prop_partition_date_format: Optional[str] = Field(default="DD-MM-YYYY", description="PARTITION_DATE_FORMAT")
+    prop_web_service_user: Optional[str] = Field(default=None, description="WEB_SERVICE_USER")
+    prop_web_service_password: Optional[str] = Field(default=None, description="WEB_SERVICE_PASSWORD")
+    prop_configure_obiee: Optional[str] = Field(default="0", description="CONFIGURE_OBIEE (0-9)")
+    prop_obiee_url: Optional[str] = Field(default="", description="OBIEE_URL (can be empty)")
+    prop_sw_rmiport: Optional[str] = Field(default="8204", description="SW_RMIPORT")
+    prop_big_data_enable: Optional[str] = Field(default="FALSE", description="BIG_DATA_ENABLE (TRUE/FALSE)")
+
+    # OFSAAI_InstallConfig.xml user-driven inputs (optional)
+    aai_webappservertype: Optional[str] = Field(default="3", description="WEBAPPSERVERTYPE (1/2/3)")
+    aai_dbserver_ip: Optional[str] = Field(default=None, description="DBSERVER_IP")
+    aai_oracle_service_name: Optional[str] = Field(default=None, description="ORACLE_SID/SERVICE_NAME")
+    aai_abs_driver_path: Optional[str] = Field(default=None, description="ABS_DRIVER_PATH")
+    aai_olap_server_implementation: Optional[str] = Field(default="0", description="OLAP_SERVER_IMPLEMENTATION")
+    aai_sftp_enable: Optional[str] = Field(default="1", description="SFTP_ENABLE")
+    aai_file_transfer_port: Optional[str] = Field(default="22", description="FILE_TRANSFER_PORT")
+    aai_javaport: Optional[str] = Field(default="9999", description="JAVAPORT")
+    aai_nativeport: Optional[str] = Field(default="6666", description="NATIVEPORT")
+    aai_agentport: Optional[str] = Field(default="6510", description="AGENTPORT")
+    aai_iccport: Optional[str] = Field(default="6507", description="ICCPORT")
+    aai_iccnativeport: Optional[str] = Field(default="6509", description="ICCNATIVEPORT")
+    aai_olapport: Optional[str] = Field(default="10101", description="OLAPPORT")
+    aai_msgport: Optional[str] = Field(default="6501", description="MSGPORT")
+    aai_routerport: Optional[str] = Field(default="6502", description="ROUTERPORT")
+    aai_amport: Optional[str] = Field(default="6506", description="AMPORT")
+    aai_https_enable: Optional[str] = Field(default="1", description="HTTPS_ENABLE")
+    aai_web_server_ip: Optional[str] = Field(default=None, description="WEB_SERVER_IP")
+    aai_web_server_port: Optional[str] = Field(default="7002", description="WEB_SERVER_PORT")
+    aai_context_name: Optional[str] = Field(default="FICHOME", description="CONTEXT_NAME")
+    aai_webapp_context_path: Optional[str] = Field(default=None, description="WEBAPP_CONTEXT_PATH")
+    aai_web_local_path: Optional[str] = Field(default="/u01/OFSAA/FTPSHARE", description="WEB_LOCAL_PATH")
+    aai_weblogic_domain_home: Optional[str] = Field(default=None, description="WEBLOGIC_DOMAIN_HOME")
+    aai_ftspshare_path: Optional[str] = Field(default="/u01/OFSAA/FTPSHARE", description="OFSAAI_FTPSHARE_PATH")
+    aai_sftp_user_id: Optional[str] = Field(default="oracle", description="OFSAAI_SFTP_USER_ID")
 
 class InstallationResponse(BaseModel):
     """Schema for installation response"""

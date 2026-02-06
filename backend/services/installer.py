@@ -95,6 +95,55 @@ class InstallerService:
         schema_external_directory_value: Optional[str] = None,
         schema_config_schema_name: Optional[str] = None,
         schema_atomic_schema_name: Optional[str] = None,
+        pack_app_enable: Optional[dict[str, bool]] = None,
+        prop_base_country: Optional[str] = None,
+        prop_default_jurisdiction: Optional[str] = None,
+        prop_smtp_host: Optional[str] = None,
+        prop_partition_date_format: Optional[str] = None,
+        prop_datadumpdt_minus_0: Optional[str] = None,
+        prop_endthisweek_minus_00: Optional[str] = None,
+        prop_startnextmnth_minus_00: Optional[str] = None,
+        prop_web_service_user: Optional[str] = None,
+        prop_web_service_password: Optional[str] = None,
+        prop_configure_obiee: Optional[str] = None,
+        prop_obiee_url: Optional[str] = None,
+        prop_sw_rmiport: Optional[str] = None,
+        prop_big_data_enable: Optional[str] = None,
+        prop_sqoop_working_dir: Optional[str] = None,
+        prop_ssh_auth_alias: Optional[str] = None,
+        prop_ssh_host_name: Optional[str] = None,
+        prop_ssh_port: Optional[str] = None,
+        prop_ecmsource: Optional[str] = None,
+        prop_ecmloadtype: Optional[str] = None,
+        prop_cssource: Optional[str] = None,
+        prop_csloadtype: Optional[str] = None,
+        prop_crrsource: Optional[str] = None,
+        prop_crrloadtype: Optional[str] = None,
+        aai_webappservertype: Optional[str] = None,
+        aai_dbserver_ip: Optional[str] = None,
+        aai_oracle_service_name: Optional[str] = None,
+        aai_abs_driver_path: Optional[str] = None,
+        aai_olap_server_implementation: Optional[str] = None,
+        aai_sftp_enable: Optional[str] = None,
+        aai_file_transfer_port: Optional[str] = None,
+        aai_javaport: Optional[str] = None,
+        aai_nativeport: Optional[str] = None,
+        aai_agentport: Optional[str] = None,
+        aai_iccport: Optional[str] = None,
+        aai_iccnativeport: Optional[str] = None,
+        aai_olapport: Optional[str] = None,
+        aai_msgport: Optional[str] = None,
+        aai_routerport: Optional[str] = None,
+        aai_amport: Optional[str] = None,
+        aai_https_enable: Optional[str] = None,
+        aai_web_server_ip: Optional[str] = None,
+        aai_web_server_port: Optional[str] = None,
+        aai_context_name: Optional[str] = None,
+        aai_webapp_context_path: Optional[str] = None,
+        aai_web_local_path: Optional[str] = None,
+        aai_weblogic_domain_home: Optional[str] = None,
+        aai_ftspshare_path: Optional[str] = None,
+        aai_sftp_user_id: Optional[str] = None,
     ) -> dict:
         """
         Fetch required XML/properties from the git repo and place them into the extracted kit locations.
@@ -177,6 +226,73 @@ class InstallerService:
             logs.extend(patch_result.get("logs", []))
             if not patch_result.get("success"):
                 return {"success": False, "logs": logs, "error": patch_result.get("error") or "Failed to patch schema XML"}
+
+        if pack_app_enable:
+            pack_patch = await self._patch_ofs_bd_pack_xml_repo(
+                host,
+                username,
+                password,
+                repo_dir=repo_dir,
+                pack_app_enable=pack_app_enable,
+            )
+            logs.extend(pack_patch.get("logs", []))
+            if not pack_patch.get("success"):
+                return {"success": False, "logs": logs, "error": pack_patch.get("error") or "Failed to patch pack XML"}
+
+        silent_props = {
+            "BASE_COUNTRY": prop_base_country,
+            "DEFAULT_JURISDICTION": prop_default_jurisdiction,
+            "SMTP_HOST": prop_smtp_host,
+            "PARTITION_DATE_FORMAT": prop_partition_date_format,
+            "WEB_SERVICE_USER": prop_web_service_user,
+            "WEB_SERVICE_PASSWORD": prop_web_service_password,
+            "CONFIGURE_OBIEE": prop_configure_obiee,
+            "OBIEE_URL": prop_obiee_url,
+            "SW_RMIPORT": prop_sw_rmiport,
+            "BIG_DATA_ENABLE": prop_big_data_enable,
+        }
+        if any(v is not None for v in silent_props.values()):
+            props_patch = await self._patch_default_properties_repo(
+                host, username, password, repo_dir=repo_dir, updates=silent_props
+            )
+            logs.extend(props_patch.get("logs", []))
+            if not props_patch.get("success"):
+                return {"success": False, "logs": logs, "error": props_patch.get("error") or "Failed to patch default.properties"}
+
+        aai_updates = {
+            "WEBAPPSERVERTYPE": aai_webappservertype,
+            "DBSERVER_IP": aai_dbserver_ip,
+            "ORACLE_SID/SERVICE_NAME": aai_oracle_service_name,
+            "ABS_DRIVER_PATH": aai_abs_driver_path,
+            "OLAP_SERVER_IMPLEMENTATION": aai_olap_server_implementation,
+            "SFTP_ENABLE": aai_sftp_enable,
+            "FILE_TRANSFER_PORT": aai_file_transfer_port,
+            "JAVAPORT": aai_javaport,
+            "NATIVEPORT": aai_nativeport,
+            "AGENTPORT": aai_agentport,
+            "ICCPORT": aai_iccport,
+            "ICCNATIVEPORT": aai_iccnativeport,
+            "OLAPPORT": aai_olapport,
+            "MSGPORT": aai_msgport,
+            "ROUTERPORT": aai_routerport,
+            "AMPORT": aai_amport,
+            "HTTPS_ENABLE": aai_https_enable,
+            "WEB_SERVER_IP": aai_web_server_ip,
+            "WEB_SERVER_PORT": aai_web_server_port,
+            "CONTEXT_NAME": aai_context_name,
+            "WEBAPP_CONTEXT_PATH": aai_webapp_context_path,
+            "WEB_LOCAL_PATH": aai_web_local_path,
+            "WEBLOGIC_DOMAIN_HOME": aai_weblogic_domain_home,
+            "OFSAAI_FTPSHARE_PATH": aai_ftspshare_path,
+            "OFSAAI_SFTP_USER_ID": aai_sftp_user_id,
+        }
+        if any(v is not None for v in aai_updates.values()):
+            aai_patch = await self._patch_ofsaai_install_config_repo(
+                host, username, password, repo_dir=repo_dir, updates=aai_updates
+            )
+            logs.extend(aai_patch.get("logs", []))
+            if not aai_patch.get("success"):
+                return {"success": False, "logs": logs, "error": aai_patch.get("error") or "Failed to patch OFSAAI_InstallConfig.xml"}
 
         for filename, dest_path in mappings:
             find_cmd = (
@@ -382,6 +498,223 @@ class InstallerService:
             return {"success": False, "logs": logs, "error": write.get("error")}
 
         logs.append("[OK] Updated OFS_BD_SCHEMA_IN.xml in repo (local clone)")
+        return {"success": True, "logs": logs}
+
+    def _patch_ofs_bd_pack_xml_content(self, content: str, *, pack_app_enable: dict[str, bool]) -> str:
+        updated = content
+
+        def _set_enable_for_app(app_id: str, enable: bool, text: str) -> str:
+            value = "YES" if enable else ""
+
+            # Preferred: update ENABLE="..." in place
+            pat = re.compile(
+                r'(<APP_ID\\b[^>]*\\bENABLE=\")([^\"]*)(\"[^>]*>\\s*' + re.escape(app_id) + r'\\s*</APP_ID>)',
+                flags=re.IGNORECASE,
+            )
+            if pat.search(text):
+                return pat.sub(rf"\\1{value}\\3", text)
+
+            # Fallback: inject ENABLE attr if missing
+            pat2 = re.compile(
+                r'(<APP_ID\\b)([^>]*>\\s*' + re.escape(app_id) + r'\\s*</APP_ID>)',
+                flags=re.IGNORECASE,
+            )
+            return pat2.sub(rf"\\1 ENABLE=\"{value}\"\\2", text)
+
+        for app_id, enabled in pack_app_enable.items():
+            updated = _set_enable_for_app(app_id, bool(enabled), updated)
+
+        return updated
+
+    async def _patch_ofs_bd_pack_xml_repo(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        repo_dir: str,
+        pack_app_enable: dict[str, bool],
+    ) -> dict:
+        logs: list[str] = []
+        find_cmd = (
+            f"src=$(find {repo_dir} -type f -name 'OFS_BD_PACK.xml' ! -name '*_BEFORE*' -print | head -n 1); "
+            "if [ -z \"$src\" ]; then echo 'NOT_FOUND'; exit 2; fi; "
+            "echo $src"
+        )
+        src_result = await self.ssh_service.execute_command(host, username, password, find_cmd)
+        if not src_result.get("success") or "NOT_FOUND" in (src_result.get("stdout") or ""):
+            return {"success": False, "logs": logs, "error": "OFS_BD_PACK.xml not found in repo"}
+
+        src_path = (src_result.get("stdout") or "").splitlines()[0].strip()
+        logs.append(f"[INFO] Patching repo XML: {src_path}")
+
+        read = await self._read_remote_file(host, username, password, src_path)
+        if not read.get("success"):
+            return {"success": False, "logs": logs, "error": read.get("error")}
+
+        original = read.get("content", "")
+        patched = self._patch_ofs_bd_pack_xml_content(original, pack_app_enable=pack_app_enable)
+
+        if patched == original:
+            logs.append("[INFO] No changes needed for OFS_BD_PACK.xml")
+            return {"success": True, "logs": logs}
+
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        await self.ssh_service.execute_command(host, username, password, f"cp -f {src_path} {src_path}.backup.{ts}", get_pty=True)
+        write = await self._write_remote_file(host, username, password, src_path, patched)
+        if not write.get("success"):
+            return {"success": False, "logs": logs, "error": write.get("error")}
+
+        logs.append("[OK] Updated OFS_BD_PACK.xml in repo (local clone)")
+        return {"success": True, "logs": logs}
+
+    def _patch_default_properties_content(self, content: str, *, updates: dict[str, Optional[str]]) -> str:
+        lines = content.splitlines()
+
+        start_idx = None
+        end_idx = None
+        for i, line in enumerate(lines):
+            if "##Start: User input required for silent installer" in line:
+                start_idx = i
+            if "## End: User input required for silent installer" in line:
+                end_idx = i
+                break
+
+        # If markers are not found, fall back to whole-file key replacement.
+        if start_idx is None or end_idx is None or start_idx >= end_idx:
+            start_idx = 0
+            end_idx = len(lines)
+
+        stop_idx = end_idx
+        for i in range(start_idx, end_idx):
+            if lines[i].strip().startswith("FSDF_UPLOAD_MODEL="):
+                stop_idx = i  # do not modify beyond this
+                break
+
+        key_to_index: dict[str, int] = {}
+        for i in range(start_idx, stop_idx):
+            raw = lines[i]
+            if raw.lstrip().startswith("#") or "=" not in raw:
+                continue
+            key = raw.split("=", 1)[0].strip()
+            if key:
+                key_to_index[key] = i
+
+        insert_at = stop_idx
+        for key, value in updates.items():
+            if value is None:
+                continue  # not provided, do not change
+            new_line = f"{key}={value}"
+            if key in key_to_index:
+                lines[key_to_index[key]] = new_line
+            else:
+                lines.insert(insert_at, new_line)
+                insert_at += 1
+
+        # Preserve trailing newline behavior (most kits don't care).
+        return "\n".join(lines) + "\n"
+
+    async def _patch_default_properties_repo(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        repo_dir: str,
+        updates: dict[str, Optional[str]],
+    ) -> dict:
+        logs: list[str] = []
+        find_cmd = (
+            f"src=$(find {repo_dir} -type f -name 'default.properties' ! -name '*_BEFORE*' -print | head -n 1); "
+            "if [ -z \"$src\" ]; then echo 'NOT_FOUND'; exit 2; fi; "
+            "echo $src"
+        )
+        src_result = await self.ssh_service.execute_command(host, username, password, find_cmd)
+        if not src_result.get("success") or "NOT_FOUND" in (src_result.get("stdout") or ""):
+            return {"success": False, "logs": logs, "error": "default.properties not found in repo"}
+
+        src_path = (src_result.get("stdout") or "").splitlines()[0].strip()
+        logs.append(f"[INFO] Patching repo properties: {src_path}")
+
+        read = await self._read_remote_file(host, username, password, src_path)
+        if not read.get("success"):
+            return {"success": False, "logs": logs, "error": read.get("error")}
+
+        original = read.get("content", "")
+        patched = self._patch_default_properties_content(original, updates=updates)
+
+        if patched == original:
+            logs.append("[INFO] No changes needed for default.properties")
+            return {"success": True, "logs": logs}
+
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        await self.ssh_service.execute_command(host, username, password, f"cp -f {src_path} {src_path}.backup.{ts}", get_pty=True)
+        write = await self._write_remote_file(host, username, password, src_path, patched)
+        if not write.get("success"):
+            return {"success": False, "logs": logs, "error": write.get("error")}
+
+        logs.append("[OK] Updated default.properties in repo (local clone)")
+        return {"success": True, "logs": logs}
+
+    def _patch_ofsaai_install_config_content(self, content: str, *, updates: dict[str, Optional[str]]) -> tuple[str, list[str]]:
+        updated = content
+        warnings: list[str] = []
+
+        for name, value in updates.items():
+            if value is None:
+                continue
+            pat = re.compile(
+                rf'(<InteractionVariable\\s+name=\"{re.escape(name)}\"\\s*>)(.*?)(</InteractionVariable>)',
+                flags=re.DOTALL,
+            )
+            if not pat.search(updated):
+                warnings.append(f"[WARN] InteractionVariable not found: {name}")
+                continue
+            updated = pat.sub(rf"\\1{value}\\3", updated)
+
+        return updated, warnings
+
+    async def _patch_ofsaai_install_config_repo(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        repo_dir: str,
+        updates: dict[str, Optional[str]],
+    ) -> dict:
+        logs: list[str] = []
+        find_cmd = (
+            f"src=$(find {repo_dir} -type f -name 'OFSAAI_InstallConfig.xml' ! -name '*_BEFORE*' -print | head -n 1); "
+            "if [ -z \"$src\" ]; then echo 'NOT_FOUND'; exit 2; fi; "
+            "echo $src"
+        )
+        src_result = await self.ssh_service.execute_command(host, username, password, find_cmd)
+        if not src_result.get("success") or "NOT_FOUND" in (src_result.get("stdout") or ""):
+            return {"success": False, "logs": logs, "error": "OFSAAI_InstallConfig.xml not found in repo"}
+
+        src_path = (src_result.get("stdout") or "").splitlines()[0].strip()
+        logs.append(f"[INFO] Patching repo XML: {src_path}")
+
+        read = await self._read_remote_file(host, username, password, src_path)
+        if not read.get("success"):
+            return {"success": False, "logs": logs, "error": read.get("error")}
+
+        original = read.get("content", "")
+        patched, warnings = self._patch_ofsaai_install_config_content(original, updates=updates)
+        logs.extend(warnings)
+
+        if patched == original:
+            logs.append("[INFO] No changes needed for OFSAAI_InstallConfig.xml")
+            return {"success": True, "logs": logs}
+
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        await self.ssh_service.execute_command(host, username, password, f"cp -f {src_path} {src_path}.backup.{ts}", get_pty=True)
+        write = await self._write_remote_file(host, username, password, src_path, patched)
+        if not write.get("success"):
+            return {"success": False, "logs": logs, "error": write.get("error")}
+
+        logs.append("[OK] Updated OFSAAI_InstallConfig.xml in repo (local clone)")
         return {"success": True, "logs": logs}
 
     async def run_osc_schema_creator(
