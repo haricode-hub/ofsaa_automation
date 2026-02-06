@@ -16,7 +16,12 @@ class InstallerService:
         self.ssh_service = ssh_service
         self.validation = validation
 
-    async def download_and_extract_installer(self, host: str, username: str, password: str) -> dict:
+    async def download_and_extract_installer(
+        self,
+        host: str,
+        username: str,
+        password: str,
+    ) -> dict:
         logs: list[str] = []
         target_dir = "/u01/installer_kit"
         repo_dir = Config.REPO_DIR
@@ -29,7 +34,9 @@ class InstallerService:
             logs.append("[OK] Installer kit already extracted")
             return {"success": True, "logs": logs}
 
+        git_auth_setup = self._git_auth_setup_cmd()
         cmd_prepare = (
+            f"{git_auth_setup}"
             f"if [ -d {repo_dir}/.git ]; then "
             f"cd {repo_dir} && "
             f"(git -c http.sslVerify=false {safe_dir_cfg} pull --ff-only || "
@@ -57,9 +64,31 @@ class InstallerService:
         zip_path = zip_result.get("stdout", "").splitlines()[0].strip()
         logs.append(f"[INFO] Installer zip found: {zip_path}")
 
-        unzip_cmd = f"unzip -o {zip_path} -d {target_dir}"
+        # Requirement: extraction must be performed as the 'oracle' OS user.
+        unzip_cmd = f"unzip -o {shell_escape(zip_path)} -d {target_dir}"
+        if username == "oracle":
+            unzip_as_oracle_cmd = f"mkdir -p {target_dir} && {unzip_cmd}"
+        else:
+            # Ensure target dir is writable by oracle; prefer sudo when available.
+            # Note: if the connected user is neither root nor sudo-capable, this will likely fail.
+            unzip_as_oracle_cmd = (
+                "if command -v sudo >/dev/null 2>&1; then "
+                f"sudo mkdir -p {target_dir} && "
+                f"sudo chown -R oracle:oinstall {target_dir} && "
+                f"sudo chmod -R 775 {target_dir} && "
+                f"(sudo chmod a+r {shell_escape(zip_path)} 2>/dev/null || true) && "
+                f"sudo -u oracle {unzip_cmd}; "
+                "else "
+                f"mkdir -p {target_dir} && "
+                f"chown -R oracle:oinstall {target_dir} && "
+                f"chmod -R 775 {target_dir} && "
+                f"(chmod a+r {shell_escape(zip_path)} 2>/dev/null || true) && "
+                f"su - oracle -c {shell_escape(unzip_cmd)}; "
+                "fi"
+            )
+
         unzip_result = await self.ssh_service.execute_command(
-            host, username, password, unzip_cmd, timeout=1800, get_pty=True
+            host, username, password, unzip_as_oracle_cmd, timeout=1800, get_pty=True
         )
         if not unzip_result["success"]:
             return {
@@ -154,8 +183,10 @@ class InstallerService:
         safe_dir_cfg = f"-c safe.directory={repo_dir}"
 
         # Ensure repo is present and up-to-date before copying config files
+        git_auth_setup = self._git_auth_setup_cmd()
         cmd_prepare_repo = (
             "mkdir -p /u01/installer_kit && "
+            f"{git_auth_setup}"
             f"if [ -d {repo_dir}/.git ]; then "
             f"cd {repo_dir} && "
             f"(git -c http.sslVerify=false {safe_dir_cfg} pull --ff-only || "
@@ -323,6 +354,15 @@ class InstallerService:
                 }
             logs.append(f"[OK] Updated kit file: {dest_path}")
 
+        push_result = await self._commit_and_push_repo_changes(
+            host,
+            username,
+            password,
+            repo_dir=repo_dir,
+            commit_message="Update OFSAA installer configs from UI inputs",
+        )
+        logs.extend(push_result.get("logs", []))
+
         return {"success": True, "logs": logs}
 
     async def _read_remote_file(self, host: str, username: str, password: str, path: str) -> dict:
@@ -337,6 +377,86 @@ class InstallerService:
         if not result.get("success"):
             return {"success": False, "error": result.get("stderr") or f"Failed to write {path}"}
         return {"success": True}
+
+    async def _commit_and_push_repo_changes(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        repo_dir: str,
+        commit_message: str,
+    ) -> dict:
+        logs: list[str] = []
+        safe_dir_cfg = f"-c safe.directory={repo_dir}"
+        git_auth_setup = self._git_auth_setup_cmd()
+        cmd = (
+            f"cd {repo_dir} >/dev/null 2>&1 || exit 1; "
+            f"(git config --global --add safe.directory {repo_dir} >/dev/null 2>&1 || true); "
+            f"if ! git {safe_dir_cfg} rev-parse --is-inside-work-tree >/dev/null 2>&1; then "
+            "echo 'NOT_A_GIT_REPO'; exit 0; "
+            "fi; "
+            f"changes=$(git {safe_dir_cfg} status --porcelain 2>/dev/null | wc -l); "
+            "if [ \"$changes\" = \"0\" ]; then echo 'NO_CHANGES'; exit 0; fi; "
+            f"if ! git {safe_dir_cfg} remote get-url origin >/dev/null 2>&1; then echo 'NO_ORIGIN_REMOTE'; exit 0; fi; "
+            f"{git_auth_setup}"
+            "export GIT_TERMINAL_PROMPT=0; "
+            f"git {safe_dir_cfg} add -u && "
+            f"git {safe_dir_cfg} -c user.name='ofsaa-ui' -c user.email='ofsaa-ui@local' "
+            f"commit -m {shell_escape(commit_message)} >/dev/null 2>&1 || true; "
+            f"git -c http.sslVerify=false {safe_dir_cfg} push"
+        )
+
+        result = await self.ssh_service.execute_command(host, username, password, cmd, timeout=1800, get_pty=True)
+        out = (result.get('stdout') or '').strip()
+        err = (result.get('stderr') or '').strip()
+
+        if "NOT_A_GIT_REPO" in out:
+            logs.append("[INFO] Repo push skipped: not a git repo")
+            return {"success": True, "logs": logs}
+        if "NO_CHANGES" in out:
+            logs.append("[INFO] Repo push skipped: no config changes")
+            return {"success": True, "logs": logs}
+        if "NO_ORIGIN_REMOTE" in out:
+            logs.append("[INFO] Repo push skipped: origin remote not set")
+            return {"success": True, "logs": logs}
+
+        if not result.get("success"):
+            if out:
+                logs.append(out)
+            if err:
+                logs.append(err)
+            logs.append("[WARN] Repo push failed; changes applied locally on the target host only")
+            return {"success": True, "logs": logs}
+
+        logs.append("[OK] Repo updated: pushed XML/properties changes to origin")
+        return {"success": True, "logs": logs}
+
+    def _git_auth_setup_cmd(self) -> str:
+        git_username = Config.GIT_USERNAME
+        git_password = Config.GIT_PASSWORD
+        if not git_username or not git_password:
+            return ""
+
+        safe_user = shell_escape(git_username)
+        safe_pass = shell_escape(git_password)
+        return (
+            f"export OFSAA_GIT_USERNAME={safe_user}; "
+            f"export OFSAA_GIT_PASSWORD={safe_pass}; "
+            "askpass=$(mktemp) || exit 1; "
+            "trap 'rm -f \"$askpass\"' EXIT; "
+            "cat >\"$askpass\" <<'EOF'\n"
+            "#!/bin/sh\n"
+            "case \"$1\" in\n"
+            "*Username*|*username*) printf '%s\\n' \"$OFSAA_GIT_USERNAME\";;\n"
+            "*Password*|*password*) printf '%s\\n' \"$OFSAA_GIT_PASSWORD\";;\n"
+            "*) printf '\\n';;\n"
+            "esac\n"
+            "EOF\n"
+            "chmod 700 \"$askpass\"; "
+            "export GIT_ASKPASS=\"$askpass\"; "
+            "export GIT_TERMINAL_PROMPT=0; "
+        )
 
     def _patch_ofs_bd_schema_in_content(
         self,

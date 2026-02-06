@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import os
 
 
 @dataclass(frozen=True)
@@ -6,6 +7,11 @@ class Config:
     """Centralized default configuration values."""
     REPO_URL: str = "https://infrarepo.jmrinfotech.com:8443/ofsaa_agentic/ofsaa_auto_installation.git"
     REPO_DIR: str = "/u01/installer_kit/ofsaa_auto_installation"
+
+    # Git credentials used on the target host for clone/pull/push.
+    # NOTE: Prefer setting these via environment variables on the backend host.
+    GIT_USERNAME: str = os.getenv("OFSAA_GIT_USERNAME", "2473")
+    GIT_PASSWORD: str = os.getenv("OFSAA_GIT_PASSWORD", "Asdf@123")
 
     DEFAULT_FIC_HOME: str = "/u01/OFSAA/FICHOME"
     DEFAULT_JAVA_HOME: str = "/u01/jdk-11.0.16"
