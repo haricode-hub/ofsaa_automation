@@ -61,6 +61,12 @@ class InstallationService:
     async def set_installer_permissions(self, host: str, username: str, password: str) -> dict:
         return await self.installer.set_permissions(host, username, password)
 
+    async def apply_installer_config_files(self, host: str, username: str, password: str) -> dict:
+        return await self.installer.apply_config_files_from_repo(host, username, password)
+
+    async def run_osc_schema_creator(self, host: str, username: str, password: str, **kwargs) -> dict:
+        return await self.installer.run_osc_schema_creator(host, username, password, **kwargs)
+
     async def run_environment_check(self, host: str, username: str, password: str, **kwargs) -> dict:
         return await self.installer.run_environment_check(host, username, password, **kwargs)
 
