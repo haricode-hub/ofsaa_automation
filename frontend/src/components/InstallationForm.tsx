@@ -204,7 +204,7 @@ export function InstallationForm() {
           schema_jdbc_host: formData.schema_jdbc_host || null,
           schema_jdbc_port: formData.schema_jdbc_port ? Number(formData.schema_jdbc_port) : null,
           schema_jdbc_service: formData.schema_jdbc_service || null,
-          schema_host: formData.schema_host || null,
+          schema_host: formData.host || null,
           schema_setup_env: formData.schema_setup_env || null,
           schema_apply_same_for_all: formData.schema_apply_same_for_all || null,
           schema_default_password: formData.schema_default_password || null,
@@ -523,14 +523,14 @@ export function InstallationForm() {
 
           <div className="space-y-2">
             <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-              HOST Tag Value
+              Application IP (HOST Tag Value)
             </label>
             <input
               type="text"
-              value={formData.schema_host}
-              onChange={handleInputChange('schema_host')}
+              value={formData.host}
               placeholder="192.168.3.41"
               className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+              readOnly
             />
           </div>
 

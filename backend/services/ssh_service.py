@@ -1,8 +1,10 @@
 import asyncio
+import socket
 import time
 from typing import Any, Callable, Dict, Iterable, Optional
 
 import paramiko
+from paramiko.ssh_exception import NoValidConnectionsError
 
 
 class SSHService:
@@ -12,17 +14,41 @@ class SSHService:
         self._client = None
 
     def _connect(self, host: str, username: str, password: str, timeout: int = 10) -> paramiko.SSHClient:
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(
-            hostname=host,
-            username=username,
-            password=password,
-            timeout=timeout,
-            look_for_keys=False,
-            allow_agent=False,
-        )
-        return client
+        attempts = 3
+        connect_timeout = max(8, min(int(timeout), 30))
+        banner_timeout = max(15, min(int(timeout), 45))
+        auth_timeout = max(15, min(int(timeout), 45))
+        backoff_seconds = [0.7, 1.5]
+
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, attempts + 1):
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            try:
+                client.connect(
+                    hostname=host,
+                    username=username,
+                    password=password,
+                    timeout=connect_timeout,
+                    banner_timeout=banner_timeout,
+                    auth_timeout=auth_timeout,
+                    look_for_keys=False,
+                    allow_agent=False,
+                )
+                return client
+            except paramiko.AuthenticationException:
+                client.close()
+                raise
+            except (socket.timeout, TimeoutError, paramiko.SSHException, NoValidConnectionsError, OSError) as exc:
+                client.close()
+                last_exc = exc
+                if attempt < attempts:
+                    time.sleep(backoff_seconds[attempt - 1])
+                    continue
+                raise
+
+        # Defensive fallback to satisfy type checker; loop always returns or raises.
+        raise RuntimeError(str(last_exc) if last_exc else "SSH connection failed")
 
     def _execute_command_sync(
         self,

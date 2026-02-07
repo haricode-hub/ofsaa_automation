@@ -1,4 +1,5 @@
 from typing import Any, Callable, Optional
+import inspect
 import os
 import re
 import time
@@ -889,7 +890,34 @@ class InstallerService:
         )
         if not result.get("success"):
             return {"success": False, "logs": [], "error": "osc.sh failed"}
-        return {"success": True, "logs": ["[OK] osc.sh completed"]}
+
+        schema_creator_dir = os.path.dirname(os.path.dirname(osc_path))
+        logs_dir = f"{schema_creator_dir}/logs"
+
+        latest_log_cmd = (
+            f"log_file=$(ls -1t {logs_dir}/* 2>/dev/null | head -n 1); "
+            "if [ -z \"$log_file\" ]; then echo 'LOG_NOT_FOUND'; exit 0; fi; "
+            "echo $log_file"
+        )
+        latest_log_result = await self.ssh_service.execute_command(host, username, password, latest_log_cmd)
+        latest_log = (latest_log_result.get("stdout") or "").splitlines()[0].strip() if latest_log_result.get("stdout") else ""
+
+        if not latest_log or latest_log == "LOG_NOT_FOUND":
+            return {
+                "success": False,
+                "logs": ["[ERROR] osc.sh completed but schema_creator log file was not found"],
+                "error": "schema_creator log file not found",
+            }
+
+        grep_cmd = f"grep -Ein 'ERROR|FAIL' {shell_escape(latest_log)} || true"
+        grep_result = await self.ssh_service.execute_command(host, username, password, grep_cmd)
+        matches = [line.strip() for line in (grep_result.get('stdout') or '').splitlines() if line.strip()]
+
+        if matches:
+            logs = [f"[ERROR] osc.sh log contains ERROR/FAIL in {latest_log}:"] + [f"[OSCLOG] {line}" for line in matches]
+            return {"success": False, "logs": logs, "error": "osc.sh log contains ERROR/FAIL"}
+
+        return {"success": True, "logs": [f"[INFO] Checked log: {latest_log}", "[OK] No Error , after osc.sh"]}
 
     async def run_environment_check(
         self,
@@ -942,15 +970,49 @@ class InstallerService:
                 "fi"
             )
 
+        captured_lines: list[str] = []
+        pending = ""
+
+        async def output_collector(text: str) -> None:
+            nonlocal pending
+            if not text:
+                return
+
+            # Keep a line-buffer copy so we can inspect envCheck output content.
+            pending += text.replace("\r", "\n")
+            parts = pending.split("\n")
+            for line in parts[:-1]:
+                cleaned = line.strip()
+                if cleaned:
+                    captured_lines.append(cleaned)
+            pending = parts[-1]
+
+            if on_output_callback is not None:
+                forwarded = on_output_callback(text)
+                if inspect.isawaitable(forwarded):
+                    await forwarded
+
         result = await self.ssh_service.execute_interactive_command(
             host,
             username,
             password,
             command,
-            on_output_callback=on_output_callback,
+            on_output_callback=output_collector,
             on_prompt_callback=on_prompt_callback,
             timeout=3600,
         )
         if not result.get("success"):
             return {"success": False, "logs": [], "error": "envCheck.sh failed"}
-        return {"success": True, "logs": ["[OK] envCheck completed"]}
+
+        tail = pending.strip()
+        if tail:
+            captured_lines.append(tail)
+
+        error_fail_pattern = re.compile(r"\b(?:ERROR|FAIL)\b", re.IGNORECASE)
+        matched_lines = [line for line in captured_lines if error_fail_pattern.search(line)]
+
+        if matched_lines:
+            logs = ["[ERROR] envCheck detected ERROR/FAIL lines:"] + [f"[ENVCHK] {line}" for line in matched_lines]
+            return {"success": False, "logs": logs, "error": "envCheck output contains ERROR/FAIL"}
+
+        return {"success": True, "logs": ["[OK] No Error, envCheck SUCCESS"]}
