@@ -785,13 +785,13 @@ class InstallerService:
             if value is None:
                 continue
             pat = re.compile(
-                rf'(<InteractionVariable\\s+name=\"{re.escape(name)}\"\\s*>)(.*?)(</InteractionVariable>)',
-                flags=re.DOTALL,
+                rf'(<InteractionVariable\b[^>]*\bname\s*=\s*["\']{re.escape(name)}["\'][^>]*>)(.*?)(</InteractionVariable>)',
+                flags=re.DOTALL | re.IGNORECASE,
             )
             if not pat.search(updated):
                 warnings.append(f"[WARN] InteractionVariable not found: {name}")
                 continue
-            updated = pat.sub(rf"\\1{value}\\3", updated)
+            updated = pat.sub(rf"\g<1>{value}\g<3>", updated)
 
         return updated, warnings
 
@@ -978,7 +978,7 @@ class InstallerService:
             command,
             on_output_callback=on_output_callback,
             on_prompt_callback=on_prompt_callback,
-            timeout=7200,
+            timeout=36000,
         )
         if not result.get("success"):
             return {"success": False, "logs": [], "error": "setup.sh SILENT failed"}
