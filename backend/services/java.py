@@ -113,4 +113,19 @@ class JavaService:
                 "error": result.get("stderr") or "Failed to set ownership on /u01/OFSAA",
             }
         logs.append("[OK] Set ownership on /u01/OFSAA")
+
+        perm_result = await self.ssh_service.execute_command(
+            host,
+            username,
+            password,
+            "chmod 775 /u01/OFSAA/FICHOME /u01/OFSAA/FTPSHARE",
+            get_pty=True,
+        )
+        if not perm_result["success"]:
+            return {
+                "success": False,
+                "logs": logs,
+                "error": perm_result.get("stderr") or "Failed to set 775 permissions on OFSAA directories",
+            }
+        logs.append("[OK] Set 775 permissions on /u01/OFSAA/FICHOME and /u01/OFSAA/FTPSHARE")
         return {"success": True, "logs": logs}

@@ -173,6 +173,9 @@ class InstallationService:
     async def run_osc_schema_creator(self, host: str, username: str, password: str, **kwargs) -> dict:
         return await self.installer.run_osc_schema_creator(host, username, password, **kwargs)
 
+    async def run_setup_silent(self, host: str, username: str, password: str, **kwargs) -> dict:
+        return await self.installer.run_setup_silent(host, username, password, **kwargs)
+
     async def run_environment_check(self, host: str, username: str, password: str, **kwargs) -> dict:
         return await self.installer.run_environment_check(host, username, password, **kwargs)
 

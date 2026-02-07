@@ -888,9 +888,6 @@ class InstallerService:
             on_prompt_callback=on_prompt_callback,
             timeout=3600,
         )
-        if not result.get("success"):
-            return {"success": False, "logs": [], "error": "osc.sh failed"}
-
         schema_creator_dir = os.path.dirname(os.path.dirname(osc_path))
         logs_dir = f"{schema_creator_dir}/logs"
 
@@ -913,11 +910,80 @@ class InstallerService:
         grep_result = await self.ssh_service.execute_command(host, username, password, grep_cmd)
         matches = [line.strip() for line in (grep_result.get('stdout') or '').splitlines() if line.strip()]
 
-        if matches:
-            logs = [f"[ERROR] osc.sh log contains ERROR/FAIL in {latest_log}:"] + [f"[OSCLOG] {line}" for line in matches]
+        schema_exists_pattern = re.compile(r"(already\s+exist|already\s+exists|ora-00955|name is already used)", re.IGNORECASE)
+        schema_exists_lines = [line for line in matches if schema_exists_pattern.search(line)]
+        fatal_lines = [line for line in matches if line not in schema_exists_lines]
+
+        if schema_exists_lines:
+            logs = [f"[INFO] Checked log: {latest_log}"]
+            logs.append("[WARN] Schema already exists. Skipping schema creation and moving to next step.")
+            logs.extend([f"[OSCLOG] {line}" for line in schema_exists_lines])
+            if fatal_lines:
+                logs.extend([f"[OSCLOG] {line}" for line in fatal_lines])
+                return {"success": False, "logs": logs, "error": "osc.sh log contains non-skippable ERROR/FAIL"}
+            return {"success": True, "logs": logs}
+
+        if fatal_lines:
+            logs = [f"[ERROR] osc.sh log contains ERROR/FAIL in {latest_log}:"] + [f"[OSCLOG] {line}" for line in fatal_lines]
             return {"success": False, "logs": logs, "error": "osc.sh log contains ERROR/FAIL"}
 
+        if not result.get("success"):
+            return {"success": False, "logs": [f"[INFO] Checked log: {latest_log}"], "error": "osc.sh failed"}
+
         return {"success": True, "logs": [f"[INFO] Checked log: {latest_log}", "[OK] No Error , after osc.sh"]}
+
+    async def run_setup_silent(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        on_output_callback: Optional[Callable[[str], Any]] = None,
+        on_prompt_callback: Optional[Callable[[str], Any]] = None,
+    ) -> dict:
+        setup_candidates = [
+            "/u01/installer_kit/OFS_BD_PACK/bin/setup.sh",
+            "/u01/Installation_Kit/OFS_BD_PACK/bin/setup.sh",
+            "/u01/INSTALLER_KIT/OFS_BD_PACK/bin/setup.sh",
+        ]
+
+        setup_path = None
+        for candidate in setup_candidates:
+            check = await self.ssh_service.execute_command(host, username, password, f"test -x {candidate}")
+            if check["success"]:
+                setup_path = candidate
+                break
+        if setup_path is None:
+            return {"success": False, "logs": [], "error": "setup.sh not found or not executable in expected locations"}
+
+        inner_cmd = (
+            "source /home/oracle/.profile >/dev/null 2>&1; "
+            f"cd $(dirname {setup_path}) && "
+            "./setup.sh SILENT"
+        )
+        if username == "oracle":
+            command = f"bash -lc {shell_escape(inner_cmd)}"
+        else:
+            command = (
+                "if command -v sudo >/dev/null 2>&1; then "
+                f"sudo -u oracle bash -lc {shell_escape(inner_cmd)}; "
+                "else "
+                f"su - oracle -c {shell_escape('bash -lc ' + shell_escape(inner_cmd))}; "
+                "fi"
+            )
+
+        result = await self.ssh_service.execute_interactive_command(
+            host,
+            username,
+            password,
+            command,
+            on_output_callback=on_output_callback,
+            on_prompt_callback=on_prompt_callback,
+            timeout=7200,
+        )
+        if not result.get("success"):
+            return {"success": False, "logs": [], "error": "setup.sh SILENT failed"}
+
+        return {"success": True, "logs": [f"[OK] setup.sh SILENT completed from {setup_path}"]}
 
     async def run_environment_check(
         self,

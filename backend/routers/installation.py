@@ -223,7 +223,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await handle_failure("Environment check failed", env_result.get("error"))
             return
 
-        # Step 9: Apply XML/properties from repo and run schema creator (osc.sh -S)
+        # Step 9: Apply XML/properties, run schema creator (osc.sh), then setup.sh SILENT
         await update_status(task_id, "running", steps[8], InstallationSteps.progress_for_index(8))
         cfg_result = await installation_service.apply_installer_config_files(
             request.host,
@@ -295,10 +295,23 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await handle_failure("osc.sh execution failed", osc_result.get("error"))
             return
 
+        setup_result = await installation_service.run_setup_silent(
+            request.host,
+            request.username,
+            request.password,
+            on_output_callback=output_callback,
+            on_prompt_callback=prompt_callback,
+        )
+        await append_output(task_id, "\n".join(setup_result.get("logs", [])))
+        if not setup_result.get("success"):
+            await handle_failure("setup.sh SILENT execution failed", setup_result.get("error"))
+            return
+
         task.status = "completed"
         task.progress = 100
         await update_status(task_id, "completed", steps[8], 100)
         await append_output(task_id, "[OK] osc.sh completed")
+        await append_output(task_id, "[OK] setup.sh SILENT completed")
         await append_output(task_id, "[OK] Schema creation completed")
         return
 

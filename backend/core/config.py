@@ -35,7 +35,7 @@ class InstallationSteps:
         "Creating OFSAA directory structure",
         "Checking Oracle client and updating profile",
         "Setting up OFSAA installer and running environment check",
-        "Applying config XMLs/properties and running osc.sh",
+        "Applying config XMLs/properties, running osc.sh, and setup.sh SILENT",
     ]
 
     PROGRESS_VALUES = [12, 24, 36, 48, 60, 70, 80, 90, 100]
