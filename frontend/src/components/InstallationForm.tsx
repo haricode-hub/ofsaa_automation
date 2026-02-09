@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
@@ -395,6 +395,47 @@ export function InstallationForm() {
     return baseClass + ' bg-white text-black hover:bg-gray-200 active:scale-98'
   }
 
+  const ecmSchemaFields: Array<{ key: keyof InstallationData; label: string; placeholder?: string; type?: string }> = [
+    { key: 'schema_jdbc_host', label: 'JDBC Host', placeholder: '192.168.3.42' },
+    { key: 'schema_jdbc_port', label: 'JDBC Port', placeholder: '1521' },
+    { key: 'schema_jdbc_service', label: 'JDBC Service/SID', placeholder: 'OFSAAPDB' },
+    { key: 'schema_setup_env', label: 'SETUPINFO NAME', placeholder: 'DEV' },
+    { key: 'schema_apply_same_for_all', label: 'APPLYSAMEFORALL', placeholder: 'Y' },
+    { key: 'schema_default_password', label: 'DEFAULT PASSWORD', placeholder: 'ofsaa8x', type: 'password' },
+    { key: 'schema_datafile_dir', label: 'DATAFILE Base Dir', placeholder: '/u01/app/oracle/oradata/OFSAA/OFSAADB' },
+    { key: 'schema_tablespace_autoextend', label: 'AUTOEXTEND', placeholder: 'OFF' },
+    { key: 'schema_config_schema_name', label: 'CONFIG Schema Name', placeholder: 'OFSCONFIG' },
+    { key: 'schema_atomic_schema_name', label: 'ATOMIC Schema Name', placeholder: 'OFSATOMIC' }
+  ]
+
+  const ecmDefaultFields: Array<{ key: keyof InstallationData; label: string; placeholder?: string }> = [
+    { key: 'prop_base_country', label: 'BASE_COUNTRY', placeholder: 'US' },
+    { key: 'prop_default_jurisdiction', label: 'DEFAULT_JURISDICTION', placeholder: 'AMEA' },
+    { key: 'prop_smtp_host', label: 'SMTP_HOST', placeholder: '192.168.3.41' },
+    { key: 'prop_nls_length_semantics', label: 'NLS_LENGTH_SEMANTICS', placeholder: 'CHAR' },
+    { key: 'prop_analyst_data_source', label: 'ANALYST_DATA_SOURCE', placeholder: 'ANALYST' },
+    { key: 'prop_miner_data_source', label: 'MINER_DATA_SOURCE', placeholder: 'MINER' },
+    { key: 'prop_configure_obiee', label: 'CONFIGURE_OBIEE', placeholder: '0 or 1' },
+    { key: 'prop_fsdf_upload_model', label: 'FSDF_UPLOAD_MODEL', placeholder: '0 or 1' },
+    { key: 'prop_amlsource', label: 'AMLSOURCE', placeholder: 'AML_SOURCE_DS' },
+    { key: 'prop_kycsource', label: 'KYCSOURCE', placeholder: 'KYC_SOURCE_DS' },
+    { key: 'prop_cssource', label: 'CSSOURCE', placeholder: 'CS_SOURCE_DS' },
+    { key: 'prop_externalsystemsource', label: 'EXTERNALSYSTEMSOURCE', placeholder: 'EXT_SOURCE_DS' },
+    { key: 'prop_tbamlsource', label: 'TBAMLSOURCE', placeholder: 'TBAML_SOURCE_DS' },
+    { key: 'prop_fatcasource', label: 'FATCASOURCE', placeholder: 'FATCA_SOURCE_DS' },
+    { key: 'prop_ofsecm_datasrcname', label: 'OFSECM_DATASRCNAME', placeholder: 'OFSECM_DS' },
+    { key: 'prop_comn_gateway_ds', label: 'COMN_GATWAY_DS', placeholder: 'COMMON_GATEWAY_DS' },
+    { key: 'prop_t2jurl', label: 'T2JURL', placeholder: 'http://192.168.3.41:8080/t2j' },
+    { key: 'prop_j2turl', label: 'J2TURL', placeholder: 'http://192.168.3.41:8080/j2t' },
+    { key: 'prop_cmngtwyurl', label: 'CMNGTWYURL', placeholder: 'http://192.168.3.41:8080/gateway' },
+    { key: 'prop_bdurl', label: 'BDURL', placeholder: 'http://192.168.3.41:8080/bd' },
+    { key: 'prop_ofss_wls_url', label: 'OFSS_WLS_URL', placeholder: 'http://192.168.3.41:7002' },
+    { key: 'prop_aai_url', label: 'AAI_URL', placeholder: 'http://192.168.3.41:7002/aai' },
+    { key: 'prop_cs_url', label: 'CS_URL', placeholder: 'http://192.168.3.41:8080/cs' },
+    { key: 'prop_arachnys_nns_service_url', label: 'ARACHNYS_NNS_SERVICE_URL', placeholder: 'http://192.168.3.41:8080/arachnys' }
+  ]
+
+
   return (
     <div className="space-y-6">
       <form onSubmit={handleSubmit} className="space-y-6">
@@ -440,80 +481,65 @@ export function InstallationForm() {
             </div>
           </div>
         </motion.div>
-
-        {/* Host Field */}
-        <motion.div 
-          className="space-y-2"
+        <motion.div
+          className="rounded-xl border border-border bg-bg-secondary/40 p-4 lg:p-5 space-y-4"
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.1 }}
         >
-          <label className="flex items-center gap-2 text-xs font-bold text-text-primary uppercase tracking-wider">
-            <ServerIcon className="w-4 h-4" />
-            Target Host
-          </label>
-          <input
-            type="text"
-            value={formData.host}
-            onChange={handleInputChange('host')}
-            placeholder="192.168.1.100"
-            className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-            required
-          />
-        </motion.div>
-
-        {/* Username Field */}
-        <motion.div 
-          className="space-y-2"
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.2 }}
-        >
-          <label className="flex items-center gap-2 text-xs font-bold text-text-primary uppercase tracking-wider">
-            <UserIcon className="w-4 h-4" />
-            SSH Username
-          </label>
-          <input
-            type="text"
-            value={formData.username}
-            onChange={handleInputChange('username')}
-            placeholder="oracle"
-            className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-            required
-          />
-        </motion.div>
-
-        {/* Password Field */}
-        <motion.div 
-          className="space-y-2"
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.3 }}
-        >
-          <label className="flex items-center gap-2 text-xs font-bold text-text-primary uppercase tracking-wider">
-            <KeyIcon className="w-4 h-4" />
-            SSH Password
-          </label>
-          <input
-            type="password"
-            value={formData.password}
-            onChange={handleInputChange('password')}
-            placeholder="••••••••••••"
-            className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-            required
-          />
-        </motion.div>
-
-        {/* Profile Variables Section */}
-        <motion.div 
-          className="border-t border-border pt-6 space-y-4"
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.4 }}
-        >
-          <div className="text-sm font-bold text-text-primary uppercase tracking-wider mb-4">
-            📋 Profile Configuration
+          <div className="text-sm font-bold text-text-primary uppercase tracking-wider mb-1">
+            Connection And Base Configuration
           </div>
+
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-xs font-bold text-text-primary uppercase tracking-wider">
+              <ServerIcon className="w-4 h-4" />
+              Target Host
+            </label>
+            <input
+              type="text"
+              value={formData.host}
+              onChange={handleInputChange('host')}
+              placeholder="192.168.1.100"
+              className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+              required
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-xs font-bold text-text-primary uppercase tracking-wider">
+              <UserIcon className="w-4 h-4" />
+              SSH Username
+            </label>
+            <input
+              type="text"
+              value={formData.username}
+              onChange={handleInputChange('username')}
+              placeholder="oracle"
+              className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+              required
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-xs font-bold text-text-primary uppercase tracking-wider">
+              <KeyIcon className="w-4 h-4" />
+              SSH Password
+            </label>
+            <input
+              type="password"
+              value={formData.password}
+              onChange={handleInputChange('password')}
+              placeholder="••••••••••••"
+              className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+              required
+            />
+          </div>
+
+          <div className="border-t border-border pt-6 space-y-4">
+            <div className="text-sm font-bold text-text-primary uppercase tracking-wider mb-4">
+              Profile Configuration
+            </div>
 
           {/* FIC_HOME Field */}
           <div className="space-y-2">
@@ -572,6 +598,31 @@ export function InstallationForm() {
               required
             />
           </div>
+          </div>
+        </motion.div>
+
+        <motion.div
+          className="rounded-xl border border-amber-400/30 bg-gradient-to-r from-amber-500/10 via-bg-secondary/30 to-bg-secondary/30 p-4 lg:p-5"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.35, delay: 0.42 }}
+        >
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <div className="inline-flex items-center rounded-full border border-amber-300/40 bg-amber-400/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.18em] text-amber-200">
+                BD Pack Enabled
+              </div>
+              <div className="mt-2 text-sm font-bold text-text-primary uppercase tracking-wider">
+                BD Pack Configuration Inputs
+              </div>
+              <div className="mt-1 text-xs text-text-muted">
+                Fill these 4 sections: `OFS_BD_SCHEMA_IN.xml`, `OFS_BD_PACK.xml`, `default.properties`, and `OFSAAI_InstallConfig.xml`.
+              </div>
+            </div>
+            <div className="hidden lg:block text-[10px] font-mono text-amber-200/80 uppercase tracking-[0.2em]">
+              Required
+            </div>
+          </div>
         </motion.div>
 
         {/* Schema Config Section */}
@@ -581,7 +632,7 @@ export function InstallationForm() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.45 }}
         >
-          <details open className="group">
+          <details className="group">
             <summary className="list-none cursor-pointer select-none flex items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-bold text-text-primary uppercase tracking-wider">
@@ -767,7 +818,7 @@ export function InstallationForm() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.5 }}
         >
-          <details open className="group">
+          <details className="group">
             <summary className="list-none cursor-pointer select-none flex items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-bold text-text-primary uppercase tracking-wider">
@@ -819,7 +870,6 @@ export function InstallationForm() {
         </motion.div>
 
         {/* Silent Installer Section */}
-        {formData.install_ecm && (
         <motion.div
           className="rounded-xl border border-border bg-bg-secondary/40 p-4 lg:p-5"
           initial={{ opacity: 0, y: 10 }}
@@ -830,7 +880,7 @@ export function InstallationForm() {
             <summary className="list-none cursor-pointer select-none flex items-center justify-between gap-3">
               <div>
                 <div className="text-sm font-bold text-text-primary uppercase tracking-wider">
-                  Silent Installer (default.properties)
+                  BD Pack Silent Installer (default.properties)
                 </div>
                 <div className="text-xs text-text-muted mt-1">
                   User input section only (above `FSDF_UPLOAD_MODEL`).
@@ -1071,7 +1121,6 @@ export function InstallationForm() {
             </div>
           </details>
         </motion.div>
-        )}
 
         {/* OFSAAI Install Config Section */}
         <motion.div
@@ -1203,6 +1252,110 @@ export function InstallationForm() {
           </details>
         </motion.div>
 
+        {formData.install_ecm && (
+          <motion.div
+            className="rounded-xl border border-cyan-400/30 bg-gradient-to-r from-cyan-500/10 via-bg-secondary/30 to-bg-secondary/30 p-4 lg:p-5"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35, delay: 0.6 }}
+          >
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <div className="inline-flex items-center rounded-full border border-cyan-300/40 bg-cyan-400/10 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.18em] text-cyan-200">
+                  ECM Enabled
+                </div>
+                <div className="mt-2 text-sm font-bold text-text-primary uppercase tracking-wider">
+                  ECM Configuration Inputs
+                </div>
+                <div className="mt-1 text-xs text-text-muted">
+                  Fill these 2 sections: `OFS_ECM_SCHEMA_IN.xml` and ECM `default.properties`.
+                </div>
+              </div>
+              <div className="hidden lg:block text-[10px] font-mono text-cyan-200/80 uppercase tracking-[0.2em]">
+                Required
+              </div>
+            </div>
+          </motion.div>
+        )}
+
+        {formData.install_ecm && (
+          <motion.div
+            className="rounded-xl border border-border bg-bg-secondary/40 p-4 lg:p-5"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.62 }}
+          >
+            <details className="group">
+              <summary className="list-none cursor-pointer select-none flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-bold text-text-primary uppercase tracking-wider">
+                    ECM Pack Schema Inputs (OFS_ECM_SCHEMA_IN.xml)
+                  </div>
+                  <div className="text-xs text-text-muted mt-1">Editable ECM schema inputs.</div>
+                </div>
+                <div className="text-xs font-mono text-text-muted group-open:hidden">OPEN</div>
+                <div className="text-xs font-mono text-text-muted hidden group-open:block">CLOSE</div>
+              </summary>
+              <div className="mt-5 space-y-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">HOST</label>
+                  <input type="text" value={formData.host} placeholder="192.168.3.41" readOnly className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary placeholder-text-muted" />
+                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {ecmSchemaFields.map(field => (
+                    <div key={field.key} className="space-y-2">
+                      <label className="text-xs font-bold text-text-primary uppercase tracking-wider">{field.label}</label>
+                      <input
+                        type={field.type || 'text'}
+                        value={(formData as any)[field.key]}
+                        onChange={handleInputChange(field.key)}
+                        placeholder={field.placeholder}
+                        className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </details>
+          </motion.div>
+        )}
+
+        {formData.install_ecm && (
+          <motion.div
+            className="rounded-xl border border-border bg-bg-secondary/40 p-4 lg:p-5"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.64 }}
+          >
+            <details className="group">
+              <summary className="list-none cursor-pointer select-none flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-bold text-text-primary uppercase tracking-wider">
+                    ECM Pack Default Inputs (default.properties)
+                  </div>
+                  <div className="text-xs text-text-muted mt-1">Editable ECM default.properties inputs.</div>
+                </div>
+                <div className="text-xs font-mono text-text-muted group-open:hidden">OPEN</div>
+                <div className="text-xs font-mono text-text-muted hidden group-open:block">CLOSE</div>
+              </summary>
+              <div className="mt-5 grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {ecmDefaultFields.map(field => (
+                  <div key={field.key} className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">{field.label}</label>
+                    <input
+                      type="text"
+                      value={(formData as any)[field.key]}
+                      onChange={handleInputChange(field.key)}
+                      placeholder={field.placeholder}
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                ))}
+              </div>
+            </details>
+          </motion.div>
+        )}
+
         {/* Submit Button */}
         <motion.div
           initial={{ opacity: 0, y: 10 }}
@@ -1222,3 +1375,5 @@ export function InstallationForm() {
     </div>
   )
 }
+
+
