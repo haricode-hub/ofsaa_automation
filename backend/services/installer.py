@@ -56,13 +56,13 @@ class InstallerService:
         zip_name = (Config.INSTALLER_ZIP_NAME or "").strip()
         if zip_name:
             find_zip_cmd = (
-                f"installer_zip=$(find {repo_dir} -maxdepth 1 -type f -name {shell_escape(zip_name)} -print | head -n 1); "
+                f"installer_zip=$(find {repo_dir}/BD_PACK -maxdepth 1 -type f -name {shell_escape(zip_name)} -print | head -n 1); "
                 "if [ -z \"$installer_zip\" ]; then echo 'INSTALLER_ZIP_NOT_FOUND'; exit 1; fi; "
                 "echo $installer_zip"
             )
         else:
             find_zip_cmd = (
-                f"installer_zip=$(ls -1t {repo_dir}/*.zip 2>/dev/null | head -n 1); "
+                f"installer_zip=$(ls -1t {repo_dir}/BD_PACK/*.zip 2>/dev/null | head -n 1); "
                 "if [ -z \"$installer_zip\" ]; then echo 'INSTALLER_ZIP_NOT_FOUND'; exit 1; fi; "
                 "echo $installer_zip"
             )
@@ -335,17 +335,11 @@ class InstallerService:
                 return {"success": False, "logs": logs, "error": aai_patch.get("error") or "Failed to patch OFSAAI_InstallConfig.xml"}
 
         for filename, dest_path in mappings:
-            find_cmd = (
-                f"src=$(find {repo_dir} -type f -name '{filename}' "
-                "! -name '*_BEFORE*' -print | head -n 1); "
-                "if [ -z \"$src\" ]; then echo 'NOT_FOUND'; exit 2; fi; "
-                "echo $src"
+            src_path = await self._resolve_repo_bd_pack_file_path(
+                host, username, password, repo_dir=repo_dir, filename=filename
             )
-            src_result = await self.ssh_service.execute_command(host, username, password, find_cmd)
-            if not src_result["success"] or "NOT_FOUND" in (src_result.get("stdout") or ""):
+            if not src_path:
                 return {"success": False, "logs": logs, "error": f"File not found in repo: {filename}"}
-
-            src_path = (src_result.get("stdout") or "").splitlines()[0].strip()
             logs.append(f"[INFO] Using {filename} from repo: {src_path}")
 
             copy_cmd = (
@@ -386,6 +380,36 @@ class InstallerService:
         if not result.get("success"):
             return {"success": False, "error": result.get("stderr") or f"Failed to write {path}"}
         return {"success": True}
+
+    async def _resolve_repo_bd_pack_file_path(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        repo_dir: str,
+        filename: str,
+    ) -> Optional[str]:
+        preferred_path = f"{repo_dir}/BD_PACK/{filename}"
+        preferred_check = await self.ssh_service.execute_command(
+            host, username, password, f"test -f {shell_escape(preferred_path)} && echo FOUND"
+        )
+        if preferred_check.get("success") and "FOUND" in (preferred_check.get("stdout") or ""):
+            return preferred_path
+
+        fallback_cmd = (
+            f"src=$(find {repo_dir} -type f -name '{filename}' ! -name '*_BEFORE*' -print | head -n 1); "
+            "if [ -z \"$src\" ]; then echo 'NOT_FOUND'; exit 0; fi; "
+            "echo $src"
+        )
+        fallback_result = await self.ssh_service.execute_command(host, username, password, fallback_cmd)
+        src_lines = (fallback_result.get("stdout") or "").splitlines()
+        if not src_lines:
+            return None
+        first = src_lines[0].strip()
+        if not first or first == "NOT_FOUND":
+            return None
+        return first
 
     async def _commit_and_push_repo_changes(
         self,
@@ -581,17 +605,11 @@ class InstallerService:
     ) -> dict:
         logs: list[str] = []
 
-        # locate file within repo
-        find_cmd = (
-            f"src=$(find {repo_dir} -type f -name 'OFS_BD_SCHEMA_IN.xml' ! -name '*_BEFORE*' -print | head -n 1); "
-            "if [ -z \"$src\" ]; then echo 'NOT_FOUND'; exit 2; fi; "
-            "echo $src"
+        src_path = await self._resolve_repo_bd_pack_file_path(
+            host, username, password, repo_dir=repo_dir, filename="OFS_BD_SCHEMA_IN.xml"
         )
-        src_result = await self.ssh_service.execute_command(host, username, password, find_cmd)
-        if not src_result.get("success") or "NOT_FOUND" in (src_result.get("stdout") or ""):
+        if not src_path:
             return {"success": False, "logs": logs, "error": "OFS_BD_SCHEMA_IN.xml not found in repo"}
-
-        src_path = (src_result.get("stdout") or "").splitlines()[0].strip()
         logs.append(f"[INFO] Patching repo XML: {src_path}")
 
         read = await self._read_remote_file(host, username, password, src_path)
@@ -665,16 +683,11 @@ class InstallerService:
         pack_app_enable: dict[str, bool],
     ) -> dict:
         logs: list[str] = []
-        find_cmd = (
-            f"src=$(find {repo_dir} -type f -name 'OFS_BD_PACK.xml' ! -name '*_BEFORE*' -print | head -n 1); "
-            "if [ -z \"$src\" ]; then echo 'NOT_FOUND'; exit 2; fi; "
-            "echo $src"
+        src_path = await self._resolve_repo_bd_pack_file_path(
+            host, username, password, repo_dir=repo_dir, filename="OFS_BD_PACK.xml"
         )
-        src_result = await self.ssh_service.execute_command(host, username, password, find_cmd)
-        if not src_result.get("success") or "NOT_FOUND" in (src_result.get("stdout") or ""):
+        if not src_path:
             return {"success": False, "logs": logs, "error": "OFS_BD_PACK.xml not found in repo"}
-
-        src_path = (src_result.get("stdout") or "").splitlines()[0].strip()
         logs.append(f"[INFO] Patching repo XML: {src_path}")
 
         read = await self._read_remote_file(host, username, password, src_path)
@@ -753,16 +766,11 @@ class InstallerService:
         updates: dict[str, Optional[str]],
     ) -> dict:
         logs: list[str] = []
-        find_cmd = (
-            f"src=$(find {repo_dir} -type f -name 'default.properties' ! -name '*_BEFORE*' -print | head -n 1); "
-            "if [ -z \"$src\" ]; then echo 'NOT_FOUND'; exit 2; fi; "
-            "echo $src"
+        src_path = await self._resolve_repo_bd_pack_file_path(
+            host, username, password, repo_dir=repo_dir, filename="default.properties"
         )
-        src_result = await self.ssh_service.execute_command(host, username, password, find_cmd)
-        if not src_result.get("success") or "NOT_FOUND" in (src_result.get("stdout") or ""):
+        if not src_path:
             return {"success": False, "logs": logs, "error": "default.properties not found in repo"}
-
-        src_path = (src_result.get("stdout") or "").splitlines()[0].strip()
         logs.append(f"[INFO] Patching repo properties: {src_path}")
 
         read = await self._read_remote_file(host, username, password, src_path)
@@ -813,16 +821,11 @@ class InstallerService:
         updates: dict[str, Optional[str]],
     ) -> dict:
         logs: list[str] = []
-        find_cmd = (
-            f"src=$(find {repo_dir} -type f -name 'OFSAAI_InstallConfig.xml' ! -name '*_BEFORE*' -print | head -n 1); "
-            "if [ -z \"$src\" ]; then echo 'NOT_FOUND'; exit 2; fi; "
-            "echo $src"
+        src_path = await self._resolve_repo_bd_pack_file_path(
+            host, username, password, repo_dir=repo_dir, filename="OFSAAI_InstallConfig.xml"
         )
-        src_result = await self.ssh_service.execute_command(host, username, password, find_cmd)
-        if not src_result.get("success") or "NOT_FOUND" in (src_result.get("stdout") or ""):
+        if not src_path:
             return {"success": False, "logs": logs, "error": "OFSAAI_InstallConfig.xml not found in repo"}
-
-        src_path = (src_result.get("stdout") or "").splitlines()[0].strip()
         logs.append(f"[INFO] Patching repo XML: {src_path}")
 
         read = await self._read_remote_file(host, username, password, src_path)

@@ -65,8 +65,15 @@ async def list_installation_tasks():
 @router.post("/test-connection")
 async def test_connection(request: InstallationRequest):
     ssh_service = SSHService()
-    result = await ssh_service.test_connection(request.host, request.username, request.password)
-    return result
+    last_result: dict = {"success": False, "error": "SSH connection failed"}
+    for attempt in range(1, 4):
+        result = await ssh_service.test_connection(request.host, request.username, request.password)
+        if result.get("success"):
+            return {**result, "attempt": attempt}
+        last_result = result
+        if attempt < 3:
+            await asyncio.sleep(1)
+    return {**last_result, "attempt": 3}
 
 
 async def append_output(task_id: str, text: str) -> None:
@@ -108,9 +115,18 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
     try:
         await update_status(task_id, "running", task.current_step, 0)
 
-        connection = await ssh_service.test_connection(request.host, request.username, request.password)
+        connection: dict = {"success": False, "error": "SSH connection failed"}
+        for attempt in range(1, 4):
+            await append_output(task_id, f"[INFO] SSH connection attempt {attempt}/3")
+            connection = await ssh_service.test_connection(request.host, request.username, request.password)
+            if connection.get("success"):
+                break
+            if attempt < 3:
+                await append_output(task_id, "[WARN] SSH connection failed. Retrying...")
+                await asyncio.sleep(1)
+
         if not connection.get("success"):
-            await handle_failure("SSH connection failed", connection.get("error"))
+            await handle_failure("SSH connection failed after 3 attempts", connection.get("error"))
             return
         await append_output(task_id, "[OK] SSH connection established")
 

@@ -3,12 +3,14 @@ import logging
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
 import uvicorn
 
 from core.logging import setup_logging
 from routers.installation import router as installation_router, installation_tasks, websocket_manager
 
 
+load_dotenv()
 setup_logging()
 logger = logging.getLogger(__name__)
 
