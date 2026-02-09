@@ -166,7 +166,7 @@ export default function LogsPage() {
         {/* Main Layout */}
         <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4 p-4 lg:p-8">
           {/* Left Panel - Steps */}
-          <div className="glass-panel rounded-xl p-4 lg:p-6 shadow-panel">
+          <div className="glass-panel rounded-xl p-4 lg:p-6 shadow-panel h-[72vh] max-h-[72vh] min-h-[72vh] overflow-y-auto lg:h-[calc(100vh-10rem)] lg:max-h-[calc(100vh-10rem)] lg:min-h-[calc(100vh-10rem)]">
             <div className="text-xs font-bold uppercase tracking-widest text-text-secondary mb-4">
               Step Tracker
             </div>
