@@ -51,6 +51,26 @@ interface InstallationData {
   prop_obiee_url: string
   prop_sw_rmiport: string
   prop_big_data_enable: string
+  prop_nls_length_semantics: string
+  prop_analyst_data_source: string
+  prop_miner_data_source: string
+  prop_fsdf_upload_model: string
+  prop_amlsource: string
+  prop_kycsource: string
+  prop_cssource: string
+  prop_externalsystemsource: string
+  prop_tbamlsource: string
+  prop_fatcasource: string
+  prop_ofsecm_datasrcname: string
+  prop_comn_gateway_ds: string
+  prop_t2jurl: string
+  prop_j2turl: string
+  prop_cmngtwyurl: string
+  prop_bdurl: string
+  prop_ofss_wls_url: string
+  prop_aai_url: string
+  prop_cs_url: string
+  prop_arachnys_nns_service_url: string
 
   // OFSAAI_InstallConfig.xml inputs
   aai_webappservertype: string
@@ -154,6 +174,26 @@ export function InstallationForm() {
     prop_obiee_url: '',
     prop_sw_rmiport: '8204',
     prop_big_data_enable: 'FALSE',
+    prop_nls_length_semantics: 'CHAR',
+    prop_analyst_data_source: 'ANALYST',
+    prop_miner_data_source: 'MINER',
+    prop_fsdf_upload_model: '1',
+    prop_amlsource: '',
+    prop_kycsource: '',
+    prop_cssource: '',
+    prop_externalsystemsource: '',
+    prop_tbamlsource: '',
+    prop_fatcasource: '',
+    prop_ofsecm_datasrcname: '',
+    prop_comn_gateway_ds: '',
+    prop_t2jurl: '',
+    prop_j2turl: '',
+    prop_cmngtwyurl: '',
+    prop_bdurl: '',
+    prop_ofss_wls_url: '',
+    prop_aai_url: '',
+    prop_cs_url: '',
+    prop_arachnys_nns_service_url: '',
 
     aai_webappservertype: '3',
     aai_dbserver_ip: '',
@@ -232,6 +272,26 @@ export function InstallationForm() {
           prop_obiee_url: formData.prop_obiee_url, // may be empty
           prop_sw_rmiport: formData.prop_sw_rmiport || null,
           prop_big_data_enable: formData.prop_big_data_enable || null,
+          prop_nls_length_semantics: formData.install_ecm ? (formData.prop_nls_length_semantics || null) : null,
+          prop_analyst_data_source: formData.install_ecm ? (formData.prop_analyst_data_source || null) : null,
+          prop_miner_data_source: formData.install_ecm ? (formData.prop_miner_data_source || null) : null,
+          prop_fsdf_upload_model: formData.install_ecm ? (formData.prop_fsdf_upload_model || null) : null,
+          prop_amlsource: formData.install_ecm ? (formData.prop_amlsource || null) : null,
+          prop_kycsource: formData.install_ecm ? (formData.prop_kycsource || null) : null,
+          prop_cssource: formData.install_ecm ? (formData.prop_cssource || null) : null,
+          prop_externalsystemsource: formData.install_ecm ? (formData.prop_externalsystemsource || null) : null,
+          prop_tbamlsource: formData.install_ecm ? (formData.prop_tbamlsource || null) : null,
+          prop_fatcasource: formData.install_ecm ? (formData.prop_fatcasource || null) : null,
+          prop_ofsecm_datasrcname: formData.install_ecm ? (formData.prop_ofsecm_datasrcname || null) : null,
+          prop_comn_gateway_ds: formData.install_ecm ? (formData.prop_comn_gateway_ds || null) : null,
+          prop_t2jurl: formData.install_ecm ? (formData.prop_t2jurl || null) : null,
+          prop_j2turl: formData.install_ecm ? (formData.prop_j2turl || null) : null,
+          prop_cmngtwyurl: formData.install_ecm ? (formData.prop_cmngtwyurl || null) : null,
+          prop_bdurl: formData.install_ecm ? (formData.prop_bdurl || null) : null,
+          prop_ofss_wls_url: formData.install_ecm ? (formData.prop_ofss_wls_url || null) : null,
+          prop_aai_url: formData.install_ecm ? (formData.prop_aai_url || null) : null,
+          prop_cs_url: formData.install_ecm ? (formData.prop_cs_url || null) : null,
+          prop_arachnys_nns_service_url: formData.install_ecm ? (formData.prop_arachnys_nns_service_url || null) : null,
 
           aai_webappservertype: formData.aai_webappservertype || null,
           aai_dbserver_ip: formData.aai_dbserver_ip || null,
@@ -759,6 +819,7 @@ export function InstallationForm() {
         </motion.div>
 
         {/* Silent Installer Section */}
+        {formData.install_ecm && (
         <motion.div
           className="rounded-xl border border-border bg-bg-secondary/40 p-4 lg:p-5"
           initial={{ opacity: 0, y: 10 }}
@@ -875,18 +936,7 @@ export function InstallationForm() {
                     className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
                   />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    OBIEE_URL (optional)
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.prop_obiee_url}
-                    onChange={handleInputChange('prop_obiee_url')}
-                    placeholder="(empty allowed)"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  />
-                </div>
+                <div className="space-y-2" />
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -917,9 +967,111 @@ export function InstallationForm() {
                 
               </div>
 
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">NLS_LENGTH_SEMANTICS</label>
+                  <input type="text" value={formData.prop_nls_length_semantics} onChange={handleInputChange('prop_nls_length_semantics')} placeholder="CHAR" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">ANALYST_DATA_SOURCE</label>
+                  <input type="text" value={formData.prop_analyst_data_source} onChange={handleInputChange('prop_analyst_data_source')} placeholder="ANALYST" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">MINER_DATA_SOURCE</label>
+                  <input type="text" value={formData.prop_miner_data_source} onChange={handleInputChange('prop_miner_data_source')} placeholder="MINER" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">FSDF_UPLOAD_MODEL</label>
+                  <input type="text" value={formData.prop_fsdf_upload_model} onChange={handleInputChange('prop_fsdf_upload_model')} placeholder="0 or 1" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">AMLSOURCE</label>
+                  <input type="text" value={formData.prop_amlsource} onChange={handleInputChange('prop_amlsource')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">KYCSOURCE</label>
+                  <input type="text" value={formData.prop_kycsource} onChange={handleInputChange('prop_kycsource')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">CSSOURCE</label>
+                  <input type="text" value={formData.prop_cssource} onChange={handleInputChange('prop_cssource')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">EXTERNALSYSTEMSOURCE</label>
+                  <input type="text" value={formData.prop_externalsystemsource} onChange={handleInputChange('prop_externalsystemsource')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">TBAMLSOURCE</label>
+                  <input type="text" value={formData.prop_tbamlsource} onChange={handleInputChange('prop_tbamlsource')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">FATCASOURCE</label>
+                  <input type="text" value={formData.prop_fatcasource} onChange={handleInputChange('prop_fatcasource')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">OFSECM_DATASRCNAME</label>
+                  <input type="text" value={formData.prop_ofsecm_datasrcname} onChange={handleInputChange('prop_ofsecm_datasrcname')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">COMN_GATWAY_DS</label>
+                  <input type="text" value={formData.prop_comn_gateway_ds} onChange={handleInputChange('prop_comn_gateway_ds')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">T2JURL</label>
+                  <input type="text" value={formData.prop_t2jurl} onChange={handleInputChange('prop_t2jurl')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">J2TURL</label>
+                  <input type="text" value={formData.prop_j2turl} onChange={handleInputChange('prop_j2turl')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">CMNGTWYURL</label>
+                  <input type="text" value={formData.prop_cmngtwyurl} onChange={handleInputChange('prop_cmngtwyurl')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">BDURL</label>
+                  <input type="text" value={formData.prop_bdurl} onChange={handleInputChange('prop_bdurl')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">OFSS_WLS_URL</label>
+                  <input type="text" value={formData.prop_ofss_wls_url} onChange={handleInputChange('prop_ofss_wls_url')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">AAI_URL</label>
+                  <input type="text" value={formData.prop_aai_url} onChange={handleInputChange('prop_aai_url')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">CS_URL</label>
+                  <input type="text" value={formData.prop_cs_url} onChange={handleInputChange('prop_cs_url')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">ARACHNYS_NNS_SERVICE_URL</label>
+                  <input type="text" value={formData.prop_arachnys_nns_service_url} onChange={handleInputChange('prop_arachnys_nns_service_url')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+              </div>
+
             </div>
           </details>
         </motion.div>
+        )}
 
         {/* OFSAAI Install Config Section */}
         <motion.div

@@ -153,6 +153,25 @@ class InstallerService:
         prop_obiee_url: Optional[str] = None,
         prop_sw_rmiport: Optional[str] = None,
         prop_big_data_enable: Optional[str] = None,
+        prop_nls_length_semantics: Optional[str] = None,
+        prop_analyst_data_source: Optional[str] = None,
+        prop_miner_data_source: Optional[str] = None,
+        prop_fsdf_upload_model: Optional[str] = None,
+        prop_amlsource: Optional[str] = None,
+        prop_kycsource: Optional[str] = None,
+        prop_externalsystemsource: Optional[str] = None,
+        prop_tbamlsource: Optional[str] = None,
+        prop_fatcasource: Optional[str] = None,
+        prop_ofsecm_datasrcname: Optional[str] = None,
+        prop_comn_gateway_ds: Optional[str] = None,
+        prop_t2jurl: Optional[str] = None,
+        prop_j2turl: Optional[str] = None,
+        prop_cmngtwyurl: Optional[str] = None,
+        prop_bdurl: Optional[str] = None,
+        prop_ofss_wls_url: Optional[str] = None,
+        prop_aai_url: Optional[str] = None,
+        prop_cs_url: Optional[str] = None,
+        prop_arachnys_nns_service_url: Optional[str] = None,
         prop_sqoop_working_dir: Optional[str] = None,
         prop_ssh_auth_alias: Optional[str] = None,
         prop_ssh_host_name: Optional[str] = None,
@@ -188,6 +207,7 @@ class InstallerService:
         aai_weblogic_domain_home: Optional[str] = None,
         aai_ftspshare_path: Optional[str] = None,
         aai_sftp_user_id: Optional[str] = None,
+        install_ecm: Optional[bool] = None,
     ) -> dict:
         """
         Fetch required XML/properties from the git repo and place them into the extracted kit locations.
@@ -238,6 +258,10 @@ class InstallerService:
             ("default.properties", f"{kit_dir}/OFS_AML/conf/default.properties"),
             ("OFSAAI_InstallConfig.xml", f"{kit_dir}/OFS_AAI/conf/OFSAAI_InstallConfig.xml"),
         ]
+        if install_ecm:
+            mappings.append(("default.properties", f"{kit_dir}/OFS_ECM_PACK/conf/default.properties"))
+            mappings.append(("OFS_ECM_SCHEMA_IN.xml", f"{kit_dir}/OFS_ECM_PACK/conf/OFS_ECM_SCHEMA_IN.xml"))
+            mappings.append(("OFSAAI_InstallConfig.xml", f"{kit_dir}/OFS_ECM_PACK/conf/OFSAAI_InstallConfig.xml"))
 
         # Sanity checks
         check_repo = await self.ssh_service.execute_command(host, username, password, f"test -d {repo_dir}")
@@ -285,6 +309,27 @@ class InstallerService:
             logs.extend(patch_result.get("logs", []))
             if not patch_result.get("success"):
                 return {"success": False, "logs": logs, "error": patch_result.get("error") or "Failed to patch schema XML"}
+        if install_ecm and user_wants_schema_patch:
+            ecm_patch_result = await self._patch_ofs_ecm_schema_in_repo(
+                host,
+                username,
+                password,
+                repo_dir=repo_dir,
+                schema_jdbc_host=schema_jdbc_host,
+                schema_jdbc_port=schema_jdbc_port,
+                schema_jdbc_service=schema_jdbc_service,
+                schema_host=schema_host,
+                schema_setup_env=schema_setup_env,
+                schema_apply_same_for_all=schema_apply_same_for_all,
+                schema_default_password=schema_default_password,
+                schema_datafile_dir=schema_datafile_dir,
+                schema_tablespace_autoextend=schema_tablespace_autoextend,
+                schema_config_schema_name=schema_config_schema_name,
+                schema_atomic_schema_name=schema_atomic_schema_name,
+            )
+            logs.extend(ecm_patch_result.get("logs", []))
+            if not ecm_patch_result.get("success"):
+                return {"success": False, "logs": logs, "error": ecm_patch_result.get("error") or "Failed to patch ECM schema XML"}
 
         if pack_app_enable:
             pack_patch = await self._patch_ofs_bd_pack_xml_repo(
@@ -303,11 +348,31 @@ class InstallerService:
             "DEFAULT_JURISDICTION": prop_default_jurisdiction,
             "SMTP_HOST": prop_smtp_host,
             "PARTITION_DATE_FORMAT": prop_partition_date_format,
+            "NLS_LENGTH_SEMANTICS": prop_nls_length_semantics,
+            "ANALYST_DATA_SOURCE": prop_analyst_data_source,
+            "MINER_DATA_SOURCE": prop_miner_data_source,
             "WEB_SERVICE_USER": prop_web_service_user,
             "WEB_SERVICE_PASSWORD": prop_web_service_password,
             "CONFIGURE_OBIEE": prop_configure_obiee,
             "OBIEE_URL": prop_obiee_url,
             "SW_RMIPORT": prop_sw_rmiport,
+            "FSDF_UPLOAD_MODEL": prop_fsdf_upload_model,
+            "AMLSOURCE": prop_amlsource,
+            "KYCSOURCE": prop_kycsource,
+            "CSSOURCE": prop_cssource,
+            "EXTERNALSYSTEMSOURCE": prop_externalsystemsource,
+            "TBAMLSOURCE": prop_tbamlsource,
+            "FATCASOURCE": prop_fatcasource,
+            "OFSECM_DATASRCNAME": prop_ofsecm_datasrcname,
+            "COMN_GATWAY_DS": prop_comn_gateway_ds,
+            "T2JURL": prop_t2jurl,
+            "J2TURL": prop_j2turl,
+            "CMNGTWYURL": prop_cmngtwyurl,
+            "BDURL": prop_bdurl,
+            "OFSS_WLS_URL": prop_ofss_wls_url,
+            "AAI_URL": prop_aai_url,
+            "CS_URL": prop_cs_url,
+            "ARACHNYS_NNS_SERVICE_URL": prop_arachnys_nns_service_url,
             "BIG_DATA_ENABLE": prop_big_data_enable,
         }
         if any(v is not None for v in silent_props.values()):
@@ -667,6 +732,153 @@ class InstallerService:
             return {"success": False, "logs": logs, "error": write.get("error")}
 
         logs.append("[OK] Updated OFS_BD_SCHEMA_IN.xml in repo (local clone)")
+        return {"success": True, "logs": logs}
+
+    def _patch_ofs_ecm_schema_in_content(
+        self,
+        content: str,
+        *,
+        schema_jdbc_host: Optional[str],
+        schema_jdbc_port: Optional[int],
+        schema_jdbc_service: Optional[str],
+        schema_host: Optional[str],
+        schema_setup_env: Optional[str],
+        schema_apply_same_for_all: Optional[str],
+        schema_default_password: Optional[str],
+        schema_datafile_dir: Optional[str],
+        schema_tablespace_autoextend: Optional[str],
+        schema_config_schema_name: Optional[str],
+        schema_atomic_schema_name: Optional[str],
+    ) -> str:
+        updated = content
+
+        if schema_jdbc_host and schema_jdbc_port and schema_jdbc_service:
+            jdbc_url = f"jdbc:oracle:thin:@//{schema_jdbc_host}:{schema_jdbc_port}/{schema_jdbc_service}"
+            updated = re.sub(
+                r"<JDBC_URL>.*?</JDBC_URL>",
+                f"<JDBC_URL>{jdbc_url}</JDBC_URL>",
+                updated,
+                flags=re.DOTALL,
+            )
+
+        if schema_host:
+            updated = re.sub(r"<HOST>.*?</HOST>", f"<HOST>{schema_host}</HOST>", updated, flags=re.DOTALL)
+
+        if schema_setup_env:
+            updated = re.sub(
+                r'(<SETUPINFO\b[^>]*\bNAME=")[^"]*(")',
+                rf"\g<1>{schema_setup_env}\g<2>",
+                updated,
+            )
+
+        if schema_apply_same_for_all:
+            updated = re.sub(
+                r'(<PASSWORD\b[^>]*\bAPPLYSAMEFORALL=")[^"]*(")',
+                rf"\g<1>{schema_apply_same_for_all}\g<2>",
+                updated,
+            )
+
+        if schema_default_password is not None:
+            updated = re.sub(
+                r'(<PASSWORD\b[^>]*\bDEFAULT=")[^"]*(")',
+                rf"\g<1>{schema_default_password}\g<2>",
+                updated,
+            )
+
+        if schema_tablespace_autoextend:
+            updated = re.sub(
+                r'(\bAUTOEXTEND=")[^"]*(")',
+                rf"\g<1>{schema_tablespace_autoextend}\g<2>",
+                updated,
+            )
+
+        if schema_datafile_dir:
+            base_dir = schema_datafile_dir.rstrip("/")
+
+            def _repl_datafile(m: re.Match) -> str:
+                prefix, path, suffix = m.group(1), m.group(2), m.group(3)
+                filename = os.path.basename(path)
+                return f'{prefix}{base_dir}/{filename}{suffix}'
+
+            updated = re.sub(r'(\bDATAFILE=")([^"]+)(")', _repl_datafile, updated)
+
+        # Keep CONFIG and ATOMIC schema names aligned with BD schema inputs.
+        if schema_config_schema_name:
+            updated = re.sub(
+                r'(<SCHEMA\b[^>]*\bTYPE="CONFIG"[^>]*\bNAME=")[^"]*(")',
+                rf"\g<1>{schema_config_schema_name}\g<2>",
+                updated,
+            )
+
+        if schema_atomic_schema_name:
+            updated = re.sub(
+                r'(<SCHEMA\b[^>]*\bTYPE="ATOMIC"[^>]*\bNAME=")[^"]*(")',
+                rf"\g<1>{schema_atomic_schema_name}\g<2>",
+                updated,
+            )
+
+        return updated
+
+    async def _patch_ofs_ecm_schema_in_repo(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        repo_dir: str,
+        schema_jdbc_host: Optional[str],
+        schema_jdbc_port: Optional[int],
+        schema_jdbc_service: Optional[str],
+        schema_host: Optional[str],
+        schema_setup_env: Optional[str],
+        schema_apply_same_for_all: Optional[str],
+        schema_default_password: Optional[str],
+        schema_datafile_dir: Optional[str],
+        schema_tablespace_autoextend: Optional[str],
+        schema_config_schema_name: Optional[str],
+        schema_atomic_schema_name: Optional[str],
+    ) -> dict:
+        logs: list[str] = []
+
+        src_path = await self._resolve_repo_bd_pack_file_path(
+            host, username, password, repo_dir=repo_dir, filename="OFS_ECM_SCHEMA_IN.xml"
+        )
+        if not src_path:
+            return {"success": False, "logs": logs, "error": "OFS_ECM_SCHEMA_IN.xml not found in repo"}
+        logs.append(f"[INFO] Patching repo XML: {src_path}")
+
+        read = await self._read_remote_file(host, username, password, src_path)
+        if not read.get("success"):
+            return {"success": False, "logs": logs, "error": read.get("error")}
+
+        original = read.get("content", "")
+        patched = self._patch_ofs_ecm_schema_in_content(
+            original,
+            schema_jdbc_host=schema_jdbc_host,
+            schema_jdbc_port=schema_jdbc_port,
+            schema_jdbc_service=schema_jdbc_service,
+            schema_host=schema_host,
+            schema_setup_env=schema_setup_env,
+            schema_apply_same_for_all=schema_apply_same_for_all,
+            schema_default_password=schema_default_password,
+            schema_datafile_dir=schema_datafile_dir,
+            schema_tablespace_autoextend=schema_tablespace_autoextend,
+            schema_config_schema_name=schema_config_schema_name,
+            schema_atomic_schema_name=schema_atomic_schema_name,
+        )
+
+        if patched == original:
+            logs.append("[INFO] No changes needed for OFS_ECM_SCHEMA_IN.xml")
+            return {"success": True, "logs": logs}
+
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        backup_cmd = f"cp -f {src_path} {src_path}.backup.{ts}"
+        await self.ssh_service.execute_command(host, username, password, backup_cmd, get_pty=True)
+        write = await self._write_remote_file(host, username, password, src_path, patched)
+        if not write.get("success"):
+            return {"success": False, "logs": logs, "error": write.get("error")}
+
+        logs.append("[OK] Updated OFS_ECM_SCHEMA_IN.xml in repo (local clone)")
         return {"success": True, "logs": logs}
 
     def _patch_ofs_bd_pack_xml_content(self, content: str, *, pack_app_enable: dict[str, bool]) -> str:
