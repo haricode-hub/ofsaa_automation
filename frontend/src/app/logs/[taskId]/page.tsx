@@ -188,9 +188,9 @@ export default function LogsPage() {
               <div className="text-xs uppercase tracking-widest text-text-secondary">Live Terminal Output</div>
               <div className="text-sm text-text-primary mt-1">{currentStep}</div>
             </div>
-            <div className="flex-1 min-h-0 terminal overflow-y-auto scrollbar-thin scrollbar-track-gray-900 scrollbar-thumb-gray-700">
+            <div className="flex-1 min-h-0 terminal overflow-auto scrollbar-thin scrollbar-track-gray-900 scrollbar-thumb-gray-700">
               {outputLines.map((line, idx) => (
-                <div key={`${idx}-${line}`} className="whitespace-pre-wrap leading-relaxed">
+                <div key={`${idx}-${line}`} className="whitespace-pre leading-relaxed min-w-max">
                   {line}
                 </div>
               ))}

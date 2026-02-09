@@ -980,10 +980,105 @@ class InstallerService:
             on_prompt_callback=on_prompt_callback,
             timeout=36000,
         )
-        if not result.get("success"):
-            return {"success": False, "logs": [], "error": "setup.sh SILENT failed"}
+        summary = await self._collect_installation_summary_after_setup(host, username, password)
+        summary_logs = summary.get("logs", [])
 
-        return {"success": True, "logs": [f"[OK] setup.sh SILENT completed from {setup_path}"]}
+        if not result.get("success"):
+            return {"success": False, "logs": summary_logs, "error": "setup.sh SILENT failed"}
+
+        logs = [f"[OK] setup.sh SILENT completed from {setup_path}"] + summary_logs
+        return {"success": True, "logs": logs}
+
+    async def _collect_installation_summary_after_setup(self, host: str, username: str, password: str) -> dict:
+        aai_logs_dir = "/u01/INSTALLER_KIT/OFS_BD_PACK/OFS_AAI/logs"
+        aml_log_path = "/u01/INSTALLER_KIT/OFS_BD_PACK/OFS_AML/logs/OFS_BD_LOG.log"
+        pack_log_path = "/u01/INSTALLER_KIT/OFS_BD_PACK/logs/Pack_Install.log"
+
+        aai_result = await self._get_latest_log_counts(host, username, password, aai_logs_dir)
+        aml_result = await self._get_log_counts(host, username, password, aml_log_path)
+        pack_result = await self._get_log_counts(host, username, password, pack_log_path)
+
+        total_fatal = int(aai_result.get("fatal", 0)) + int(aml_result.get("fatal", 0)) + int(pack_result.get("fatal", 0))
+        total_error = int(aai_result.get("error", 0)) + int(aml_result.get("error", 0)) + int(pack_result.get("error", 0))
+        has_missing = bool(aai_result.get("missing")) or bool(aml_result.get("missing")) or bool(pack_result.get("missing"))
+
+        aai_display = aai_result.get("filename") if not aai_result.get("missing") else "FILE NOT FOUND"
+        aml_display = "FILE NOT FOUND" if aml_result.get("missing") else "FOUND"
+        pack_display = "FILE NOT FOUND" if pack_result.get("missing") else "FOUND"
+
+        logs = [
+            "INSTALLATION SUMMARY",
+            "",
+            f"AAI Latest Log: {aai_display}",
+            f"FATAL: {aai_result.get('fatal', 0)}",
+            f"ERROR: {aai_result.get('error', 0)}",
+            "",
+            f"AML Log (OFS_BD_LOG.log): {aml_display}",
+            f"FATAL: {aml_result.get('fatal', 0)}",
+            f"ERROR: {aml_result.get('error', 0)}",
+            "",
+            f"Pack Install Log (Pack_Install.log): {pack_display}",
+            f"FATAL: {pack_result.get('fatal', 0)}",
+            f"ERROR: {pack_result.get('error', 0)}",
+            "",
+            "TOTAL",
+            f"FATAL: {total_fatal}",
+            f"ERROR: {total_error}",
+            f"FAILURE INDICATOR: {'YES' if has_missing else 'NO'}",
+        ]
+        return {"success": True, "logs": logs, "has_missing": has_missing}
+
+    async def _get_latest_log_counts(self, host: str, username: str, password: str, directory: str) -> dict:
+        cmd = (
+            f'dir={shell_escape(directory)}; '
+            'latest=$(ls -1t "$dir"/* 2>/dev/null | head -n 1); '
+            'if [ -n "$latest" ] && [ -f "$latest" ]; then '
+            'fatal=$(grep -o \'FATAL\' "$latest" 2>/dev/null | wc -l); '
+            'error=$(grep -o \'ERROR\' "$latest" 2>/dev/null | wc -l); '
+            'base=$(basename "$latest"); '
+            'echo "FOUND|$base|$fatal|$error"; '
+            'else '
+            'echo "FILE_NOT_FOUND||0|0"; '
+            "fi"
+        )
+        result = await self.ssh_service.execute_command(host, username, password, cmd)
+        out = (result.get("stdout") or "").strip().splitlines()
+        line = out[0].strip() if out else "FILE_NOT_FOUND||0|0"
+        parts = line.split("|")
+        status = parts[0] if len(parts) > 0 else "FILE_NOT_FOUND"
+        filename = parts[1] if len(parts) > 1 and parts[1] else ""
+        fatal = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+        error = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+        return {
+            "missing": status != "FOUND",
+            "filename": filename,
+            "fatal": fatal,
+            "error": error,
+        }
+
+    async def _get_log_counts(self, host: str, username: str, password: str, file_path: str) -> dict:
+        cmd = (
+            f'log={shell_escape(file_path)}; '
+            'if [ -f "$log" ]; then '
+            'fatal=$(grep -o \'FATAL\' "$log" 2>/dev/null | wc -l); '
+            'error=$(grep -o \'ERROR\' "$log" 2>/dev/null | wc -l); '
+            'echo "FOUND|$fatal|$error"; '
+            'else '
+            'echo "FILE_NOT_FOUND|0|0"; '
+            "fi"
+        )
+        result = await self.ssh_service.execute_command(host, username, password, cmd)
+        out = (result.get("stdout") or "").strip().splitlines()
+        line = out[0].strip() if out else "FILE_NOT_FOUND|0|0"
+        parts = line.split("|")
+        status = parts[0] if len(parts) > 0 else "FILE_NOT_FOUND"
+        fatal = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        error = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+        return {
+            "missing": status != "FOUND",
+            "fatal": fatal,
+            "error": error,
+        }
 
     async def run_environment_check(
         self,
