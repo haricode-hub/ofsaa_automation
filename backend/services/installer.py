@@ -53,11 +53,19 @@ class InstallerService:
             return {"success": False, "logs": logs, "error": result.get("stderr") or "Failed to prepare installer repo"}
         logs.append("[OK] Repository ready for installer kit")
 
-        find_zip_cmd = (
-            f"installer_zip=$(find {repo_dir} -maxdepth 1 -type f -name '{Config.INSTALLER_ZIP_NAME}' -print | head -n 1); "
-            "if [ -z \"$installer_zip\" ]; then echo 'INSTALLER_ZIP_NOT_FOUND'; exit 1; fi; "
-            "echo $installer_zip"
-        )
+        zip_name = (Config.INSTALLER_ZIP_NAME or "").strip()
+        if zip_name:
+            find_zip_cmd = (
+                f"installer_zip=$(find {repo_dir} -maxdepth 1 -type f -name {shell_escape(zip_name)} -print | head -n 1); "
+                "if [ -z \"$installer_zip\" ]; then echo 'INSTALLER_ZIP_NOT_FOUND'; exit 1; fi; "
+                "echo $installer_zip"
+            )
+        else:
+            find_zip_cmd = (
+                f"installer_zip=$(ls -1t {repo_dir}/*.zip 2>/dev/null | head -n 1); "
+                "if [ -z \"$installer_zip\" ]; then echo 'INSTALLER_ZIP_NOT_FOUND'; exit 1; fi; "
+                "echo $installer_zip"
+            )
         zip_result = await self.ssh_service.execute_command(host, username, password, find_zip_cmd)
         if not zip_result["success"] or "INSTALLER_ZIP_NOT_FOUND" in zip_result.get("stdout", ""):
             return {"success": False, "logs": logs, "error": "Installer kit zip not found in repo"}

@@ -45,19 +45,62 @@ class JavaService:
             }
         logs.append("[OK] Repository ready for Java download")
 
-        find_cmd = (
-            f"java_archive=$(find {repo_dir} -maxdepth 1 -type f "
-            f"\\( -name \"{Config.JAVA_ARCHIVE_HINT}*.tar.gz\" -o -name \"{Config.JAVA_ARCHIVE_HINT}*.tgz\" -o -name \"{Config.JAVA_ARCHIVE_HINT}*.zip\" \\) "
+        # Prefer running JAVA_INSTALLER from repo when Java is not present.
+        installer_cmd = (
+            f"installer=$(find {repo_dir} -type f "
+            f"\\( -name '{Config.JAVA_INSTALLER_HINT}' -o -name '{Config.JAVA_INSTALLER_HINT}.sh' -o -name 'java_installer.sh' \\) "
             "-print | head -n 1); "
-            "if [ -z \"$java_archive\" ]; then echo 'JAVA_ARCHIVE_NOT_FOUND'; exit 1; fi; "
-            "echo $java_archive"
+            "if [ -z \"$installer\" ]; then echo 'JAVA_INSTALLER_NOT_FOUND'; exit 0; fi; "
+            "chmod +x \"$installer\" 2>/dev/null || true; "
+            "bash \"$installer\"; "
+            "rc=$?; "
+            "if [ $rc -ne 0 ]; then echo \"JAVA_INSTALLER_FAILED:$rc\"; exit 0; fi; "
+            "echo 'JAVA_INSTALLER_OK'"
         )
+        installer_result = await self.ssh_service.execute_command(
+            host, username, password, installer_cmd, timeout=3600, get_pty=True
+        )
+        installer_out = installer_result.get("stdout", "") or ""
+        if "JAVA_INSTALLER_OK" in installer_out:
+            logs.append("[OK] Java installed using JAVA_INSTALLER from repository")
+        elif "JAVA_INSTALLER_FAILED:" in installer_out:
+            logs.append("[WARN] JAVA_INSTALLER found but failed. Falling back to Java archive extraction.")
+        else:
+            logs.append("[INFO] JAVA_INSTALLER not found. Falling back to Java archive extraction.")
+
+        detect_after_installer = await self.validation.find_java_installation(host, username, password)
+        if detect_after_installer:
+            logs.append(f"[OK] Java detected after JAVA_INSTALLER: {detect_after_installer}")
+            return {"success": True, "logs": logs, "java_home": detect_after_installer}
+
+        java_hint = (Config.JAVA_ARCHIVE_HINT or "").strip()
+        if java_hint:
+            find_cmd = (
+                f"java_archive=$(ls -1t {repo_dir}/JAVA_INSTALLER/{java_hint}*.tar.gz "
+                f"{repo_dir}/JAVA_INSTALLER/{java_hint}*.tgz 2>/dev/null | head -n 1); "
+                "if [ -z \"$java_archive\" ]; then "
+                f"java_archive=$(ls -1t {repo_dir}/{java_hint}*.tar.gz {repo_dir}/{java_hint}*.tgz 2>/dev/null | head -n 1); "
+                "fi; "
+                "if [ -z \"$java_archive\" ]; then echo 'JAVA_ARCHIVE_NOT_FOUND'; exit 1; fi; "
+                "echo $java_archive"
+            )
+        else:
+            find_cmd = (
+                f"java_archive=$(ls -1t {repo_dir}/JAVA_INSTALLER/*.tar.gz {repo_dir}/JAVA_INSTALLER/*.tgz 2>/dev/null | head -n 1); "
+                "if [ -z \"$java_archive\" ]; then "
+                f"java_archive=$(ls -1t {repo_dir}/*.tar.gz {repo_dir}/*.tgz 2>/dev/null | grep -Ei 'jdk|java' | head -n 1); "
+                "fi; "
+                "if [ -z \"$java_archive\" ]; then echo 'JAVA_ARCHIVE_NOT_FOUND'; exit 1; fi; "
+                "echo $java_archive"
+            )
         archive_result = await self.ssh_service.execute_command(host, username, password, find_cmd)
         if not archive_result["success"] or "JAVA_ARCHIVE_NOT_FOUND" in archive_result.get("stdout", ""):
             return {"success": False, "logs": logs, "error": "Java archive not found in repo"}
 
         archive_path = archive_result.get("stdout", "").splitlines()[0].strip()
         logs.append(f"[INFO] Java archive found: {archive_path}")
+        if "/JAVA_INSTALLER/" in archive_path:
+            logs.append("[INFO] Selected Java archive from JAVA_INSTALLER folder")
 
         extract_cmd = (
             f"if echo {archive_path} | grep -E '\\.zip$' >/dev/null 2>&1; then "

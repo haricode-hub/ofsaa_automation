@@ -20,8 +20,9 @@ class Config:
     DEFAULT_TNS_ADMIN: str = "/u01/app/oracle/product/19.0.0/client_1/network/admin"
     DEFAULT_ORACLE_SID: str = "OFSAAPDB"
 
-    INSTALLER_ZIP_NAME: str = "p33940349_81100_Linux-x86-64.zip"
-    JAVA_ARCHIVE_HINT: str = "jdk-11"
+    INSTALLER_ZIP_NAME: str = os.getenv("OFSAA_INSTALLER_ZIP_NAME", "")
+    JAVA_ARCHIVE_HINT: str = os.getenv("OFSAA_JAVA_ARCHIVE_HINT", "")
+    JAVA_INSTALLER_HINT: str = os.getenv("OFSAA_JAVA_INSTALLER_HINT", "JAVA_INSTALLER")
 
 
 class InstallationSteps:
