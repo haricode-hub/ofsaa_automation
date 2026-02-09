@@ -1,10 +1,13 @@
 import asyncio
+import logging
 import socket
 import time
 from typing import Any, Callable, Dict, Iterable, Optional
 
 import paramiko
 from paramiko.ssh_exception import NoValidConnectionsError
+
+logger = logging.getLogger(__name__)
 
 
 class SSHService:
@@ -42,6 +45,7 @@ class SSHService:
             except (socket.timeout, TimeoutError, paramiko.SSHException, NoValidConnectionsError, OSError) as exc:
                 client.close()
                 last_exc = exc
+                logger.warning("SSH connect attempt %s/%s failed for %s: %s", attempt, attempts, host, exc)
                 if attempt < attempts:
                     time.sleep(backoff_seconds[attempt - 1])
                     continue
@@ -59,12 +63,23 @@ class SSHService:
         timeout: int = 600,
         get_pty: bool = False,
     ) -> Dict[str, Any]:
+        start_ts = time.time()
+        cmd_preview = " ".join(command.strip().split())[:180]
+        logger.info("SSH command start host=%s timeout=%ss pty=%s cmd=%s", host, timeout, get_pty, cmd_preview)
         client = self._connect(host, username, password, timeout=timeout)
         try:
             stdin, stdout, stderr = client.exec_command(command, get_pty=get_pty, timeout=timeout)
             out = stdout.read().decode(errors="ignore")
             err = stderr.read().decode(errors="ignore")
             exit_status = stdout.channel.recv_exit_status()
+            elapsed = round(time.time() - start_ts, 2)
+            logger.info(
+                "SSH command end host=%s rc=%s elapsed=%ss cmd=%s",
+                host,
+                exit_status,
+                elapsed,
+                cmd_preview,
+            )
             return {
                 "success": exit_status == 0,
                 "stdout": out.strip(),
@@ -139,6 +154,9 @@ class SSHService:
         prompt_patterns: Optional[Iterable[str]],
         loop: asyncio.AbstractEventLoop,
     ) -> Dict[str, Any]:
+        start_ts = time.time()
+        cmd_preview = " ".join(command.strip().split())[:180]
+        logger.info("SSH interactive start host=%s timeout=%ss cmd=%s", host, timeout, cmd_preview)
         patterns = list(prompt_patterns or [
             # Keep these fairly specific to avoid false prompts like:
             # "Validating the input XML file..." (contains 'input' but is not a prompt).
@@ -225,6 +243,14 @@ class SSHService:
                 time.sleep(0.1)
 
             exit_status = channel.recv_exit_status()
+            elapsed = round(time.time() - start_ts, 2)
+            logger.info(
+                "SSH interactive end host=%s rc=%s elapsed=%ss cmd=%s",
+                host,
+                exit_status,
+                elapsed,
+                cmd_preview,
+            )
             return {"success": exit_status == 0, "returncode": exit_status}
         finally:
             if channel is not None:

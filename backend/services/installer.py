@@ -40,9 +40,9 @@ class InstallerService:
             f"{git_auth_setup}"
             f"if [ -d {repo_dir}/.git ]; then "
             f"cd {repo_dir} && "
-            f"(git -c http.sslVerify=false {safe_dir_cfg} pull --ff-only || "
-            f"(git config --global --add safe.directory {repo_dir} && git -c http.sslVerify=false {safe_dir_cfg} pull --ff-only)); "
-            f"else git -c http.sslVerify=false clone {Config.REPO_URL} {repo_dir}; fi"
+            f"(git -c http.sslVerify=false -c protocol.version=2 {safe_dir_cfg} pull --ff-only --no-tags || "
+            f"(git config --global --add safe.directory {repo_dir} && git -c http.sslVerify=false -c protocol.version=2 {safe_dir_cfg} pull --ff-only --no-tags)); "
+            f"else git -c http.sslVerify=false -c protocol.version=2 clone --depth 1 --single-branch --no-tags {Config.REPO_URL} {repo_dir}; fi"
         )
         result = await self.ssh_service.execute_command(host, username, password, cmd_prepare, timeout=1800, get_pty=True)
         if not result["success"]:
@@ -74,7 +74,13 @@ class InstallerService:
         logs.append(f"[INFO] Installer zip found: {zip_path}")
 
         # Requirement: extraction must be performed as the 'oracle' OS user.
-        unzip_cmd = f"unzip -o {shell_escape(zip_path)} -d {target_dir}"
+        unzip_cmd = (
+            "if command -v bsdtar >/dev/null 2>&1; then "
+            f"bsdtar -xf {shell_escape(zip_path)} -C {target_dir}; "
+            "else "
+            f"unzip -oq {shell_escape(zip_path)} -d {target_dir}; "
+            "fi"
+        )
         if username == "oracle":
             unzip_as_oracle_cmd = f"mkdir -p {target_dir} && {unzip_cmd}"
         else:
@@ -190,18 +196,29 @@ class InstallerService:
         repo_dir = Config.REPO_DIR
         kit_dir = "/u01/installer_kit/OFS_BD_PACK"
         safe_dir_cfg = f"-c safe.directory={repo_dir}"
+        fast_config_apply = str(Config.FAST_CONFIG_APPLY).strip().lower() in {"1", "true", "yes", "y"}
+        enable_config_push = str(Config.ENABLE_CONFIG_PUSH).strip().lower() in {"1", "true", "yes", "y"}
 
-        # Ensure repo is present and up-to-date before copying config files
+        # Ensure repo is present. In fast mode we skip pull to reduce startup delay for osc.sh step.
         git_auth_setup = self._git_auth_setup_cmd()
-        cmd_prepare_repo = (
-            "mkdir -p /u01/installer_kit && "
-            f"{git_auth_setup}"
-            f"if [ -d {repo_dir}/.git ]; then "
-            f"cd {repo_dir} && "
-            f"(git -c http.sslVerify=false {safe_dir_cfg} pull --ff-only || "
-            f"(git config --global --add safe.directory {repo_dir} && git -c http.sslVerify=false {safe_dir_cfg} pull --ff-only)); "
-            f"else git -c http.sslVerify=false clone {Config.REPO_URL} {repo_dir}; fi"
-        )
+        if fast_config_apply:
+            cmd_prepare_repo = (
+                "mkdir -p /u01/installer_kit && "
+                f"{git_auth_setup}"
+                f"if [ -d {repo_dir}/.git ]; then "
+                "echo 'REPO_READY_FAST'; "
+                f"else git -c http.sslVerify=false -c protocol.version=2 clone --depth 1 --single-branch --no-tags {Config.REPO_URL} {repo_dir}; fi"
+            )
+        else:
+            cmd_prepare_repo = (
+                "mkdir -p /u01/installer_kit && "
+                f"{git_auth_setup}"
+                f"if [ -d {repo_dir}/.git ]; then "
+                f"cd {repo_dir} && "
+                f"(git -c http.sslVerify=false -c protocol.version=2 {safe_dir_cfg} pull --ff-only --no-tags || "
+                f"(git config --global --add safe.directory {repo_dir} && git -c http.sslVerify=false -c protocol.version=2 {safe_dir_cfg} pull --ff-only --no-tags)); "
+                f"else git -c http.sslVerify=false -c protocol.version=2 clone --depth 1 --single-branch --no-tags {Config.REPO_URL} {repo_dir}; fi"
+            )
         repo_result = await self.ssh_service.execute_command(
             host, username, password, cmd_prepare_repo, timeout=1800, get_pty=True
         )
@@ -211,7 +228,9 @@ class InstallerService:
             if repo_result.get("stderr"):
                 logs.append(repo_result["stderr"])
             return {"success": False, "logs": logs, "error": repo_result.get("stderr") or "Failed to prepare repo"}
-        logs.append("[OK] Repo updated for config file fetch")
+        logs.append("[OK] Repo prepared for config file fetch")
+        if fast_config_apply:
+            logs.append("[INFO] Fast config apply mode enabled: skipped git pull")
 
         mappings = [
             ("OFS_BD_SCHEMA_IN.xml", f"{kit_dir}/schema_creator/conf/OFS_BD_SCHEMA_IN.xml"),
@@ -357,14 +376,17 @@ class InstallerService:
                 }
             logs.append(f"[OK] Updated kit file: {dest_path}")
 
-        push_result = await self._commit_and_push_repo_changes(
-            host,
-            username,
-            password,
-            repo_dir=repo_dir,
-            commit_message="Update OFSAA installer configs from UI inputs",
-        )
-        logs.extend(push_result.get("logs", []))
+        if enable_config_push:
+            push_result = await self._commit_and_push_repo_changes(
+                host,
+                username,
+                password,
+                repo_dir=repo_dir,
+                commit_message="Update OFSAA installer configs from UI inputs",
+            )
+            logs.extend(push_result.get("logs", []))
+        else:
+            logs.append("[INFO] Config push skipped (OFSAA_ENABLE_CONFIG_PUSH is disabled)")
 
         return {"success": True, "logs": logs}
 
@@ -429,12 +451,12 @@ class InstallerService:
             f"if ! git {safe_dir_cfg} rev-parse --is-inside-work-tree >/dev/null 2>&1; then "
             "echo 'NOT_A_GIT_REPO'; exit 0; "
             "fi; "
-            f"changes=$(git {safe_dir_cfg} status --porcelain 2>/dev/null | wc -l); "
+            f"changes=$(git {safe_dir_cfg} status --porcelain -- BD_PACK 2>/dev/null | wc -l); "
             "if [ \"$changes\" = \"0\" ]; then echo 'NO_CHANGES'; exit 0; fi; "
             f"if ! git {safe_dir_cfg} remote get-url origin >/dev/null 2>&1; then echo 'NO_ORIGIN_REMOTE'; exit 0; fi; "
             f"{git_auth_setup}"
             "export GIT_TERMINAL_PROMPT=0; "
-            f"git {safe_dir_cfg} add -u && "
+            f"git {safe_dir_cfg} add -u -- BD_PACK && "
             f"git {safe_dir_cfg} -c user.name='ofsaa-ui' -c user.email='ofsaa-ui@local' "
             f"commit -m {shell_escape(commit_message)} >/dev/null 2>&1 || true; "
             f"git -c http.sslVerify=false {safe_dir_cfg} push"

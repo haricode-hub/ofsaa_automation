@@ -112,6 +112,10 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await append_output(task_id, f"[ERROR] {error}")
         await update_status(task_id, "failed")
 
+    async def trace(message: str) -> None:
+        logger.info("task=%s %s", task_id[:8], message)
+        await append_output(task_id, f"[TRACE] {message}")
+
     try:
         await update_status(task_id, "running", task.current_step, 0)
 
@@ -129,6 +133,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await handle_failure("SSH connection failed after 3 attempts", connection.get("error"))
             return
         await append_output(task_id, "[OK] SSH connection established")
+        await trace("SSH connection established; starting installation workflow")
 
         steps = InstallationSteps.STEP_NAMES
 
@@ -166,11 +171,13 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
 
         # Step 5: Java installation
         await update_status(task_id, "running", steps[4], InstallationSteps.progress_for_index(4))
+        await trace("Starting Java installation step")
         result = await installation_service.install_java_from_repo(request.host, request.username, request.password)
         await append_output(task_id, "\n".join(result.get("logs", [])))
         if not result.get("success"):
             await handle_failure("Java installation failed", result.get("error"))
             return
+        await trace("Java installation step completed")
 
         java_home = result.get("java_home")
         if java_home:
@@ -202,11 +209,13 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
 
         # Step 8: Installer setup and envCheck
         await update_status(task_id, "running", steps[7], InstallationSteps.progress_for_index(7))
+        await trace("Starting installer download/extract step")
         result = await installation_service.download_and_extract_installer(request.host, request.username, request.password)
         await append_output(task_id, "\n".join(result.get("logs", [])))
         if not result.get("success"):
             await handle_failure("Installer download failed", result.get("error"))
             return
+        await trace("Installer download/extract step completed")
 
         perm_result = await installation_service.set_installer_permissions(request.host, request.username, request.password)
         await append_output(task_id, "\n".join(perm_result.get("logs", [])))
@@ -238,9 +247,11 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
         if not env_result.get("success"):
             await handle_failure("Environment check failed", env_result.get("error"))
             return
+        await trace("Environment check step completed")
 
-        # Step 9: Apply XML/properties, run schema creator (osc.sh), then setup.sh SILENT
+        # Step 9: Apply XML/properties and run schema creator (osc.sh)
         await update_status(task_id, "running", steps[8], InstallationSteps.progress_for_index(8))
+        await trace("Starting config apply and osc.sh step")
         cfg_result = await installation_service.apply_installer_config_files(
             request.host,
             request.username,
@@ -310,7 +321,11 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
         if not osc_result.get("success"):
             await handle_failure("osc.sh execution failed", osc_result.get("error"))
             return
+        await trace("osc.sh step completed")
 
+        # Step 10: setup.sh SILENT
+        await update_status(task_id, "running", steps[9], InstallationSteps.progress_for_index(9))
+        await trace("Starting setup.sh SILENT step")
         setup_result = await installation_service.run_setup_silent(
             request.host,
             request.username,
@@ -326,10 +341,11 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
         if not setup_result.get("success"):
             await handle_failure("setup.sh SILENT execution failed", setup_result.get("error"))
             return
+        await trace("setup.sh SILENT step completed")
 
         task.status = "completed"
         task.progress = 100
-        await update_status(task_id, "completed", steps[8], 100)
+        await update_status(task_id, "completed", steps[9], 100)
         await append_output(task_id, "[OK] osc.sh completed")
         await append_output(task_id, "[OK] setup.sh SILENT completed")
         await append_output(task_id, "[OK] Schema creation completed")

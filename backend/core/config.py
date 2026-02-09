@@ -23,6 +23,8 @@ class Config:
     INSTALLER_ZIP_NAME: str = os.getenv("OFSAA_INSTALLER_ZIP_NAME", "")
     JAVA_ARCHIVE_HINT: str = os.getenv("OFSAA_JAVA_ARCHIVE_HINT", "")
     JAVA_INSTALLER_HINT: str = os.getenv("OFSAA_JAVA_INSTALLER_HINT", "JAVA_INSTALLER")
+    FAST_CONFIG_APPLY: str = os.getenv("OFSAA_FAST_CONFIG_APPLY", "1")
+    ENABLE_CONFIG_PUSH: str = os.getenv("OFSAA_ENABLE_CONFIG_PUSH", "0")
 
 
 class InstallationSteps:
@@ -36,10 +38,11 @@ class InstallationSteps:
         "Creating OFSAA directory structure",
         "Checking Oracle client and updating profile",
         "Setting up OFSAA installer and running environment check",
-        "Applying config XMLs/properties, running osc.sh, and setup.sh SILENT",
+        "Applying config XMLs/properties and running osc.sh",
+        "Installing BD PACK with /setup.sh SILENT",
     ]
 
-    PROGRESS_VALUES = [12, 24, 36, 48, 60, 70, 80, 90, 100]
+    PROGRESS_VALUES = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
 
     @classmethod
     def progress_for_index(cls, index: int) -> int:

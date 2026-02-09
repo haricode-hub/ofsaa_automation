@@ -21,7 +21,8 @@ const STEPS = [
   'Creating OFSAA directory structure',
   'Checking Oracle client and updating profile',
   'Setting up OFSAA installer and running environment check',
-  'Applying config XMLs/properties and running osc.sh'
+  'Applying config XMLs/properties and running osc.sh',
+  'Installing BD PACK with /setup.sh SILENT'
 ]
 
 export default function LogsPage() {
@@ -34,8 +35,10 @@ export default function LogsPage() {
   const [promptQueue, setPromptQueue] = useState<string[]>([])
   const [inputText, setInputText] = useState('')
   const [outputLines, setOutputLines] = useState<string[]>([])
+  const [autoFollowOutput, setAutoFollowOutput] = useState(true)
   const socketRef = useRef<WebSocket | null>(null)
   const outputEndRef = useRef<HTMLDivElement>(null)
+  const outputContainerRef = useRef<HTMLDivElement>(null)
 
   const statusLabel = useMemo(() => {
     if (status === 'waiting_input') return 'waiting for input'
@@ -99,8 +102,18 @@ export default function LogsPage() {
   }, [taskId])
 
   useEffect(() => {
-    outputEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [outputLines])
+    if (autoFollowOutput) {
+      outputEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [outputLines, autoFollowOutput])
+
+  const handleOutputScroll = () => {
+    const el = outputContainerRef.current
+    if (!el) return
+    const threshold = 24
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= threshold
+    setAutoFollowOutput(atBottom)
+  }
 
   const handleSendInput = () => {
     if (!inputText || !socketRef.current) return
@@ -183,14 +196,18 @@ export default function LogsPage() {
           </div>
 
           {/* Center Panel - Live Terminal */}
-          <div className="flex min-h-0 flex-col glass-panel rounded-xl shadow-panel overflow-hidden">
+          <div className="flex h-[72vh] max-h-[72vh] min-h-[72vh] flex-col glass-panel rounded-xl shadow-panel overflow-hidden lg:h-[calc(100vh-10rem)] lg:max-h-[calc(100vh-10rem)] lg:min-h-[calc(100vh-10rem)]">
             <div className="px-4 py-3 border-b border-border bg-bg-secondary/50">
               <div className="text-xs uppercase tracking-widest text-text-secondary">Live Terminal Output</div>
               <div className="text-sm text-text-primary mt-1">{currentStep}</div>
             </div>
-            <div className="flex-1 min-h-0 terminal overflow-auto scrollbar-thin scrollbar-track-gray-900 scrollbar-thumb-gray-700">
+            <div
+              ref={outputContainerRef}
+              onScroll={handleOutputScroll}
+              className="flex-1 min-h-0 max-h-full terminal overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-track-gray-900 scrollbar-thumb-gray-700"
+            >
               {outputLines.map((line, idx) => (
-                <div key={`${idx}-${line}`} className="whitespace-pre leading-relaxed min-w-max">
+                <div key={`${idx}-${line}`} className="whitespace-pre-wrap break-words leading-relaxed">
                   {line}
                 </div>
               ))}

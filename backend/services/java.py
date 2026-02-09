@@ -28,9 +28,9 @@ class JavaService:
             f"mkdir -p /u01/installer_kit && "
             f"if [ -d {repo_dir}/.git ]; then "
             f"cd {repo_dir} && "
-            f"(git -c http.sslVerify=false {safe_dir_cfg} pull --ff-only || "
-            f"(git config --global --add safe.directory {repo_dir} && git -c http.sslVerify=false {safe_dir_cfg} pull --ff-only)); "
-            f"else git -c http.sslVerify=false clone {Config.REPO_URL} {repo_dir}; fi"
+            f"(git -c http.sslVerify=false -c protocol.version=2 {safe_dir_cfg} pull --ff-only --no-tags || "
+            f"(git config --global --add safe.directory {repo_dir} && git -c http.sslVerify=false -c protocol.version=2 {safe_dir_cfg} pull --ff-only --no-tags)); "
+            f"else git -c http.sslVerify=false -c protocol.version=2 clone --depth 1 --single-branch --no-tags {Config.REPO_URL} {repo_dir}; fi"
         )
         result = await self.ssh_service.execute_command(host, username, password, clone_cmd, timeout=1800, get_pty=True)
         if not result["success"]:
@@ -104,8 +104,18 @@ class JavaService:
 
         extract_cmd = (
             f"if echo {archive_path} | grep -E '\\.zip$' >/dev/null 2>&1; then "
-            f"unzip -o {archive_path} -d /u01; "
-            f"else tar -xzf {archive_path} -C /u01; fi"
+            "if command -v bsdtar >/dev/null 2>&1; then "
+            f"bsdtar -xf {archive_path} -C /u01; "
+            "else "
+            f"unzip -oq {archive_path} -d /u01; "
+            "fi; "
+            "else "
+            "if command -v pigz >/dev/null 2>&1; then "
+            f"tar --use-compress-program=pigz -xf {archive_path} -C /u01; "
+            "else "
+            f"tar -xzf {archive_path} -C /u01; "
+            "fi; "
+            "fi"
         )
         extract_result = await self.ssh_service.execute_command(
             host, username, password, extract_cmd, timeout=1800, get_pty=True
