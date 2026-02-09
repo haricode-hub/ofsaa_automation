@@ -301,6 +301,10 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             request.password,
             on_output_callback=output_callback,
             on_prompt_callback=prompt_callback,
+            pack_app_enable=request.pack_app_enable,
+            installation_mode=request.installation_mode,
+            install_ecm=request.install_ecm,
+            install_sanc=request.install_sanc,
         )
         await append_output(task_id, "\n".join(setup_result.get("logs", [])))
         if not setup_result.get("success"):

@@ -939,6 +939,10 @@ class InstallerService:
         password: str,
         on_output_callback: Optional[Callable[[str], Any]] = None,
         on_prompt_callback: Optional[Callable[[str], Any]] = None,
+        pack_app_enable: Optional[dict[str, bool]] = None,
+        installation_mode: Optional[str] = None,
+        install_ecm: Optional[bool] = None,
+        install_sanc: Optional[bool] = None,
     ) -> dict:
         setup_candidates = [
             "/u01/installer_kit/OFS_BD_PACK/bin/setup.sh",
@@ -980,7 +984,15 @@ class InstallerService:
             on_prompt_callback=on_prompt_callback,
             timeout=36000,
         )
-        summary = await self._collect_installation_summary_after_setup(host, username, password)
+        summary = await self._collect_installation_summary_after_setup(
+            host,
+            username,
+            password,
+            pack_app_enable=pack_app_enable,
+            installation_mode=installation_mode,
+            install_ecm=install_ecm,
+            install_sanc=install_sanc,
+        )
         summary_logs = summary.get("logs", [])
 
         if not result.get("success"):
@@ -989,18 +1001,51 @@ class InstallerService:
         logs = [f"[OK] setup.sh SILENT completed from {setup_path}"] + summary_logs
         return {"success": True, "logs": logs}
 
-    async def _collect_installation_summary_after_setup(self, host: str, username: str, password: str) -> dict:
+    async def _collect_installation_summary_after_setup(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        pack_app_enable: Optional[dict[str, bool]] = None,
+        installation_mode: Optional[str] = None,
+        install_ecm: Optional[bool] = None,
+        install_sanc: Optional[bool] = None,
+    ) -> dict:
         aai_logs_dir = "/u01/INSTALLER_KIT/OFS_BD_PACK/OFS_AAI/logs"
         aml_log_path = "/u01/INSTALLER_KIT/OFS_BD_PACK/OFS_AML/logs/OFS_BD_LOG.log"
         pack_log_path = "/u01/INSTALLER_KIT/OFS_BD_PACK/logs/Pack_Install.log"
+        ecm_logs_dir = "/u01/INSTALLER_KIT/OFS_BD_PACK/OFS_ECM/logs"
+        sanc_logs_dir = "/u01/INSTALLER_KIT/OFS_BD_PACK/OFS_SANC/logs"
+
+        scenario = self._determine_installation_scenario(
+            pack_app_enable=pack_app_enable,
+            installation_mode=installation_mode,
+            install_ecm=install_ecm,
+            install_sanc=install_sanc,
+        )
 
         aai_result = await self._get_latest_log_counts(host, username, password, aai_logs_dir)
         aml_result = await self._get_log_counts(host, username, password, aml_log_path)
         pack_result = await self._get_log_counts(host, username, password, pack_log_path)
+        ecm_result: Optional[dict] = None
+        sanc_result: Optional[dict] = None
+        if scenario.get("has_ecm"):
+            ecm_result = await self._get_latest_log_counts(host, username, password, ecm_logs_dir)
+        if scenario.get("has_sanc"):
+            sanc_result = await self._get_latest_log_counts(host, username, password, sanc_logs_dir)
 
         total_fatal = int(aai_result.get("fatal", 0)) + int(aml_result.get("fatal", 0)) + int(pack_result.get("fatal", 0))
         total_error = int(aai_result.get("error", 0)) + int(aml_result.get("error", 0)) + int(pack_result.get("error", 0))
         has_missing = bool(aai_result.get("missing")) or bool(aml_result.get("missing")) or bool(pack_result.get("missing"))
+        if ecm_result is not None:
+            total_fatal += int(ecm_result.get("fatal", 0))
+            total_error += int(ecm_result.get("error", 0))
+            has_missing = has_missing or bool(ecm_result.get("missing"))
+        if sanc_result is not None:
+            total_fatal += int(sanc_result.get("fatal", 0))
+            total_error += int(sanc_result.get("error", 0))
+            has_missing = has_missing or bool(sanc_result.get("missing"))
 
         aai_display = aai_result.get("filename") if not aai_result.get("missing") else "FILE NOT FOUND"
         aml_display = "FILE NOT FOUND" if aml_result.get("missing") else "FOUND"
@@ -1008,6 +1053,8 @@ class InstallerService:
 
         logs = [
             "INSTALLATION SUMMARY",
+            "",
+            f"INSTALLATION SCENARIO: {scenario.get('label')}",
             "",
             f"AAI Latest Log: {aai_display}",
             f"FATAL: {aai_result.get('fatal', 0)}",
@@ -1020,13 +1067,61 @@ class InstallerService:
             f"Pack Install Log (Pack_Install.log): {pack_display}",
             f"FATAL: {pack_result.get('fatal', 0)}",
             f"ERROR: {pack_result.get('error', 0)}",
-            "",
-            "TOTAL",
-            f"FATAL: {total_fatal}",
-            f"ERROR: {total_error}",
-            f"FAILURE INDICATOR: {'YES' if has_missing else 'NO'}",
         ]
+
+        if ecm_result is not None:
+            ecm_display = ecm_result.get("filename") if not ecm_result.get("missing") else "FILE NOT FOUND"
+            logs.extend(
+                [
+                    "",
+                    f"ECM Latest Log: {ecm_display}",
+                    f"FATAL: {ecm_result.get('fatal', 0)}",
+                    f"ERROR: {ecm_result.get('error', 0)}",
+                ]
+            )
+
+        if sanc_result is not None:
+            sanc_display = sanc_result.get("filename") if not sanc_result.get("missing") else "FILE NOT FOUND"
+            logs.extend(
+                [
+                    "",
+                    f"SANC Latest Log: {sanc_display}",
+                    f"FATAL: {sanc_result.get('fatal', 0)}",
+                    f"ERROR: {sanc_result.get('error', 0)}",
+                ]
+            )
+
+        logs.extend(
+            [
+                "",
+                "TOTAL",
+                f"FATAL: {total_fatal}",
+                f"ERROR: {total_error}",
+                f"FAILURE INDICATOR: {'YES' if has_missing else 'NO'}",
+            ]
+        )
         return {"success": True, "logs": logs, "has_missing": has_missing}
+
+    def _determine_installation_scenario(
+        self,
+        *,
+        pack_app_enable: Optional[dict[str, bool]],
+        installation_mode: Optional[str],
+        install_ecm: Optional[bool],
+        install_sanc: Optional[bool],
+    ) -> dict:
+        # Current backend capability: support only fresh installation with BD PACK.
+        # ECM/SANC scenario handling is intentionally disabled for now.
+        mode = "fresh"
+        has_ecm = False
+        has_sanc = False
+        label = "Fresh Installation: BD PACK only"
+        return {
+            "mode": mode,
+            "has_ecm": has_ecm,
+            "has_sanc": has_sanc,
+            "label": label,
+        }
 
     async def _get_latest_log_counts(self, host: str, username: str, password: str, directory: str) -> dict:
         cmd = (

@@ -70,6 +70,9 @@ class InstallationRequest(BaseModel):
     aai_weblogic_domain_home: Optional[str] = Field(default=None, description="WEBLOGIC_DOMAIN_HOME")
     aai_ftspshare_path: Optional[str] = Field(default="/u01/OFSAA/FTPSHARE", description="OFSAAI_FTPSHARE_PATH")
     aai_sftp_user_id: Optional[str] = Field(default="oracle", description="OFSAAI_SFTP_USER_ID")
+    installation_mode: Optional[str] = Field(default="fresh", description="Installation mode: fresh/addon/auto")
+    install_ecm: Optional[bool] = Field(default=None, description="Install ECM module")
+    install_sanc: Optional[bool] = Field(default=None, description="Install SANC module")
 
 class InstallationResponse(BaseModel):
     """Schema for installation response"""

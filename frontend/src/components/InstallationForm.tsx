@@ -78,6 +78,9 @@ interface InstallationData {
   aai_weblogic_domain_home: string
   aai_ftspshare_path: string
   aai_sftp_user_id: string
+  installation_mode: 'fresh' | 'addon'
+  install_ecm: boolean
+  install_sanc: boolean
 }
 
 const APP_PACK_APPS: Array<{ id: string; name: string }> = [
@@ -176,7 +179,10 @@ export function InstallationForm() {
     aai_web_local_path: '/u01/OFSAA/FTPSHARE',
     aai_weblogic_domain_home: '/u01/Oracle/Middleware/Oracle_Home/user_projects/domains/DEMO_OFSAA_DOMAIN',
     aai_ftspshare_path: '/u01/OFSAA/FTPSHARE',
-    aai_sftp_user_id: 'oracle'
+    aai_sftp_user_id: 'oracle',
+    installation_mode: 'fresh',
+    install_ecm: false,
+    install_sanc: false
   })
   const [isLoading, setIsLoading] = useState(false)
   const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle')
@@ -251,7 +257,10 @@ export function InstallationForm() {
           aai_web_local_path: formData.aai_web_local_path || null,
           aai_weblogic_domain_home: formData.aai_weblogic_domain_home || null,
           aai_ftspshare_path: formData.aai_ftspshare_path || null,
-          aai_sftp_user_id: formData.aai_sftp_user_id || null
+          aai_sftp_user_id: formData.aai_sftp_user_id || null,
+          installation_mode: formData.installation_mode,
+          install_ecm: formData.install_ecm,
+          install_sanc: formData.install_sanc
         })
       })
       
@@ -292,6 +301,10 @@ export function InstallationForm() {
     }))
   }
 
+  const toggleModuleSelection = (field: 'install_ecm' | 'install_sanc') => {
+    setFormData(prev => ({ ...prev, [field]: !prev[field] }))
+  }
+
   const getButtonText = () => {
     if (isLoading) return 'Initializing...'
     if (status === 'success') return 'Installation Complete'
@@ -325,6 +338,49 @@ export function InstallationForm() {
   return (
     <div className="space-y-6">
       <form onSubmit={handleSubmit} className="space-y-6">
+        <motion.div
+          className="rounded-xl border border-border bg-bg-secondary/40 p-4 lg:p-5"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.08 }}
+        >
+          <div className="text-sm font-bold text-text-primary uppercase tracking-wider mb-3">
+            Module Installation Scenario
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                Installation Mode
+              </label>
+              <select
+                value={formData.installation_mode}
+                onChange={e =>
+                  setFormData(prev => ({ ...prev, installation_mode: e.target.value as 'fresh' | 'addon' }))
+                }
+                className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary"
+              >
+                <option value="fresh">Fresh</option>
+                <option value="addon">Add-on</option>
+              </select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                Optional Modules
+              </label>
+              <div className="flex items-center gap-5 pt-2">
+                <label className="inline-flex items-center gap-2 text-sm text-text-primary cursor-pointer">
+                  <input type="checkbox" checked={formData.install_ecm} onChange={() => toggleModuleSelection('install_ecm')} />
+                  ECM
+                </label>
+                <label className="inline-flex items-center gap-2 text-sm text-text-primary cursor-pointer">
+                  <input type="checkbox" checked={formData.install_sanc} onChange={() => toggleModuleSelection('install_sanc')} />
+                  SANC
+                </label>
+              </div>
+            </div>
+          </div>
+        </motion.div>
+
         {/* Host Field */}
         <motion.div 
           className="space-y-2"
