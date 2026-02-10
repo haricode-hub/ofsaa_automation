@@ -343,11 +343,69 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             return
         await trace("setup.sh SILENT step completed")
 
+        if request.install_ecm:
+            if (request.installation_mode or "fresh").lower() != "fresh":
+                await handle_failure("ECM installation is supported only in fresh mode", "BD pack must be installed first in fresh mode before ECM")
+                return
+
+            await trace("Starting ECM post-BD installation flow")
+            ecm_extract = await installation_service.download_and_extract_ecm_installer(
+                request.host,
+                request.username,
+                request.password,
+            )
+            await append_output(task_id, "\n".join(ecm_extract.get("logs", [])))
+            if not ecm_extract.get("success"):
+                await handle_failure("ECM installer extraction failed", ecm_extract.get("error"))
+                return
+
+            ecm_cfg = await installation_service.apply_ecm_installer_config_files(
+                request.host,
+                request.username,
+                request.password,
+                ecm_config=request.ecm_config,
+            )
+            await append_output(task_id, "\n".join(ecm_cfg.get("logs", [])))
+            if not ecm_cfg.get("success"):
+                await handle_failure("Applying ECM config files failed", ecm_cfg.get("error"))
+                return
+
+            await trace("Starting ECM osc.sh -s")
+            ecm_osc = await installation_service.run_ecm_osc_schema_creator(
+                request.host,
+                request.username,
+                request.password,
+                on_output_callback=output_callback,
+                on_prompt_callback=prompt_callback,
+            )
+            await append_output(task_id, "\n".join(ecm_osc.get("logs", [])))
+            if not ecm_osc.get("success"):
+                await handle_failure("ECM osc.sh execution failed", ecm_osc.get("error"))
+                return
+
+            await trace("Starting ECM setup.sh SILENT")
+            ecm_setup = await installation_service.run_ecm_setup_silent(
+                request.host,
+                request.username,
+                request.password,
+                on_output_callback=output_callback,
+                on_prompt_callback=prompt_callback,
+            )
+            await append_output(task_id, "\n".join(ecm_setup.get("logs", [])))
+            if not ecm_setup.get("success"):
+                await handle_failure("ECM setup.sh SILENT execution failed", ecm_setup.get("error"))
+                return
+            await trace("ECM post-BD installation flow completed")
+
         task.status = "completed"
         task.progress = 100
         await update_status(task_id, "completed", steps[9], 100)
         await append_output(task_id, "[OK] osc.sh completed")
         await append_output(task_id, "[OK] setup.sh SILENT completed")
+        if request.install_ecm:
+            await append_output(task_id, "[OK] ECM installer extraction and config update completed")
+            await append_output(task_id, "[OK] ECM osc.sh completed")
+            await append_output(task_id, "[OK] ECM setup.sh SILENT completed")
         await append_output(task_id, "[OK] Schema creation completed")
         return
 

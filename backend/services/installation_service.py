@@ -61,6 +61,9 @@ class InstallationService:
     async def set_installer_permissions(self, host: str, username: str, password: str) -> dict:
         return await self.installer.set_permissions(host, username, password)
 
+    async def download_and_extract_ecm_installer(self, host: str, username: str, password: str) -> dict:
+        return await self.installer.download_and_extract_ecm_installer(host, username, password)
+
     async def apply_installer_config_files(
         self,
         host: str,
@@ -176,8 +179,29 @@ class InstallationService:
     async def run_setup_silent(self, host: str, username: str, password: str, **kwargs) -> dict:
         return await self.installer.run_setup_silent(host, username, password, **kwargs)
 
+    async def run_ecm_osc_schema_creator(self, host: str, username: str, password: str, **kwargs) -> dict:
+        return await self.installer.run_ecm_osc_schema_creator(host, username, password, **kwargs)
+
+    async def run_ecm_setup_silent(self, host: str, username: str, password: str, **kwargs) -> dict:
+        return await self.installer.run_ecm_setup_silent(host, username, password, **kwargs)
+
     async def run_environment_check(self, host: str, username: str, password: str, **kwargs) -> dict:
         return await self.installer.run_environment_check(host, username, password, **kwargs)
+
+    async def apply_ecm_installer_config_files(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        ecm_config: Optional[dict] = None,
+    ) -> dict:
+        return await self.installer.apply_ecm_config_files_from_repo(
+            host,
+            username,
+            password,
+            ecm_config=ecm_config,
+        )
 
     async def update_profile_with_custom_variables(
         self,
