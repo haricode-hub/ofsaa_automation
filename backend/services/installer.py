@@ -81,8 +81,9 @@ class InstallerService:
             f"unzip -oq {shell_escape(zip_path)} -d {target_dir}; "
             "fi"
         )
+        unzip_cmd_shell = f"bash -lc {shell_escape(unzip_cmd)}"
         if username == "oracle":
-            unzip_as_oracle_cmd = f"mkdir -p {target_dir} && {unzip_cmd}"
+            unzip_as_oracle_cmd = f"mkdir -p {target_dir} && {unzip_cmd_shell}"
         else:
             # Ensure target dir is writable by oracle; prefer sudo when available.
             # Note: if the connected user is neither root nor sudo-capable, this will likely fail.
@@ -92,13 +93,13 @@ class InstallerService:
                 f"sudo chown -R oracle:oinstall {target_dir} && "
                 f"sudo chmod -R 775 {target_dir} && "
                 f"(sudo chmod a+r {shell_escape(zip_path)} 2>/dev/null || true) && "
-                f"sudo -u oracle {unzip_cmd}; "
+                f"sudo -u oracle {unzip_cmd_shell}; "
                 "else "
                 f"mkdir -p {target_dir} && "
                 f"chown -R oracle:oinstall {target_dir} && "
                 f"chmod -R 775 {target_dir} && "
                 f"(chmod a+r {shell_escape(zip_path)} 2>/dev/null || true) && "
-                f"su - oracle -c {shell_escape(unzip_cmd)}; "
+                f"su - oracle -c {shell_escape(unzip_cmd_shell)}; "
                 "fi"
             )
 
@@ -106,10 +107,17 @@ class InstallerService:
             host, username, password, unzip_as_oracle_cmd, timeout=1800, get_pty=True
         )
         if not unzip_result["success"]:
+            if unzip_result.get("stdout"):
+                logs.append(unzip_result["stdout"])
+            if unzip_result.get("stderr"):
+                logs.append(unzip_result["stderr"])
+            rc = unzip_result.get("returncode")
             return {
                 "success": False,
                 "logs": logs,
-                "error": unzip_result.get("stderr") or "Failed to unzip installer kit",
+                "error": unzip_result.get("stderr")
+                or unzip_result.get("stdout")
+                or (f"Failed to unzip installer kit (rc={rc})" if rc is not None else "Failed to unzip installer kit"),
             }
         logs.append("[OK] Installer kit extracted")
         return {"success": True, "logs": logs}
@@ -167,8 +175,9 @@ class InstallerService:
             f"unzip -oq {shell_escape(zip_path)} -d {target_dir}; "
             "fi"
         )
+        unzip_cmd_shell = f"bash -lc {shell_escape(unzip_cmd)}"
         if username == "oracle":
-            unzip_as_oracle_cmd = f"mkdir -p {target_dir} && {unzip_cmd}"
+            unzip_as_oracle_cmd = f"mkdir -p {target_dir} && {unzip_cmd_shell}"
         else:
             unzip_as_oracle_cmd = (
                 "if command -v sudo >/dev/null 2>&1; then "
@@ -176,20 +185,31 @@ class InstallerService:
                 f"sudo chown -R oracle:oinstall {target_dir} && "
                 f"sudo chmod -R 775 {target_dir} && "
                 f"(sudo chmod a+r {shell_escape(zip_path)} 2>/dev/null || true) && "
-                f"sudo -u oracle {unzip_cmd}; "
+                f"sudo -u oracle {unzip_cmd_shell}; "
                 "else "
                 f"mkdir -p {target_dir} && "
                 f"chown -R oracle:oinstall {target_dir} && "
                 f"chmod -R 775 {target_dir} && "
                 f"(chmod a+r {shell_escape(zip_path)} 2>/dev/null || true) && "
-                f"su - oracle -c {shell_escape(unzip_cmd)}; "
+                f"su - oracle -c {shell_escape(unzip_cmd_shell)}; "
                 "fi"
             )
         unzip_result = await self.ssh_service.execute_command(
             host, username, password, unzip_as_oracle_cmd, timeout=1800, get_pty=True
         )
         if not unzip_result["success"]:
-            return {"success": False, "logs": logs, "error": unzip_result.get("stderr") or "Failed to unzip ECM installer kit"}
+            if unzip_result.get("stdout"):
+                logs.append(unzip_result["stdout"])
+            if unzip_result.get("stderr"):
+                logs.append(unzip_result["stderr"])
+            rc = unzip_result.get("returncode")
+            return {
+                "success": False,
+                "logs": logs,
+                "error": unzip_result.get("stderr")
+                or unzip_result.get("stdout")
+                or (f"Failed to unzip ECM installer kit (rc={rc})" if rc is not None else "Failed to unzip ECM installer kit"),
+            }
 
         check_ecm = await self.validation.check_directory_exists(host, username, password, f"{target_dir}/OFS_ECM_PACK")
         if not check_ecm.get("exists"):
