@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
 import {
@@ -12,6 +12,8 @@ import {
   ExclamationCircleIcon,
   ArrowPathIcon
 } from '@heroicons/react/24/outline'
+import { EcmPackPage } from '@/components/EcmPackPage'
+import { EcmFormData } from '@/components/EcmPackForm'
 
 interface InstallationData {
   host: string
@@ -186,9 +188,23 @@ export function InstallationForm() {
   })
   const [isLoading, setIsLoading] = useState(false)
   const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle')
+  const [ecmConfig, setEcmConfig] = useState<EcmFormData | null>(null)
+  const [isEcmValid, setIsEcmValid] = useState(true)
+  const [ecmSubmitError, setEcmSubmitError] = useState('')
+
+  const handleEcmChange = useCallback((data: EcmFormData, valid: boolean) => {
+    setEcmConfig(data)
+    setIsEcmValid(valid)
+  }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    setEcmSubmitError('')
+    if (formData.install_ecm && (!ecmConfig || !isEcmValid)) {
+      setStatus('error')
+      setEcmSubmitError('ECM review is blocked by validation errors. Fix ECM fields before deployment.')
+      return
+    }
     setIsLoading(true)
     
     try {
@@ -260,7 +276,8 @@ export function InstallationForm() {
           aai_sftp_user_id: formData.aai_sftp_user_id || null,
           installation_mode: formData.installation_mode,
           install_ecm: formData.install_ecm,
-          install_sanc: formData.install_sanc
+          install_sanc: formData.install_sanc,
+          ecm_config: formData.install_ecm ? ecmConfig : null
         })
       })
       
@@ -381,137 +398,133 @@ export function InstallationForm() {
           </div>
         </motion.div>
 
-        {/* Host Field */}
-        <motion.div 
-          className="space-y-2"
+        <motion.div
+          className="rounded-xl border border-border bg-bg-secondary/40 p-4 lg:p-5"
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.1 }}
         >
-          <label className="flex items-center gap-2 text-xs font-bold text-text-primary uppercase tracking-wider">
-            <ServerIcon className="w-4 h-4" />
-            Target Host
-          </label>
-          <input
-            type="text"
-            value={formData.host}
-            onChange={handleInputChange('host')}
-            placeholder="192.168.1.100"
-            className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-            required
-          />
-        </motion.div>
+          <details open className="group">
+            <summary className="list-none cursor-pointer select-none flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-bold text-text-primary uppercase tracking-wider">
+                  Main Configuration
+                </div>
+                <div className="text-xs text-text-muted mt-1">
+                  Host access and profile defaults.
+                </div>
+              </div>
+              <div className="text-xs font-mono text-text-muted group-open:hidden">OPEN</div>
+              <div className="text-xs font-mono text-text-muted hidden group-open:block">CLOSE</div>
+            </summary>
 
-        {/* Username Field */}
-        <motion.div 
-          className="space-y-2"
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.2 }}
-        >
-          <label className="flex items-center gap-2 text-xs font-bold text-text-primary uppercase tracking-wider">
-            <UserIcon className="w-4 h-4" />
-            SSH Username
-          </label>
-          <input
-            type="text"
-            value={formData.username}
-            onChange={handleInputChange('username')}
-            placeholder="oracle"
-            className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-            required
-          />
-        </motion.div>
+            <div className="mt-5 space-y-4">
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-xs font-bold text-text-primary uppercase tracking-wider">
+                  <ServerIcon className="w-4 h-4" />
+                  Target Host
+                </label>
+                <input
+                  type="text"
+                  value={formData.host}
+                  onChange={handleInputChange('host')}
+                  placeholder="192.168.1.100"
+                  className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  required
+                />
+              </div>
 
-        {/* Password Field */}
-        <motion.div 
-          className="space-y-2"
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.3 }}
-        >
-          <label className="flex items-center gap-2 text-xs font-bold text-text-primary uppercase tracking-wider">
-            <KeyIcon className="w-4 h-4" />
-            SSH Password
-          </label>
-          <input
-            type="password"
-            value={formData.password}
-            onChange={handleInputChange('password')}
-            placeholder="••••••••••••"
-            className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-            required
-          />
-        </motion.div>
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-xs font-bold text-text-primary uppercase tracking-wider">
+                  <UserIcon className="w-4 h-4" />
+                  SSH Username
+                </label>
+                <input
+                  type="text"
+                  value={formData.username}
+                  onChange={handleInputChange('username')}
+                  placeholder="oracle"
+                  className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  required
+                />
+              </div>
 
-        {/* Profile Variables Section */}
-        <motion.div 
-          className="border-t border-border pt-6 space-y-4"
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.4 }}
-        >
-          <div className="text-sm font-bold text-text-primary uppercase tracking-wider mb-4">
-            📋 Profile Configuration
-          </div>
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-xs font-bold text-text-primary uppercase tracking-wider">
+                  <KeyIcon className="w-4 h-4" />
+                  SSH Password
+                </label>
+                <input
+                  type="password"
+                  value={formData.password}
+                  onChange={handleInputChange('password')}
+                  placeholder="********"
+                  className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  required
+                />
+              </div>
 
-          {/* FIC_HOME Field */}
-          <div className="space-y-2">
-            <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-              FIC_HOME Path
-            </label>
-            <input
-              type="text"
-              value={formData.fic_home}
-              onChange={handleInputChange('fic_home')}
-              placeholder="/u01/OFSAA/FICHOME"
-              className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-              required
-            />
-          </div>
+              <div className="border-t border-border pt-6 space-y-4">
+                <div className="text-sm font-bold text-text-primary uppercase tracking-wider mb-1">
+                  Profile Configuration
+                </div>
 
-          {/* JAVA_HOME Field */}
-          <div className="space-y-2">
-            <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-              JAVA_HOME (Optional - Auto-detected if empty)
-            </label>
-            <input
-              type="text"
-              value={formData.java_home}
-              onChange={handleInputChange('java_home')}
-              placeholder="Leave empty for auto-detection"
-              className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-            />
-          </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    FIC_HOME Path
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.fic_home}
+                    onChange={handleInputChange('fic_home')}
+                    placeholder="/u01/OFSAA/FICHOME"
+                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    required
+                  />
+                </div>
 
-          {/* JAVA_BIN Field */}
-          <div className="space-y-2">
-            <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-              JAVA_BIN (Optional - Auto-detected if empty)
-            </label>
-            <input
-              type="text"
-              value={formData.java_bin}
-              onChange={handleInputChange('java_bin')}
-              placeholder="Leave empty for auto-detection"
-              className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-            />
-          </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    JAVA_HOME (Optional - Auto-detected if empty)
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.java_home}
+                    onChange={handleInputChange('java_home')}
+                    placeholder="Leave empty for auto-detection"
+                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  />
+                </div>
 
-          {/* ORACLE_SID Field */}
-          <div className="space-y-2">
-            <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-              Oracle SID
-            </label>
-            <input
-              type="text"
-              value={formData.oracle_sid}
-              onChange={handleInputChange('oracle_sid')}
-              placeholder="ORCL"
-              className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-              required
-            />
-          </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    JAVA_BIN (Optional - Auto-detected if empty)
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.java_bin}
+                    onChange={handleInputChange('java_bin')}
+                    placeholder="Leave empty for auto-detection"
+                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    Oracle SID
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.oracle_sid}
+                    onChange={handleInputChange('oracle_sid')}
+                    placeholder="ORCL"
+                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    required
+                  />
+                </div>
+              </div>
+            </div>
+          </details>
         </motion.div>
 
         {/* Schema Config Section */}
@@ -920,6 +933,15 @@ export function InstallationForm() {
             </div>
           </details>
         </motion.div>
+
+        <EcmPackPage
+          enabled={formData.install_ecm}
+          host={formData.host}
+          configSchemaName={formData.schema_config_schema_name}
+          atomicSchemaName={formData.schema_atomic_schema_name}
+          onChange={handleEcmChange}
+        />
+        {ecmSubmitError && <p className="text-xs text-error">{ecmSubmitError}</p>}
 
         {/* OFSAAI Install Config Section */}
         <motion.div

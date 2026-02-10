@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict
+from typing import Any, Optional, List, Dict
 
 class InstallationRequest(BaseModel):
     """Schema for installation request"""
@@ -72,6 +72,7 @@ class InstallationRequest(BaseModel):
     aai_sftp_user_id: Optional[str] = Field(default="oracle", description="OFSAAI_SFTP_USER_ID")
     installation_mode: Optional[str] = Field(default="fresh", description="Installation mode: fresh/addon/auto")
     install_ecm: Optional[bool] = Field(default=None, description="Install ECM module")
+    ecm_config: Optional[Dict[str, Any]] = Field(default=None, description="ECM module scoped config inputs")
     install_sanc: Optional[bool] = Field(default=None, description="Install SANC module")
 
 class InstallationResponse(BaseModel):
