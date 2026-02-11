@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useParams } from 'next/navigation'
+import { useParams, useRouter } from 'next/navigation'
 import { BackgroundMatrix } from '@/components/BackgroundMatrix'
 
 type StatusType = 'connecting' | 'running' | 'waiting_input' | 'failed' | 'completed'
@@ -27,7 +27,9 @@ const STEPS = [
 
 export default function LogsPage() {
   const params = useParams()
+  const router = useRouter()
   const taskId = String(params?.taskId || '')
+  const redirectDelaySec = 15
   const [status, setStatus] = useState<StatusType>('connecting')
   const [currentStep, setCurrentStep] = useState<string>('Initializing connection')
   const [progress, setProgress] = useState<number>(0)
@@ -36,6 +38,7 @@ export default function LogsPage() {
   const [inputText, setInputText] = useState('')
   const [outputLines, setOutputLines] = useState<string[]>([])
   const [autoFollowOutput, setAutoFollowOutput] = useState(true)
+  const [redirectCountdown, setRedirectCountdown] = useState<number>(redirectDelaySec)
   const socketRef = useRef<WebSocket | null>(null)
   const outputEndRef = useRef<HTMLDivElement>(null)
   const outputContainerRef = useRef<HTMLDivElement>(null)
@@ -106,6 +109,21 @@ export default function LogsPage() {
       outputEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
   }, [outputLines, autoFollowOutput])
+
+  useEffect(() => {
+    if (status !== 'failed') return
+    setRedirectCountdown(redirectDelaySec)
+    const tick = setInterval(() => {
+      setRedirectCountdown(prev => (prev > 0 ? prev - 1 : 0))
+    }, 1000)
+    const timer = setTimeout(() => {
+      router.push('/')
+    }, redirectDelaySec * 1000)
+    return () => {
+      clearTimeout(timer)
+      clearInterval(tick)
+    }
+  }, [status, router, redirectDelaySec])
 
   const handleOutputScroll = () => {
     const el = outputContainerRef.current
@@ -219,6 +237,11 @@ export default function LogsPage() {
               <div className="text-xs text-text-secondary mb-2">
                 {prompt ? `Prompt: ${prompt}` : 'Waiting for prompt...'}
               </div>
+              {status === 'failed' && (
+                <div className="text-xs text-warning mb-2">
+                  Returning to form with saved inputs in {redirectCountdown}s...
+                </div>
+              )}
               <div className="flex gap-3">
                 <textarea
                   value={inputText}

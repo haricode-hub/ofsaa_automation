@@ -188,6 +188,9 @@ class InstallationService:
     async def run_environment_check(self, host: str, username: str, password: str, **kwargs) -> dict:
         return await self.installer.run_environment_check(host, username, password, **kwargs)
 
+    async def cleanup_failed_fresh_installation(self, host: str, username: str, password: str) -> dict:
+        return await self.installer.cleanup_failed_fresh_installation(host, username, password)
+
     async def apply_ecm_installer_config_files(
         self,
         host: str,

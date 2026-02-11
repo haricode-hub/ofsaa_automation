@@ -224,6 +224,72 @@ class InstallerService:
             return {"success": False, "logs": [], "error": result.get("stderr") or "Failed to set permissions"}
         return {"success": True, "logs": ["[OK] Permissions set on OFS_BD_PACK"]}
 
+    async def cleanup_failed_fresh_installation(self, host: str, username: str, password: str) -> dict:
+        logs: list[str] = []
+        dirs = [
+            "/u01/installer_kit",
+            "/u01/INSTALLER_KIT",
+            "/u01/INSTALLER_KIT_AUTOMATION",
+            "/u01/Installation_Kit",
+            "/u01/OFSAA/FICHOME",
+            "/u01/OFSAA/FTPSHARE",
+        ]
+        dir_list = " ".join(shell_escape(d) for d in dirs)
+        remove_cmd = (
+            "if command -v sudo >/dev/null 2>&1; then "
+            f"sudo rm -rf {dir_list}; "
+            "else "
+            f"rm -rf {dir_list}; "
+            "fi"
+        )
+        remove_result = await self.ssh_service.execute_command(host, username, password, remove_cmd, timeout=1800, get_pty=True)
+        if remove_result.get("success"):
+            logs.append("[OK] Cleanup removed installation directories")
+        else:
+            if remove_result.get("stdout"):
+                logs.append(remove_result["stdout"])
+            if remove_result.get("stderr"):
+                logs.append(remove_result["stderr"])
+            logs.append("[WARN] Directory cleanup had errors")
+
+        drop_inner = (
+            "source /home/oracle/.profile >/dev/null 2>&1; "
+            "cd /u01 || exit 1; "
+            "if [ -f ./drop_ofsaa_objects.sh ]; then "
+            "chmod +x ./drop_ofsaa_objects.sh 2>/dev/null || true; "
+            "./drop_ofsaa_objects.sh; "
+            "else "
+            "echo 'DROP_SCRIPT_NOT_FOUND'; "
+            "exit 0; "
+            "fi"
+        )
+        if username == "oracle":
+            drop_cmd = f"bash -lc {shell_escape(drop_inner)}"
+        else:
+            drop_cmd = (
+                "if command -v sudo >/dev/null 2>&1; then "
+                f"sudo -u oracle bash -lc {shell_escape(drop_inner)}; "
+                "else "
+                f"su - oracle -c {shell_escape('bash -lc ' + shell_escape(drop_inner))}; "
+                "fi"
+            )
+
+        drop_result = await self.ssh_service.execute_command(host, username, password, drop_cmd, timeout=1800, get_pty=True)
+        out = (drop_result.get("stdout") or "").strip()
+        err = (drop_result.get("stderr") or "").strip()
+        if "DROP_SCRIPT_NOT_FOUND" in out:
+            logs.append("[WARN] /u01/drop_ofsaa_objects.sh not found; schema drop skipped")
+        elif drop_result.get("success"):
+            logs.append("[OK] Schema cleanup script executed: /u01/drop_ofsaa_objects.sh")
+        else:
+            if out:
+                logs.append(out)
+            if err:
+                logs.append(err)
+            logs.append("[WARN] Schema cleanup script failed")
+
+        return {"success": True, "logs": logs}
+
     async def apply_config_files_from_repo(
         self,
         host: str,
@@ -350,46 +416,32 @@ class InstallerService:
         if not check_kit["success"]:
             return {"success": False, "logs": logs, "error": f"Installer kit not found: {kit_dir}"}
 
-        # If user provided schema inputs, patch the repo copy of OFS_BD_SCHEMA_IN.xml before copying into the kit.
-        user_wants_schema_patch = any(
-            v is not None and str(v) != ""
-            for v in [
-                schema_jdbc_host,
-                schema_jdbc_service,
-                schema_host,
-                schema_setup_env,
-                schema_default_password,
-                schema_datafile_dir,
-                schema_tablespace_autoextend,
-                schema_external_directory_value,
-                schema_config_schema_name,
-                schema_atomic_schema_name,
-            ]
+        # Always run patchers so UI values are deterministically synchronized into repo files.
+        patch_result = await self._patch_ofs_bd_schema_in_repo(
+            host,
+            username,
+            password,
+            repo_dir=repo_dir,
+            schema_jdbc_host=schema_jdbc_host,
+            schema_jdbc_port=schema_jdbc_port,
+            schema_jdbc_service=schema_jdbc_service,
+            schema_host=schema_host,
+            schema_setup_env=schema_setup_env,
+            schema_apply_same_for_all=schema_apply_same_for_all,
+            schema_default_password=schema_default_password,
+            schema_datafile_dir=schema_datafile_dir,
+            schema_tablespace_autoextend=schema_tablespace_autoextend,
+            schema_external_directory_value=schema_external_directory_value,
+            schema_config_schema_name=schema_config_schema_name,
+            schema_atomic_schema_name=schema_atomic_schema_name,
         )
-        if user_wants_schema_patch:
-            patch_result = await self._patch_ofs_bd_schema_in_repo(
-                host,
-                username,
-                password,
-                repo_dir=repo_dir,
-                schema_jdbc_host=schema_jdbc_host,
-                schema_jdbc_port=schema_jdbc_port,
-                schema_jdbc_service=schema_jdbc_service,
-                schema_host=schema_host,
-                schema_setup_env=schema_setup_env,
-                schema_apply_same_for_all=schema_apply_same_for_all,
-                schema_default_password=schema_default_password,
-                schema_datafile_dir=schema_datafile_dir,
-                schema_tablespace_autoextend=schema_tablespace_autoextend,
-                schema_external_directory_value=schema_external_directory_value,
-                schema_config_schema_name=schema_config_schema_name,
-                schema_atomic_schema_name=schema_atomic_schema_name,
-            )
-            logs.extend(patch_result.get("logs", []))
-            if not patch_result.get("success"):
-                return {"success": False, "logs": logs, "error": patch_result.get("error") or "Failed to patch schema XML"}
+        logs.extend(patch_result.get("logs", []))
+        if not patch_result.get("success"):
+            return {"success": False, "logs": logs, "error": patch_result.get("error") or "Failed to patch schema XML"}
+        schema_changed = bool(patch_result.get("changed"))
 
-        if pack_app_enable:
+        pack_changed = False
+        if pack_app_enable is not None:
             pack_patch = await self._patch_ofs_bd_pack_xml_repo(
                 host,
                 username,
@@ -400,6 +452,7 @@ class InstallerService:
             logs.extend(pack_patch.get("logs", []))
             if not pack_patch.get("success"):
                 return {"success": False, "logs": logs, "error": pack_patch.get("error") or "Failed to patch pack XML"}
+            pack_changed = bool(pack_patch.get("changed"))
 
         silent_props = {
             "BASE_COUNTRY": prop_base_country,
@@ -413,13 +466,13 @@ class InstallerService:
             "SW_RMIPORT": prop_sw_rmiport,
             "BIG_DATA_ENABLE": prop_big_data_enable,
         }
-        if any(v is not None for v in silent_props.values()):
-            props_patch = await self._patch_default_properties_repo(
-                host, username, password, repo_dir=repo_dir, updates=silent_props
-            )
-            logs.extend(props_patch.get("logs", []))
-            if not props_patch.get("success"):
-                return {"success": False, "logs": logs, "error": props_patch.get("error") or "Failed to patch default.properties"}
+        props_patch = await self._patch_default_properties_repo(
+            host, username, password, repo_dir=repo_dir, updates=silent_props
+        )
+        logs.extend(props_patch.get("logs", []))
+        if not props_patch.get("success"):
+            return {"success": False, "logs": logs, "error": props_patch.get("error") or "Failed to patch default.properties"}
+        props_changed = bool(props_patch.get("changed"))
 
         aai_updates = {
             "WEBAPPSERVERTYPE": aai_webappservertype,
@@ -448,13 +501,20 @@ class InstallerService:
             "OFSAAI_FTPSHARE_PATH": aai_ftspshare_path,
             "OFSAAI_SFTP_USER_ID": aai_sftp_user_id,
         }
-        if any(v is not None for v in aai_updates.values()):
-            aai_patch = await self._patch_ofsaai_install_config_repo(
-                host, username, password, repo_dir=repo_dir, updates=aai_updates
-            )
-            logs.extend(aai_patch.get("logs", []))
-            if not aai_patch.get("success"):
-                return {"success": False, "logs": logs, "error": aai_patch.get("error") or "Failed to patch OFSAAI_InstallConfig.xml"}
+        aai_patch = await self._patch_ofsaai_install_config_repo(
+            host, username, password, repo_dir=repo_dir, updates=aai_updates
+        )
+        logs.extend(aai_patch.get("logs", []))
+        if not aai_patch.get("success"):
+            return {"success": False, "logs": logs, "error": aai_patch.get("error") or "Failed to patch OFSAAI_InstallConfig.xml"}
+        aai_changed = bool(aai_patch.get("changed"))
+        logs.append(
+            "[INFO] UI sync summary: "
+            f"OFS_BD_SCHEMA_IN.xml={'UPDATED' if schema_changed else 'UNCHANGED'}, "
+            f"OFS_BD_PACK.xml={'UPDATED' if pack_changed else 'UNCHANGED'}, "
+            f"default.properties={'UPDATED' if props_changed else 'UNCHANGED'}, "
+            f"OFSAAI_InstallConfig.xml={'UPDATED' if aai_changed else 'UNCHANGED'}"
+        )
 
         for filename, dest_path in mappings:
             src_path = await self._resolve_repo_bd_pack_file_path(
@@ -942,7 +1002,7 @@ class InstallerService:
     ) -> str:
         updated = content
 
-        if schema_jdbc_host and schema_jdbc_port and schema_jdbc_service:
+        if schema_jdbc_host is not None and schema_jdbc_port is not None and schema_jdbc_service is not None:
             jdbc_url = f"jdbc:oracle:thin:@//{schema_jdbc_host}:{schema_jdbc_port}/{schema_jdbc_service}"
             updated = re.sub(
                 r"<JDBC_URL>.*?</JDBC_URL>",
@@ -951,17 +1011,17 @@ class InstallerService:
                 flags=re.DOTALL,
             )
 
-        if schema_host:
+        if schema_host is not None:
             updated = re.sub(r"<HOST>.*?</HOST>", f"<HOST>{schema_host}</HOST>", updated, flags=re.DOTALL)
 
-        if schema_setup_env:
+        if schema_setup_env is not None:
             updated = re.sub(
                 r'(<SETUPINFO\b[^>]*\bNAME=")[^"]*(")',
                 rf"\g<1>{schema_setup_env}\g<2>",
                 updated,
             )
 
-        if schema_apply_same_for_all:
+        if schema_apply_same_for_all is not None:
             updated = re.sub(
                 r'(<PASSWORD\b[^>]*\bAPPLYSAMEFORALL=")[^"]*(")',
                 rf"\g<1>{schema_apply_same_for_all}\g<2>",
@@ -975,7 +1035,7 @@ class InstallerService:
                 updated,
             )
 
-        if schema_tablespace_autoextend:
+        if schema_tablespace_autoextend is not None:
             updated = re.sub(
                 r'(\bAUTOEXTEND=")[^"]*(")',
                 rf"\g<1>{schema_tablespace_autoextend}\g<2>",
@@ -992,21 +1052,21 @@ class InstallerService:
 
             updated = re.sub(r'(\bDATAFILE=")([^"]+)(")', _repl_datafile, updated)
 
-        if schema_external_directory_value:
+        if schema_external_directory_value is not None:
             updated = re.sub(
                 r'(<DIRECTORY\b[^>]*\bID="OFS_BD_PACK_EXTERNAL_DIRECTORY_1"[^>]*\bVALUE=")[^"]*(")',
                 rf"\g<1>{schema_external_directory_value}\g<2>",
                 updated,
             )
 
-        if schema_config_schema_name:
+        if schema_config_schema_name is not None:
             updated = re.sub(
                 r'(<SCHEMA\b[^>]*\bTYPE="CONFIG"[^>]*\bNAME=")[^"]*(")',
                 rf"\g<1>{schema_config_schema_name}\g<2>",
                 updated,
             )
 
-        if schema_atomic_schema_name:
+        if schema_atomic_schema_name is not None:
             updated = re.sub(
                 r'(<SCHEMA\b[^>]*\bTYPE="ATOMIC"[^>]*\bNAME=")[^"]*(")',
                 rf"\g<1>{schema_atomic_schema_name}\g<2>",
@@ -1067,7 +1127,7 @@ class InstallerService:
 
         if patched == original:
             logs.append("[INFO] No changes needed for OFS_BD_SCHEMA_IN.xml")
-            return {"success": True, "logs": logs}
+            return {"success": True, "logs": logs, "changed": False}
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         backup_cmd = f"cp -f {src_path} {src_path}.backup.{ts}"
@@ -1077,7 +1137,7 @@ class InstallerService:
             return {"success": False, "logs": logs, "error": write.get("error")}
 
         logs.append("[OK] Updated OFS_BD_SCHEMA_IN.xml in repo (local clone)")
-        return {"success": True, "logs": logs}
+        return {"success": True, "logs": logs, "changed": True}
 
     def _patch_ofs_bd_pack_xml_content(self, content: str, *, pack_app_enable: dict[str, bool]) -> str:
         updated = content
@@ -1087,18 +1147,18 @@ class InstallerService:
 
             # Preferred: update ENABLE="..." in place
             pat = re.compile(
-                r'(<APP_ID\\b[^>]*\\bENABLE=\")([^\"]*)(\"[^>]*>\\s*' + re.escape(app_id) + r'\\s*</APP_ID>)',
+                r'(<APP_ID\b[^>]*\bENABLE=")([^"]*)("[^>]*>\s*' + re.escape(app_id) + r'\s*</APP_ID>)',
                 flags=re.IGNORECASE,
             )
             if pat.search(text):
-                return pat.sub(rf"\\1{value}\\3", text)
+                return pat.sub(rf"\1{value}\3", text)
 
             # Fallback: inject ENABLE attr if missing
             pat2 = re.compile(
-                r'(<APP_ID\\b)([^>]*>\\s*' + re.escape(app_id) + r'\\s*</APP_ID>)',
+                r'(<APP_ID\b)([^>]*>\s*' + re.escape(app_id) + r'\s*</APP_ID>)',
                 flags=re.IGNORECASE,
             )
-            return pat2.sub(rf"\\1 ENABLE=\"{value}\"\\2", text)
+            return pat2.sub(rf'\1 ENABLE="{value}"\2', text)
 
         for app_id, enabled in pack_app_enable.items():
             updated = _set_enable_for_app(app_id, bool(enabled), updated)
@@ -1131,7 +1191,7 @@ class InstallerService:
 
         if patched == original:
             logs.append("[INFO] No changes needed for OFS_BD_PACK.xml")
-            return {"success": True, "logs": logs}
+            return {"success": True, "logs": logs, "changed": False}
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         await self.ssh_service.execute_command(host, username, password, f"cp -f {src_path} {src_path}.backup.{ts}", get_pty=True)
@@ -1140,7 +1200,7 @@ class InstallerService:
             return {"success": False, "logs": logs, "error": write.get("error")}
 
         logs.append("[OK] Updated OFS_BD_PACK.xml in repo (local clone)")
-        return {"success": True, "logs": logs}
+        return {"success": True, "logs": logs, "changed": True}
 
     def _patch_default_properties_content(self, content: str, *, updates: dict[str, Optional[str]]) -> str:
         lines = content.splitlines()
@@ -1214,7 +1274,7 @@ class InstallerService:
 
         if patched == original:
             logs.append("[INFO] No changes needed for default.properties")
-            return {"success": True, "logs": logs}
+            return {"success": True, "logs": logs, "changed": False}
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         await self.ssh_service.execute_command(host, username, password, f"cp -f {src_path} {src_path}.backup.{ts}", get_pty=True)
@@ -1223,7 +1283,7 @@ class InstallerService:
             return {"success": False, "logs": logs, "error": write.get("error")}
 
         logs.append("[OK] Updated default.properties in repo (local clone)")
-        return {"success": True, "logs": logs}
+        return {"success": True, "logs": logs, "changed": True}
 
     def _patch_ofsaai_install_config_content(self, content: str, *, updates: dict[str, Optional[str]]) -> tuple[str, list[str]]:
         updated = content
@@ -1270,7 +1330,7 @@ class InstallerService:
 
         if patched == original:
             logs.append("[INFO] No changes needed for OFSAAI_InstallConfig.xml")
-            return {"success": True, "logs": logs}
+            return {"success": True, "logs": logs, "changed": False}
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         await self.ssh_service.execute_command(host, username, password, f"cp -f {src_path} {src_path}.backup.{ts}", get_pty=True)
@@ -1279,7 +1339,7 @@ class InstallerService:
             return {"success": False, "logs": logs, "error": write.get("error")}
 
         logs.append("[OK] Updated OFSAAI_InstallConfig.xml in repo (local clone)")
-        return {"success": True, "logs": logs}
+        return {"success": True, "logs": logs, "changed": True}
 
     async def run_osc_schema_creator(
         self,
@@ -1289,11 +1349,8 @@ class InstallerService:
         on_output_callback: Optional[Callable[[str], Any]] = None,
         on_prompt_callback: Optional[Callable[[str], Any]] = None,
     ) -> dict:
-        # Support both directory spellings used in environments
-        # (seen in docs): /u01/installer_kit and /u01/Installation_Kit
         osc_candidates = [
             "/u01/installer_kit/OFS_BD_PACK/schema_creator/bin/osc.sh",
-            "/u01/Installation_Kit/OFS_BD_PACK/schema_creator/bin/osc.sh",
         ]
         osc_path = None
         for candidate in osc_candidates:
@@ -1304,10 +1361,37 @@ class InstallerService:
         if osc_path is None:
             return {"success": False, "logs": [], "error": "osc.sh not found or not executable in expected locations"}
 
+        schema_creator_dir = os.path.dirname(os.path.dirname(osc_path))
+        pack_root_dir = os.path.dirname(schema_creator_dir)
+
+        # Align Linux version compatibility for osc path too (not only envCheck path).
+        # Some kits keep VerInfo.txt in different subfolders under OFS_BD_PACK.
+        verinfo_preflight_cmd = (
+            f"pack_root={shell_escape(pack_root_dir)}; "
+            "patched=0; "
+            "found=0; "
+            "while IFS= read -r vf; do "
+            "  found=1; "
+            "  if grep -Eq '^[[:space:]]*Linux_VERSION' \"$vf\"; then "
+            "    sed -i -E 's/^[[:space:]]*Linux_VERSION.*$/Linux_VERSION=7,8,9/' \"$vf\"; "
+            "  else "
+            "    echo 'Linux_VERSION=7,8,9' >> \"$vf\"; "
+            "  fi; "
+            "  patched=$((patched+1)); "
+            "  echo \"[INFO] VerInfo patched: $vf\"; "
+            "done < <(find \"$pack_root\" -type f -name 'VerInfo.txt' 2>/dev/null); "
+            "if [ \"$found\" -eq 0 ]; then "
+            "  echo '[WARN] VerInfo.txt not found under OFS_BD_PACK'; "
+            "else "
+            "  echo \"[INFO] VerInfo files patched count: $patched\"; "
+            "fi"
+        )
+
         # User requirement: run from schema_creator/bin and use lowercase -s
         # Some kits also accept -S; if -s fails, we retry with -S.
         inner_cmd = (
             "source /home/oracle/.profile >/dev/null 2>&1; "
+            f"{verinfo_preflight_cmd}; "
             f"cd $(dirname {osc_path}) && "
             "(./osc.sh -s || ./osc.sh -S)"
         )
@@ -1322,16 +1406,59 @@ class InstallerService:
                 "fi"
             )
 
+        captured_lines: list[str] = []
+        pending = ""
+
+        async def output_collector(text: str) -> None:
+            nonlocal pending
+            if not text:
+                return
+
+            pending += text.replace("\r", "\n")
+            parts = pending.split("\n")
+            for line in parts[:-1]:
+                cleaned = line.strip()
+                if cleaned:
+                    captured_lines.append(cleaned)
+            pending = parts[-1]
+
+            if on_output_callback is not None:
+                forwarded = on_output_callback(text)
+                if inspect.isawaitable(forwarded):
+                    await forwarded
+
         result = await self.ssh_service.execute_interactive_command(
             host,
             username,
             password,
             command,
-            on_output_callback=on_output_callback,
+            on_output_callback=output_collector,
             on_prompt_callback=on_prompt_callback,
             timeout=3600,
         )
-        schema_creator_dir = os.path.dirname(os.path.dirname(osc_path))
+        tail = pending.strip()
+        if tail:
+            captured_lines.append(tail)
+
+        fatal_runtime_patterns = [
+            re.compile(r"Exception in thread \"main\"", re.IGNORECASE),
+            re.compile(r"NoClassDefFoundError", re.IGNORECASE),
+            re.compile(r"ClassNotFoundException", re.IGNORECASE),
+            re.compile(r"\bSP2-0306\b", re.IGNORECASE),
+            re.compile(r"\bSP2-0157\b", re.IGNORECASE),
+            re.compile(r"\bORA-01017\b", re.IGNORECASE),
+            re.compile(r"\bFAIL\b", re.IGNORECASE),
+            re.compile(r"ERROR while applying", re.IGNORECASE),
+        ]
+        runtime_fatal_lines = [
+            line for line in captured_lines if any(p.search(line) for p in fatal_runtime_patterns)
+        ]
+        if runtime_fatal_lines:
+            logs = ["[ERROR] osc.sh runtime output contains fatal errors:"] + [
+                f"[OSCOUT] {line}" for line in runtime_fatal_lines[:20]
+            ]
+            return {"success": False, "logs": logs, "error": "osc.sh runtime output contains fatal errors"}
+
         logs_dir = f"{schema_creator_dir}/logs"
 
         latest_log_cmd = (
@@ -1389,7 +1516,6 @@ class InstallerService:
     ) -> dict:
         setup_candidates = [
             "/u01/installer_kit/OFS_BD_PACK/bin/setup.sh",
-            "/u01/Installation_Kit/OFS_BD_PACK/bin/setup.sh",
             "/u01/INSTALLER_KIT/OFS_BD_PACK/bin/setup.sh",
         ]
 

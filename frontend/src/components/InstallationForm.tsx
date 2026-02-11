@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
 import {
@@ -103,6 +103,8 @@ const APP_PACK_APPS: Array<{ id: string; name: string }> = [
   { id: 'OFS_AAIB', name: 'Financial Services Analytical Applications Infrastructure Big Data Processing' }
 ]
 
+const INSTALL_FORM_STORAGE_KEY = 'ofsaa_install_form_v1'
+
 export function InstallationForm() {
   const router = useRouter()
   const [formData, setFormData] = useState<InstallationData>({
@@ -192,6 +194,39 @@ export function InstallationForm() {
   const [isEcmValid, setIsEcmValid] = useState(true)
   const [ecmSubmitError, setEcmSubmitError] = useState('')
 
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(INSTALL_FORM_STORAGE_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw) as {
+        formData?: Partial<InstallationData>
+        ecmConfig?: EcmFormData | null
+      }
+      if (parsed.formData) {
+        setFormData(prev => ({ ...prev, ...parsed.formData }))
+      }
+      if (parsed.ecmConfig !== undefined) {
+        setEcmConfig(parsed.ecmConfig)
+      }
+    } catch {
+      // Ignore local storage parse errors
+    }
+  }, [])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        INSTALL_FORM_STORAGE_KEY,
+        JSON.stringify({
+          formData,
+          ecmConfig,
+        })
+      )
+    } catch {
+      // Ignore local storage write errors
+    }
+  }, [formData, ecmConfig])
+
   const handleEcmChange = useCallback((data: EcmFormData, valid: boolean) => {
     setEcmConfig(data)
     setIsEcmValid(valid)
@@ -223,57 +258,57 @@ export function InstallationForm() {
           java_bin: formData.java_bin || null,
           oracle_sid: formData.oracle_sid,
 
-          schema_jdbc_host: formData.schema_jdbc_host || null,
+          schema_jdbc_host: formData.schema_jdbc_host,
           schema_jdbc_port: formData.schema_jdbc_port ? Number(formData.schema_jdbc_port) : null,
-          schema_jdbc_service: formData.schema_jdbc_service || null,
-          schema_host: formData.host || null,
-          schema_setup_env: formData.schema_setup_env || null,
-          schema_apply_same_for_all: formData.schema_apply_same_for_all || null,
-          schema_default_password: formData.schema_default_password || null,
-          schema_datafile_dir: formData.schema_datafile_dir || null,
-          schema_tablespace_autoextend: formData.schema_tablespace_autoextend || null,
-          schema_external_directory_value: formData.schema_external_directory_value || null,
-          schema_config_schema_name: formData.schema_config_schema_name || null,
-          schema_atomic_schema_name: formData.schema_atomic_schema_name || null,
+          schema_jdbc_service: formData.schema_jdbc_service,
+          schema_host: formData.schema_host,
+          schema_setup_env: formData.schema_setup_env,
+          schema_apply_same_for_all: formData.schema_apply_same_for_all,
+          schema_default_password: formData.schema_default_password,
+          schema_datafile_dir: formData.schema_datafile_dir,
+          schema_tablespace_autoextend: formData.schema_tablespace_autoextend,
+          schema_external_directory_value: formData.schema_external_directory_value,
+          schema_config_schema_name: formData.schema_config_schema_name,
+          schema_atomic_schema_name: formData.schema_atomic_schema_name,
 
           pack_app_enable: formData.pack_app_enable,
 
-          prop_base_country: formData.prop_base_country || null,
-          prop_default_jurisdiction: formData.prop_default_jurisdiction || null,
-          prop_smtp_host: formData.prop_smtp_host || null,
-          prop_partition_date_format: formData.prop_partition_date_format || null,
-          prop_web_service_user: formData.prop_web_service_user || null,
-          prop_web_service_password: formData.prop_web_service_password || null,
-          prop_configure_obiee: formData.prop_configure_obiee || null,
+          prop_base_country: formData.prop_base_country,
+          prop_default_jurisdiction: formData.prop_default_jurisdiction,
+          prop_smtp_host: formData.prop_smtp_host,
+          prop_partition_date_format: formData.prop_partition_date_format,
+          prop_web_service_user: formData.prop_web_service_user,
+          prop_web_service_password: formData.prop_web_service_password,
+          prop_configure_obiee: formData.prop_configure_obiee,
           prop_obiee_url: formData.prop_obiee_url, // may be empty
-          prop_sw_rmiport: formData.prop_sw_rmiport || null,
-          prop_big_data_enable: formData.prop_big_data_enable || null,
+          prop_sw_rmiport: formData.prop_sw_rmiport,
+          prop_big_data_enable: formData.prop_big_data_enable,
 
-          aai_webappservertype: formData.aai_webappservertype || null,
-          aai_dbserver_ip: formData.aai_dbserver_ip || null,
-          aai_oracle_service_name: formData.aai_oracle_service_name || null,
-          aai_abs_driver_path: formData.aai_abs_driver_path || null,
-          aai_olap_server_implementation: formData.aai_olap_server_implementation || null,
-          aai_sftp_enable: formData.aai_sftp_enable || null,
-          aai_file_transfer_port: formData.aai_file_transfer_port || null,
-          aai_javaport: formData.aai_javaport || null,
-          aai_nativeport: formData.aai_nativeport || null,
-          aai_agentport: formData.aai_agentport || null,
-          aai_iccport: formData.aai_iccport || null,
-          aai_iccnativeport: formData.aai_iccnativeport || null,
-          aai_olapport: formData.aai_olapport || null,
-          aai_msgport: formData.aai_msgport || null,
-          aai_routerport: formData.aai_routerport || null,
-          aai_amport: formData.aai_amport || null,
-          aai_https_enable: formData.aai_https_enable || null,
-          aai_web_server_ip: formData.aai_web_server_ip || null,
-          aai_web_server_port: formData.aai_web_server_port || null,
-          aai_context_name: formData.aai_context_name || null,
-          aai_webapp_context_path: formData.aai_webapp_context_path || null,
-          aai_web_local_path: formData.aai_web_local_path || null,
-          aai_weblogic_domain_home: formData.aai_weblogic_domain_home || null,
-          aai_ftspshare_path: formData.aai_ftspshare_path || null,
-          aai_sftp_user_id: formData.aai_sftp_user_id || null,
+          aai_webappservertype: formData.aai_webappservertype,
+          aai_dbserver_ip: formData.aai_dbserver_ip,
+          aai_oracle_service_name: formData.aai_oracle_service_name,
+          aai_abs_driver_path: formData.aai_abs_driver_path,
+          aai_olap_server_implementation: formData.aai_olap_server_implementation,
+          aai_sftp_enable: formData.aai_sftp_enable,
+          aai_file_transfer_port: formData.aai_file_transfer_port,
+          aai_javaport: formData.aai_javaport,
+          aai_nativeport: formData.aai_nativeport,
+          aai_agentport: formData.aai_agentport,
+          aai_iccport: formData.aai_iccport,
+          aai_iccnativeport: formData.aai_iccnativeport,
+          aai_olapport: formData.aai_olapport,
+          aai_msgport: formData.aai_msgport,
+          aai_routerport: formData.aai_routerport,
+          aai_amport: formData.aai_amport,
+          aai_https_enable: formData.aai_https_enable,
+          aai_web_server_ip: formData.aai_web_server_ip,
+          aai_web_server_port: formData.aai_web_server_port,
+          aai_context_name: formData.aai_context_name,
+          aai_webapp_context_path: formData.aai_webapp_context_path,
+          aai_web_local_path: formData.aai_web_local_path,
+          aai_weblogic_domain_home: formData.aai_weblogic_domain_home,
+          aai_ftspshare_path: formData.aai_ftspshare_path,
+          aai_sftp_user_id: formData.aai_sftp_user_id,
           installation_mode: formData.installation_mode,
           install_ecm: formData.install_ecm,
           install_sanc: formData.install_sanc,

@@ -103,8 +103,23 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
     task = installation_tasks[task_id]
     ssh_service = SSHService()
     installation_service = InstallationService(ssh_service)
+    steps = InstallationSteps.STEP_NAMES
+
+    def should_cleanup_failed_fresh() -> bool:
+        if (request.installation_mode or "fresh").lower() != "fresh":
+            return False
+        try:
+            return steps.index(task.current_step or "") >= 7
+        except ValueError:
+            return False
 
     async def handle_failure(message: str, error: Optional[str] = None) -> None:
+        if should_cleanup_failed_fresh():
+            await append_output(task_id, "[INFO] Fresh installation failed at Step 8+. Starting automatic cleanup...")
+            cleanup_result = await installation_service.cleanup_failed_fresh_installation(
+                request.host, request.username, request.password
+            )
+            await append_output(task_id, "\n".join(cleanup_result.get("logs", [])))
         task.status = "failed"
         task.error = error or message
         await append_output(task_id, f"[ERROR] {message}")
@@ -134,8 +149,6 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             return
         await append_output(task_id, "[OK] SSH connection established")
         await trace("SSH connection established; starting installation workflow")
-
-        steps = InstallationSteps.STEP_NAMES
 
         # Step 1: Oracle user and oinstall group
         await update_status(task_id, "running", steps[0], InstallationSteps.progress_for_index(0))
