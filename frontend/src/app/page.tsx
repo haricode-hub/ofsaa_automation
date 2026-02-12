@@ -10,11 +10,11 @@ export default function HomePage() {
       <BackgroundMatrix />
       
       {/* Single column layout for better responsive behavior */}
-      <div className="min-h-screen flex flex-col items-center justify-start p-4 pt-6 lg:p-8 lg:pt-8 relative">
+      <div className="min-h-screen flex flex-col items-center justify-center p-4 lg:p-8 relative">
         
         {/* Installation Form Panel */}
         <motion.div 
-          className="glass-panel rounded-2xl p-6 lg:p-10 w-full max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl shadow-panel relative mb-8"
+          className="glass-panel rounded-2xl p-6 lg:p-10 w-full max-w-md sm:max-w-xl lg:max-w-3xl xl:max-w-5xl shadow-panel relative overflow-hidden mb-8 max-h-[calc(100vh-2rem)]"
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6, ease: "easeOut" }}
