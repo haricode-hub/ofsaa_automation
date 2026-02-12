@@ -226,6 +226,7 @@ class InstallerService:
 
     async def cleanup_failed_fresh_installation(self, host: str, username: str, password: str) -> dict:
         logs: list[str] = []
+        updated_repo_pathspecs: set[str] = set()
         dirs = [
             "/u01/installer_kit",
             "/u01/INSTALLER_KIT",
@@ -316,8 +317,11 @@ class InstallerService:
         prop_datadumpdt_minus_0: Optional[str] = None,
         prop_endthisweek_minus_00: Optional[str] = None,
         prop_startnextmnth_minus_00: Optional[str] = None,
+        prop_analyst_data_source: Optional[str] = None,
+        prop_miner_data_source: Optional[str] = None,
         prop_web_service_user: Optional[str] = None,
         prop_web_service_password: Optional[str] = None,
+        prop_nls_length_semantics: Optional[str] = None,
         prop_configure_obiee: Optional[str] = None,
         prop_obiee_url: Optional[str] = None,
         prop_sw_rmiport: Optional[str] = None,
@@ -332,6 +336,7 @@ class InstallerService:
         prop_csloadtype: Optional[str] = None,
         prop_crrsource: Optional[str] = None,
         prop_crrloadtype: Optional[str] = None,
+        prop_fsdf_upload_model: Optional[str] = None,
         aai_webappservertype: Optional[str] = None,
         aai_dbserver_ip: Optional[str] = None,
         aai_oracle_service_name: Optional[str] = None,
@@ -362,6 +367,7 @@ class InstallerService:
         Fetch required XML/properties from the git repo and place them into the extracted kit locations.
         """
         logs: list[str] = []
+        updated_repo_pathspecs: set[str] = set()
         repo_dir = Config.REPO_DIR
         kit_dir = "/u01/installer_kit/OFS_BD_PACK"
         safe_dir_cfg = f"-c safe.directory={repo_dir}"
@@ -439,6 +445,9 @@ class InstallerService:
         if not patch_result.get("success"):
             return {"success": False, "logs": logs, "error": patch_result.get("error") or "Failed to patch schema XML"}
         schema_changed = bool(patch_result.get("changed"))
+        schema_src = patch_result.get("source_path")
+        if isinstance(schema_src, str) and schema_src:
+            updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, schema_src))
 
         pack_changed = False
         if pack_app_enable is not None:
@@ -453,18 +462,38 @@ class InstallerService:
             if not pack_patch.get("success"):
                 return {"success": False, "logs": logs, "error": pack_patch.get("error") or "Failed to patch pack XML"}
             pack_changed = bool(pack_patch.get("changed"))
+            pack_src = pack_patch.get("source_path")
+            if isinstance(pack_src, str) and pack_src:
+                updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, pack_src))
 
         silent_props = {
             "BASE_COUNTRY": prop_base_country,
             "DEFAULT_JURISDICTION": prop_default_jurisdiction,
             "SMTP_HOST": prop_smtp_host,
             "PARTITION_DATE_FORMAT": prop_partition_date_format,
+            "DATADUMPDT_MINUS_0": prop_datadumpdt_minus_0,
+            "ENDTHISWEEK_MINUS_00": prop_endthisweek_minus_00,
+            "STARTNEXTMNTH_MINUS_00": prop_startnextmnth_minus_00,
+            "ANALYST_DATA_SOURCE": prop_analyst_data_source,
+            "MINER_DATA_SOURCE": prop_miner_data_source,
             "WEB_SERVICE_USER": prop_web_service_user,
             "WEB_SERVICE_PASSWORD": prop_web_service_password,
+            "NLS_LENGTH_SEMANTICS": prop_nls_length_semantics,
             "CONFIGURE_OBIEE": prop_configure_obiee,
             "OBIEE_URL": prop_obiee_url,
             "SW_RMIPORT": prop_sw_rmiport,
             "BIG_DATA_ENABLE": prop_big_data_enable,
+            "SQOOP_WORKING_DIR": prop_sqoop_working_dir,
+            "SSH_AUTH_ALIAS": prop_ssh_auth_alias,
+            "SSH_HOST_NAME": prop_ssh_host_name,
+            "SSH_PORT": prop_ssh_port,
+            "ECMSOURCE": prop_ecmsource,
+            "ECMLOADTYPE": prop_ecmloadtype,
+            "CSSOURCE": prop_cssource,
+            "CSLOADTYPE": prop_csloadtype,
+            "CRRSOURCE": prop_crrsource,
+            "CRRLOADTYPE": prop_crrloadtype,
+            "FSDF_UPLOAD_MODEL": prop_fsdf_upload_model,
         }
         props_patch = await self._patch_default_properties_repo(
             host, username, password, repo_dir=repo_dir, updates=silent_props
@@ -473,6 +502,9 @@ class InstallerService:
         if not props_patch.get("success"):
             return {"success": False, "logs": logs, "error": props_patch.get("error") or "Failed to patch default.properties"}
         props_changed = bool(props_patch.get("changed"))
+        props_src = props_patch.get("source_path")
+        if isinstance(props_src, str) and props_src:
+            updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, props_src))
 
         aai_updates = {
             "WEBAPPSERVERTYPE": aai_webappservertype,
@@ -508,6 +540,9 @@ class InstallerService:
         if not aai_patch.get("success"):
             return {"success": False, "logs": logs, "error": aai_patch.get("error") or "Failed to patch OFSAAI_InstallConfig.xml"}
         aai_changed = bool(aai_patch.get("changed"))
+        aai_src = aai_patch.get("source_path")
+        if isinstance(aai_src, str) and aai_src:
+            updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, aai_src))
         logs.append(
             "[INFO] UI sync summary: "
             f"OFS_BD_SCHEMA_IN.xml={'UPDATED' if schema_changed else 'UNCHANGED'}, "
@@ -546,6 +581,7 @@ class InstallerService:
                 password,
                 repo_dir=repo_dir,
                 commit_message="Update OFSAA installer configs from UI inputs",
+                pathspecs=sorted(updated_repo_pathspecs) if updated_repo_pathspecs else ["BD_PACK"],
             )
             logs.extend(push_result.get("logs", []))
         else:
@@ -795,6 +831,13 @@ class InstallerService:
         logs.append("[OK] Repo updated: pushed XML/properties changes to origin")
         return {"success": True, "logs": logs}
 
+    def _repo_rel_path(self, repo_dir: str, src_path: str) -> str:
+        base = repo_dir.rstrip("/")
+        prefix = f"{base}/"
+        if src_path.startswith(prefix):
+            return src_path[len(prefix):]
+        return src_path
+
     def _git_auth_setup_cmd(self) -> str:
         git_username = Config.GIT_USERNAME
         git_password = Config.GIT_PASSWORD
@@ -875,7 +918,7 @@ class InstallerService:
         patched = self._patch_default_properties_content(original, updates=updates)
         if patched == original:
             logs.append("[INFO] No changes needed for ECM default.properties")
-            return {"success": True, "logs": logs}
+            return {"success": True, "logs": logs, "changed": False, "source_path": src_path}
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         await self.ssh_service.execute_command(host, username, password, f"cp -f {src_path} {src_path}.backup.{ts}", get_pty=True)
@@ -883,7 +926,7 @@ class InstallerService:
         if not write.get("success"):
             return {"success": False, "logs": logs, "error": write.get("error")}
         logs.append("[OK] Updated ECM default.properties in repo (local clone)")
-        return {"success": True, "logs": logs}
+        return {"success": True, "logs": logs, "changed": True, "source_path": src_path}
 
     def _patch_ofs_ecm_schema_in_content(self, content: str, *, ecm_config: dict[str, Any]) -> str:
         updated = content
@@ -1011,7 +1054,7 @@ class InstallerService:
                 flags=re.DOTALL,
             )
 
-        if schema_host is not None:
+        if schema_host is not None and str(schema_host).strip():
             updated = re.sub(r"<HOST>.*?</HOST>", f"<HOST>{schema_host}</HOST>", updated, flags=re.DOTALL)
 
         if schema_setup_env is not None:
@@ -1127,7 +1170,7 @@ class InstallerService:
 
         if patched == original:
             logs.append("[INFO] No changes needed for OFS_BD_SCHEMA_IN.xml")
-            return {"success": True, "logs": logs, "changed": False}
+            return {"success": True, "logs": logs, "changed": False, "source_path": src_path}
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         backup_cmd = f"cp -f {src_path} {src_path}.backup.{ts}"
@@ -1137,7 +1180,7 @@ class InstallerService:
             return {"success": False, "logs": logs, "error": write.get("error")}
 
         logs.append("[OK] Updated OFS_BD_SCHEMA_IN.xml in repo (local clone)")
-        return {"success": True, "logs": logs, "changed": True}
+        return {"success": True, "logs": logs, "changed": True, "source_path": src_path}
 
     def _patch_ofs_bd_pack_xml_content(self, content: str, *, pack_app_enable: dict[str, bool]) -> str:
         updated = content
@@ -1191,7 +1234,7 @@ class InstallerService:
 
         if patched == original:
             logs.append("[INFO] No changes needed for OFS_BD_PACK.xml")
-            return {"success": True, "logs": logs, "changed": False}
+            return {"success": True, "logs": logs, "changed": False, "source_path": src_path}
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         await self.ssh_service.execute_command(host, username, password, f"cp -f {src_path} {src_path}.backup.{ts}", get_pty=True)
@@ -1200,53 +1243,61 @@ class InstallerService:
             return {"success": False, "logs": logs, "error": write.get("error")}
 
         logs.append("[OK] Updated OFS_BD_PACK.xml in repo (local clone)")
-        return {"success": True, "logs": logs, "changed": True}
+        return {"success": True, "logs": logs, "changed": True, "source_path": src_path}
 
     def _patch_default_properties_content(self, content: str, *, updates: dict[str, Optional[str]]) -> str:
-        lines = content.splitlines()
+        """
+        Preserve exact template order/layout and rewrite only dynamically editable
+        property lines (those containing both '=' and '--').
+        Also supports reruns after comments were removed in a prior run by
+        updating user-input-section keys if UI provided a non-None value.
+        """
+        lines = content.splitlines(keepends=True)
+        out_lines: list[str] = []
+        in_user_input_section = False
 
-        start_idx = None
-        end_idx = None
-        for i, line in enumerate(lines):
-            if "##Start: User input required for silent installer" in line:
-                start_idx = i
-            if "## End: User input required for silent installer" in line:
-                end_idx = i
-                break
+        for raw_line in lines:
+            line_no_eol = raw_line.rstrip("\r\n")
+            eol = raw_line[len(line_no_eol):]
 
-        # If markers are not found, fall back to whole-file key replacement.
-        if start_idx is None or end_idx is None or start_idx >= end_idx:
-            start_idx = 0
-            end_idx = len(lines)
-
-        stop_idx = end_idx
-        for i in range(start_idx, end_idx):
-            if lines[i].strip().startswith("FSDF_UPLOAD_MODEL="):
-                stop_idx = i  # do not modify beyond this
-                break
-
-        key_to_index: dict[str, int] = {}
-        for i in range(start_idx, stop_idx):
-            raw = lines[i]
-            if raw.lstrip().startswith("#") or "=" not in raw:
+            if "##Start: User input required for silent installer" in line_no_eol:
+                in_user_input_section = True
+                out_lines.append(raw_line)
                 continue
-            key = raw.split("=", 1)[0].strip()
-            if key:
-                key_to_index[key] = i
+            if "## End: User input required for silent installer" in line_no_eol:
+                in_user_input_section = False
+                out_lines.append(raw_line)
+                continue
 
-        insert_at = stop_idx
-        for key, value in updates.items():
-            if value is None:
-                continue  # not provided, do not change
-            new_line = f"{key}={value}"
-            if key in key_to_index:
-                lines[key_to_index[key]] = new_line
-            else:
-                lines.insert(insert_at, new_line)
-                insert_at += 1
+            # Keep headers and blank lines exactly as-is.
+            if not line_no_eol or line_no_eol.startswith("##"):
+                out_lines.append(raw_line)
+                continue
 
-        # Preserve trailing newline behavior (most kits don't care).
-        return "\n".join(lines) + "\n"
+            # Editable lines are dynamic: must contain '=' and '--'.
+            if "=" in line_no_eol and "--" in line_no_eol:
+                key_part, rhs = line_no_eol.split("=", 1)
+                key = key_part.strip()
+                value_before_comment = rhs.split("--", 1)[0].strip()
+                user_value = updates.get(key)
+                effective_value = value_before_comment if user_value is None else str(user_value)
+                out_lines.append(f"{key}={effective_value}{eol}")
+                continue
+
+            # Rerun support: once inline comments are stripped, keep updating
+            # user-input-section keys from UI without touching auto-populated section.
+            if in_user_input_section and "=" in line_no_eol:
+                key_part, rhs = line_no_eol.split("=", 1)
+                key = key_part.strip()
+                user_value = updates.get(key)
+                if user_value is not None:
+                    out_lines.append(f"{key}={str(user_value)}{eol}")
+                    continue
+
+            # All non-editable/system lines are copied byte-for-byte.
+            out_lines.append(raw_line)
+
+        return "".join(out_lines)
 
     async def _patch_default_properties_repo(
         self,
@@ -1274,7 +1325,7 @@ class InstallerService:
 
         if patched == original:
             logs.append("[INFO] No changes needed for default.properties")
-            return {"success": True, "logs": logs, "changed": False}
+            return {"success": True, "logs": logs, "changed": False, "source_path": src_path}
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         await self.ssh_service.execute_command(host, username, password, f"cp -f {src_path} {src_path}.backup.{ts}", get_pty=True)
@@ -1283,7 +1334,7 @@ class InstallerService:
             return {"success": False, "logs": logs, "error": write.get("error")}
 
         logs.append("[OK] Updated default.properties in repo (local clone)")
-        return {"success": True, "logs": logs, "changed": True}
+        return {"success": True, "logs": logs, "changed": True, "source_path": src_path}
 
     def _patch_ofsaai_install_config_content(self, content: str, *, updates: dict[str, Optional[str]]) -> tuple[str, list[str]]:
         updated = content
@@ -1330,7 +1381,7 @@ class InstallerService:
 
         if patched == original:
             logs.append("[INFO] No changes needed for OFSAAI_InstallConfig.xml")
-            return {"success": True, "logs": logs, "changed": False}
+            return {"success": True, "logs": logs, "changed": False, "source_path": src_path}
 
         ts = time.strftime("%Y%m%d_%H%M%S")
         await self.ssh_service.execute_command(host, username, password, f"cp -f {src_path} {src_path}.backup.{ts}", get_pty=True)
@@ -1339,7 +1390,7 @@ class InstallerService:
             return {"success": False, "logs": logs, "error": write.get("error")}
 
         logs.append("[OK] Updated OFSAAI_InstallConfig.xml in repo (local clone)")
-        return {"success": True, "logs": logs, "changed": True}
+        return {"success": True, "logs": logs, "changed": True, "source_path": src_path}
 
     async def run_osc_schema_creator(
         self,

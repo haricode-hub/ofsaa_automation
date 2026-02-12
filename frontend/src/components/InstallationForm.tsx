@@ -47,12 +47,29 @@ interface InstallationData {
   prop_default_jurisdiction: string
   prop_smtp_host: string
   prop_partition_date_format: string
+  prop_datadumpdt_minus_0: string
+  prop_endthisweek_minus_00: string
+  prop_startnextmnth_minus_00: string
+  prop_analyst_data_source: string
+  prop_miner_data_source: string
   prop_web_service_user: string
   prop_web_service_password: string
+  prop_nls_length_semantics: string
   prop_configure_obiee: string
   prop_obiee_url: string
   prop_sw_rmiport: string
   prop_big_data_enable: string
+  prop_sqoop_working_dir: string
+  prop_ssh_auth_alias: string
+  prop_ssh_host_name: string
+  prop_ssh_port: string
+  prop_ecmsource: string
+  prop_ecmloadtype: string
+  prop_cssource: string
+  prop_csloadtype: string
+  prop_crrsource: string
+  prop_crrloadtype: string
+  prop_fsdf_upload_model: string
 
   // OFSAAI_InstallConfig.xml inputs
   aai_webappservertype: string
@@ -152,12 +169,29 @@ export function InstallationForm() {
     prop_default_jurisdiction: 'AMEA',
     prop_smtp_host: '',
     prop_partition_date_format: 'DD-MM-YYYY',
+    prop_datadumpdt_minus_0: '10/12/2015',
+    prop_endthisweek_minus_00: '19/12/2015',
+    prop_startnextmnth_minus_00: '01/01/2016',
+    prop_analyst_data_source: 'ANALYST',
+    prop_miner_data_source: 'MINER',
     prop_web_service_user: 'oracle',
     prop_web_service_password: '',
+    prop_nls_length_semantics: 'CHAR',
     prop_configure_obiee: '0',
     prop_obiee_url: '',
     prop_sw_rmiport: '8204',
     prop_big_data_enable: 'FALSE',
+    prop_sqoop_working_dir: '',
+    prop_ssh_auth_alias: '',
+    prop_ssh_host_name: '',
+    prop_ssh_port: '',
+    prop_ecmsource: '',
+    prop_ecmloadtype: '',
+    prop_cssource: '',
+    prop_csloadtype: '',
+    prop_crrsource: '',
+    prop_crrloadtype: '',
+    prop_fsdf_upload_model: '1',
 
     aai_webappservertype: '3',
     aai_dbserver_ip: '',
@@ -261,7 +295,7 @@ export function InstallationForm() {
           schema_jdbc_host: formData.schema_jdbc_host,
           schema_jdbc_port: formData.schema_jdbc_port ? Number(formData.schema_jdbc_port) : null,
           schema_jdbc_service: formData.schema_jdbc_service,
-          schema_host: formData.schema_host,
+          schema_host: (formData.schema_host || formData.host),
           schema_setup_env: formData.schema_setup_env,
           schema_apply_same_for_all: formData.schema_apply_same_for_all,
           schema_default_password: formData.schema_default_password,
@@ -277,12 +311,29 @@ export function InstallationForm() {
           prop_default_jurisdiction: formData.prop_default_jurisdiction,
           prop_smtp_host: formData.prop_smtp_host,
           prop_partition_date_format: formData.prop_partition_date_format,
+          prop_datadumpdt_minus_0: formData.prop_datadumpdt_minus_0,
+          prop_endthisweek_minus_00: formData.prop_endthisweek_minus_00,
+          prop_startnextmnth_minus_00: formData.prop_startnextmnth_minus_00,
+          prop_analyst_data_source: formData.prop_analyst_data_source,
+          prop_miner_data_source: formData.prop_miner_data_source,
           prop_web_service_user: formData.prop_web_service_user,
           prop_web_service_password: formData.prop_web_service_password,
+          prop_nls_length_semantics: formData.prop_nls_length_semantics,
           prop_configure_obiee: formData.prop_configure_obiee,
           prop_obiee_url: formData.prop_obiee_url, // may be empty
           prop_sw_rmiport: formData.prop_sw_rmiport,
           prop_big_data_enable: formData.prop_big_data_enable,
+          prop_sqoop_working_dir: formData.prop_sqoop_working_dir,
+          prop_ssh_auth_alias: formData.prop_ssh_auth_alias,
+          prop_ssh_host_name: formData.prop_ssh_host_name,
+          prop_ssh_port: formData.prop_ssh_port,
+          prop_ecmsource: formData.prop_ecmsource,
+          prop_ecmloadtype: formData.prop_ecmloadtype,
+          prop_cssource: formData.prop_cssource,
+          prop_csloadtype: formData.prop_csloadtype,
+          prop_crrsource: formData.prop_crrsource,
+          prop_crrloadtype: formData.prop_crrloadtype,
+          prop_fsdf_upload_model: formData.prop_fsdf_upload_model,
 
           aai_webappservertype: formData.aai_webappservertype,
           aai_dbserver_ip: formData.aai_dbserver_ip,
@@ -882,6 +933,84 @@ export function InstallationForm() {
                 </div>
               </div>
 
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    DATADUMPDT_MINUS_0
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.prop_datadumpdt_minus_0}
+                    onChange={handleInputChange('prop_datadumpdt_minus_0')}
+                    placeholder="10/12/2015"
+                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    ENDTHISWEEK_MINUS_00
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.prop_endthisweek_minus_00}
+                    onChange={handleInputChange('prop_endthisweek_minus_00')}
+                    placeholder="19/12/2015"
+                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    STARTNEXTMNTH_MINUS_00
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.prop_startnextmnth_minus_00}
+                    onChange={handleInputChange('prop_startnextmnth_minus_00')}
+                    placeholder="01/01/2016"
+                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    ANALYST_DATA_SOURCE
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.prop_analyst_data_source}
+                    onChange={handleInputChange('prop_analyst_data_source')}
+                    placeholder="ANALYST"
+                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    MINER_DATA_SOURCE
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.prop_miner_data_source}
+                    onChange={handleInputChange('prop_miner_data_source')}
+                    placeholder="MINER"
+                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    NLS_LENGTH_SEMANTICS
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.prop_nls_length_semantics}
+                    onChange={handleInputChange('prop_nls_length_semantics')}
+                    placeholder="CHAR"
+                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  />
+                </div>
+              </div>
+
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 <div className="space-y-2">
@@ -963,6 +1092,81 @@ export function InstallationForm() {
                   />
                 </div>
                 
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    SQOOP_WORKING_DIR
+                  </label>
+                  <input type="text" value={formData.prop_sqoop_working_dir} onChange={handleInputChange('prop_sqoop_working_dir')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    SSH_AUTH_ALIAS
+                  </label>
+                  <input type="text" value={formData.prop_ssh_auth_alias} onChange={handleInputChange('prop_ssh_auth_alias')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    SSH_HOST_NAME
+                  </label>
+                  <input type="text" value={formData.prop_ssh_host_name} onChange={handleInputChange('prop_ssh_host_name')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    SSH_PORT
+                  </label>
+                  <input type="text" value={formData.prop_ssh_port} onChange={handleInputChange('prop_ssh_port')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    ECMSOURCE
+                  </label>
+                  <input type="text" value={formData.prop_ecmsource} onChange={handleInputChange('prop_ecmsource')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    ECMLOADTYPE
+                  </label>
+                  <input type="text" value={formData.prop_ecmloadtype} onChange={handleInputChange('prop_ecmloadtype')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    CSSOURCE
+                  </label>
+                  <input type="text" value={formData.prop_cssource} onChange={handleInputChange('prop_cssource')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    CSLOADTYPE
+                  </label>
+                  <input type="text" value={formData.prop_csloadtype} onChange={handleInputChange('prop_csloadtype')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    CRRSOURCE
+                  </label>
+                  <input type="text" value={formData.prop_crrsource} onChange={handleInputChange('prop_crrsource')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    CRRLOADTYPE
+                  </label>
+                  <input type="text" value={formData.prop_crrloadtype} onChange={handleInputChange('prop_crrloadtype')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    FSDF_UPLOAD_MODEL
+                  </label>
+                  <input type="text" value={formData.prop_fsdf_upload_model} onChange={handleInputChange('prop_fsdf_upload_model')} placeholder="1" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
               </div>
 
             </div>
