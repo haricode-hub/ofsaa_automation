@@ -13,6 +13,10 @@ OFSAAI_InstallConfig.xml_BEFORE
 ofsaainstall.txt
 profile_changed.txt
 CLAUDE_CONCISE.md
+*.xml
+*.doc
+*.docx
+*.pdf
 
 # Node.js Dependencies
 node_modules/
