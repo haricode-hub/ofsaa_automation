@@ -200,9 +200,15 @@ class SSHService:
                 return None
 
         client = self._connect(host, username, password, timeout=10)
+        # Send SSH keep-alive packets every 60 seconds so the TCP connection
+        # is never treated as idle by firewalls/routers during long quiet phases
+        # of setup.sh (e.g. Oracle DB inserts that produce no output for 15+ min).
+        transport = client.get_transport()
+        if transport is not None:
+            transport.set_keepalive(60)
         channel = None
         try:
-            channel = client.get_transport().open_session()
+            channel = transport.open_session() if transport is not None else client.get_transport().open_session()
             channel.get_pty()
             channel.exec_command(command)
             channel.settimeout(1.0)

@@ -249,6 +249,14 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await update_status(task_id, "running", steps[7], InstallationSteps.progress_for_index(7))
             return response
 
+        async def auto_yes_callback(prompt: str) -> str:
+            """Automatically answer Y to any Y/N prompts during setup.sh SILENT.
+            setup.sh is invoked with SILENT flag but some prompts are not suppressed.
+            Blocking on WebSocket input here would cause the process to hang for hours.
+            """
+            await append_output(task_id, f"[AUTO-ANSWER Y] {prompt}")
+            return "Y"
+
         env_result = await installation_service.run_environment_check(
             request.host,
             request.username,
@@ -361,7 +369,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             request.username,
             request.password,
             on_output_callback=output_callback,
-            on_prompt_callback=prompt_callback,
+            on_prompt_callback=auto_yes_callback,
             pack_app_enable=request.pack_app_enable,
             installation_mode=request.installation_mode,
             install_ecm=request.install_ecm,
