@@ -22,11 +22,24 @@ logger = logging.getLogger(__name__)
 installation_tasks: dict[str, InstallationStatus] = {}
 websocket_manager = WebSocketManager()
 
+# Cache for latest installation request (used for rollback after ENVCHECK failure)
+latest_request_cache: dict = {
+    "request": None,
+    "task_id": None,
+    "error": None,
+}
+
 
 @router.post("/start", response_model=InstallationResponse)
 async def start_installation(request: InstallationRequest):
     try:
         task_id = str(uuid.uuid4())
+        
+        # Cache the request for rollback capability
+        latest_request_cache["request"] = request.dict()
+        latest_request_cache["task_id"] = task_id
+        latest_request_cache["error"] = None
+        
         installation_tasks[task_id] = InstallationStatus(
             task_id=task_id,
             status="started",
@@ -76,6 +89,23 @@ async def test_connection(request: InstallationRequest):
     return {**last_result, "attempt": 3}
 
 
+@router.get("/rollback")
+async def rollback():
+    """Return cached installation request for rollback after ENVCHECK failure."""
+    if not latest_request_cache.get("request"):
+        raise HTTPException(
+            status_code=404,
+            detail="No cached request found. No previous installation attempt or cache cleared."
+        )
+    
+    return {
+        "success": True,
+        "cached_request": latest_request_cache["request"],
+        "previous_error": latest_request_cache.get("error"),
+        "message": "Returning cached request values from previous run. You can modify and resubmit."
+    }
+
+
 async def append_output(task_id: str, text: str) -> None:
     if not text:
         return
@@ -114,6 +144,10 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             return False
 
     async def handle_failure(message: str, error: Optional[str] = None) -> None:
+        # Cache the error for rollback capability
+        if "Environment check failed" in message:
+            latest_request_cache["error"] = f"{message}: {error}" if error else message
+        
         if should_cleanup_failed_fresh():
             await append_output(task_id, "[INFO] Fresh installation failed at Step 8+. Starting automatic cleanup...")
             cleanup_result = await installation_service.cleanup_failed_fresh_installation(
@@ -357,7 +391,22 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
         )
         await append_output(task_id, "\n".join(osc_result.get("logs", [])))
         if not osc_result.get("success"):
-            await handle_failure("osc.sh execution failed", osc_result.get("error"))
+            # Auto-cleanup on osc.sh failure
+            await append_output(task_id, "\n[RECOVERY] osc.sh execution failed. Starting automatic recovery cleanup...")
+            cleanup_result = await installation_service.cleanup_after_osc_failure(
+                app_host=request.host,
+                app_username=request.username,
+                app_password=request.password,
+                db_host=request.schema_jdbc_host or request.host,
+                db_username=request.username,
+                db_password=request.password,
+            )
+            await append_output(task_id, "\n".join(cleanup_result.get("logs", [])))
+            if cleanup_result.get("failed_steps"):
+                await append_output(task_id, f"\n[RECOVERY] The following cleanup steps failed: {', '.join(cleanup_result['failed_steps'])}")
+                await append_output(task_id, "[RECOVERY] Please manually complete the failed steps before retrying installation")
+            
+            await handle_failure("osc.sh execution failed - automatic cleanup initiated", osc_result.get("error"))
             return
         await trace("osc.sh step completed")
 

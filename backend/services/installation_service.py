@@ -9,6 +9,7 @@ from services.profile import ProfileService
 from services.java import JavaService
 from services.oracle_client import OracleClientService
 from services.installer import InstallerService
+from services.recovery_service import RecoveryService
 
 
 class InstallationService:
@@ -25,6 +26,7 @@ class InstallationService:
         self.java = JavaService(ssh_service, self.validation)
         self.oracle_client = OracleClientService(ssh_service, self.validation, self.profile)
         self.installer = InstallerService(ssh_service, self.validation)
+        self.recovery = RecoveryService(ssh_service)
 
     async def create_oracle_user_and_oinstall_group(self, host: str, username: str, password: str) -> dict:
         return await self.oracle_user_setup.ensure_oracle_user(host, username, password)
@@ -266,3 +268,17 @@ class InstallationService:
 
     async def verify_profile_setup(self, host: str, username: str, password: str) -> dict:
         return await self.profile.verify_profile_setup(host, username, password)
+
+    async def cleanup_after_osc_failure(
+        self,
+        app_host: str,
+        app_username: str,
+        app_password: str,
+        db_host: str,
+        db_username: str,
+        db_password: str,
+    ) -> dict:
+        """Execute cleanup after osc.sh failure: kill Java, drop schema, clear cache."""
+        return await self.recovery.cleanup_after_osc_failure(
+            app_host, db_host, app_username, app_password, db_username, db_password
+        )

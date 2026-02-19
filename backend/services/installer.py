@@ -1710,174 +1710,27 @@ class InstallerService:
         host: str,
         username: str,
         password: str,
-        *,
-        pack_app_enable: Optional[dict[str, bool]] = None,
-        installation_mode: Optional[str] = None,
-        install_ecm: Optional[bool] = None,
-        install_sanc: Optional[bool] = None,
+        **_kwargs,
     ) -> dict:
-        aai_logs_dir = "/u01/INSTALLER_KIT/OFS_BD_PACK/OFS_AAI/logs"
-        aml_log_path = "/u01/INSTALLER_KIT/OFS_BD_PACK/OFS_AML/logs/OFS_BD_LOG.log"
-        pack_log_path = "/u01/INSTALLER_KIT/OFS_BD_PACK/logs/Pack_Install.log"
-        ecm_logs_dir = "/u01/INSTALLER_KIT/OFS_BD_PACK/OFS_ECM/logs"
-        sanc_logs_dir = "/u01/INSTALLER_KIT/OFS_BD_PACK/OFS_SANC/logs"
-
-        scenario = self._determine_installation_scenario(
-            pack_app_enable=pack_app_enable,
-            installation_mode=installation_mode,
-            install_ecm=install_ecm,
-            install_sanc=install_sanc,
-        )
-
-        aai_result = await self._get_latest_log_counts(host, username, password, aai_logs_dir)
-        aml_result = await self._get_log_counts(host, username, password, aml_log_path)
-        pack_result = await self._get_log_counts(host, username, password, pack_log_path)
-        ecm_result: Optional[dict] = None
-        sanc_result: Optional[dict] = None
-        if scenario.get("has_ecm"):
-            ecm_result = await self._get_latest_log_counts(host, username, password, ecm_logs_dir)
-        if scenario.get("has_sanc"):
-            sanc_result = await self._get_latest_log_counts(host, username, password, sanc_logs_dir)
-
-        total_fatal = int(aai_result.get("fatal", 0)) + int(aml_result.get("fatal", 0)) + int(pack_result.get("fatal", 0))
-        total_error = int(aai_result.get("error", 0)) + int(aml_result.get("error", 0)) + int(pack_result.get("error", 0))
-        has_missing = bool(aai_result.get("missing")) or bool(aml_result.get("missing")) or bool(pack_result.get("missing"))
-        if ecm_result is not None:
-            total_fatal += int(ecm_result.get("fatal", 0))
-            total_error += int(ecm_result.get("error", 0))
-            has_missing = has_missing or bool(ecm_result.get("missing"))
-        if sanc_result is not None:
-            total_fatal += int(sanc_result.get("fatal", 0))
-            total_error += int(sanc_result.get("error", 0))
-            has_missing = has_missing or bool(sanc_result.get("missing"))
-
-        aai_display = aai_result.get("filename") if not aai_result.get("missing") else "FILE NOT FOUND"
-        aml_display = "FILE NOT FOUND" if aml_result.get("missing") else "FOUND"
-        pack_display = "FILE NOT FOUND" if pack_result.get("missing") else "FOUND"
-
-        logs = [
-            "INSTALLATION SUMMARY",
-            "",
-            f"INSTALLATION SCENARIO: {scenario.get('label')}",
-            "",
-            f"AAI Latest Log: {aai_display}",
-            f"FATAL: {aai_result.get('fatal', 0)}",
-            f"ERROR: {aai_result.get('error', 0)}",
-            "",
-            f"AML Log (OFS_BD_LOG.log): {aml_display}",
-            f"FATAL: {aml_result.get('fatal', 0)}",
-            f"ERROR: {aml_result.get('error', 0)}",
-            "",
-            f"Pack Install Log (Pack_Install.log): {pack_display}",
-            f"FATAL: {pack_result.get('fatal', 0)}",
-            f"ERROR: {pack_result.get('error', 0)}",
-        ]
-
-        if ecm_result is not None:
-            ecm_display = ecm_result.get("filename") if not ecm_result.get("missing") else "FILE NOT FOUND"
-            logs.extend(
-                [
-                    "",
-                    f"ECM Latest Log: {ecm_display}",
-                    f"FATAL: {ecm_result.get('fatal', 0)}",
-                    f"ERROR: {ecm_result.get('error', 0)}",
-                ]
-            )
-
-        if sanc_result is not None:
-            sanc_display = sanc_result.get("filename") if not sanc_result.get("missing") else "FILE NOT FOUND"
-            logs.extend(
-                [
-                    "",
-                    f"SANC Latest Log: {sanc_display}",
-                    f"FATAL: {sanc_result.get('fatal', 0)}",
-                    f"ERROR: {sanc_result.get('error', 0)}",
-                ]
-            )
-
-        logs.extend(
-            [
-                "",
-                "TOTAL",
-                f"FATAL: {total_fatal}",
-                f"ERROR: {total_error}",
-                f"FAILURE INDICATOR: {'YES' if has_missing else 'NO'}",
-            ]
-        )
-        return {"success": True, "logs": logs, "has_missing": has_missing}
-
-    def _determine_installation_scenario(
-        self,
-        *,
-        pack_app_enable: Optional[dict[str, bool]],
-        installation_mode: Optional[str],
-        install_ecm: Optional[bool],
-        install_sanc: Optional[bool],
-    ) -> dict:
-        # Current backend capability: support only fresh installation with BD PACK.
-        # ECM/SANC scenario handling is intentionally disabled for now.
-        mode = "fresh"
-        has_ecm = False
-        has_sanc = False
-        label = "Fresh Installation: BD PACK only"
-        return {
-            "mode": mode,
-            "has_ecm": has_ecm,
-            "has_sanc": has_sanc,
-            "label": label,
-        }
-
-    async def _get_latest_log_counts(self, host: str, username: str, password: str, directory: str) -> dict:
+        pack_log_path = "/u01/installer_kit/OFS_BD_PACK/logs/Pack_Install.log"
         cmd = (
-            f'dir={shell_escape(directory)}; '
-            'latest=$(ls -1t "$dir"/* 2>/dev/null | head -n 1); '
-            'if [ -n "$latest" ] && [ -f "$latest" ]; then '
-            'fatal=$(grep -o \'FATAL\' "$latest" 2>/dev/null | wc -l); '
-            'error=$(grep -o \'ERROR\' "$latest" 2>/dev/null | wc -l); '
-            'base=$(basename "$latest"); '
-            'echo "FOUND|$base|$fatal|$error"; '
-            'else '
-            'echo "FILE_NOT_FOUND||0|0"; '
-            "fi"
-        )
-        result = await self.ssh_service.execute_command(host, username, password, cmd)
-        out = (result.get("stdout") or "").strip().splitlines()
-        line = out[0].strip() if out else "FILE_NOT_FOUND||0|0"
-        parts = line.split("|")
-        status = parts[0] if len(parts) > 0 else "FILE_NOT_FOUND"
-        filename = parts[1] if len(parts) > 1 and parts[1] else ""
-        fatal = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
-        error = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
-        return {
-            "missing": status != "FOUND",
-            "filename": filename,
-            "fatal": fatal,
-            "error": error,
-        }
-
-    async def _get_log_counts(self, host: str, username: str, password: str, file_path: str) -> dict:
-        cmd = (
-            f'log={shell_escape(file_path)}; '
+            f'log={shell_escape(pack_log_path)}; '
             'if [ -f "$log" ]; then '
-            'fatal=$(grep -o \'FATAL\' "$log" 2>/dev/null | wc -l); '
-            'error=$(grep -o \'ERROR\' "$log" 2>/dev/null | wc -l); '
-            'echo "FOUND|$fatal|$error"; '
+            'tail -80 "$log"; '
             'else '
-            'echo "FILE_NOT_FOUND|0|0"; '
-            "fi"
+            'echo "FILE_NOT_FOUND"; '
+            'fi'
         )
         result = await self.ssh_service.execute_command(host, username, password, cmd)
-        out = (result.get("stdout") or "").strip().splitlines()
-        line = out[0].strip() if out else "FILE_NOT_FOUND|0|0"
-        parts = line.split("|")
-        status = parts[0] if len(parts) > 0 else "FILE_NOT_FOUND"
-        fatal = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
-        error = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
-        return {
-            "missing": status != "FOUND",
-            "fatal": fatal,
-            "error": error,
-        }
+        out = (result.get("stdout") or "").strip()
+        if not out or out == "FILE_NOT_FOUND":
+            return {
+                "success": True,
+                "logs": [f"[WARN] Pack_Install.log not found at: {pack_log_path}"],
+                "has_missing": True,
+            }
+        logs = ["", f"--- Pack_Install.log ({pack_log_path}) ---"] + out.splitlines()
+        return {"success": True, "logs": logs, "has_missing": False}
 
     async def run_environment_check(
         self,
