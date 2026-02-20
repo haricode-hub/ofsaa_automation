@@ -87,6 +87,37 @@ class InstallationRequest(BaseModel):
     aai_sftp_user_id: Optional[str] = Field(default="oracle", description="OFSAAI_SFTP_USER_ID")
     installation_mode: Optional[str] = Field(default="fresh", description="Installation mode: fresh/addon/auto")
     install_sanc: Optional[bool] = Field(default=None, description="Install SANC module")
+    install_ecm: Optional[bool] = Field(default=None, description="Install ECM module")
+
+    # OFS_ECM_SCHEMA_IN.xml user-driven inputs (optional)
+    ecm_schema_jdbc_host: Optional[str] = Field(default=None, description="ECM schema DB host for JDBC_URL")
+    ecm_schema_jdbc_port: Optional[int] = Field(default=1521, description="ECM schema DB port for JDBC_URL")
+    ecm_schema_jdbc_service: Optional[str] = Field(default=None, description="ECM schema DB service/SID for JDBC_URL")
+    ecm_schema_host: Optional[str] = Field(default=None, description="Value for <HOST> in OFS_ECM_SCHEMA_IN.xml")
+    ecm_schema_setup_env: Optional[str] = Field(default=None, description="ECM SETUPINFO NAME (DEV/UAT/PROD etc.)")
+    ecm_schema_apply_same_for_all: Optional[str] = Field(default="Y", description="ECM PASSWORD APPLYSAMEFORALL (Y/N)")
+    ecm_schema_default_password: Optional[str] = Field(default=None, description="ECM PASSWORD DEFAULT value")
+    ecm_schema_datafile_dir: Optional[str] = Field(default=None, description="ECM base directory for TABLESPACE DATAFILE paths")
+    ecm_schema_tablespace_autoextend: Optional[str] = Field(default=None, description="ECM TABLESPACE AUTOEXTEND (ON/OFF)")
+    ecm_schema_external_directory_value: Optional[str] = Field(default=None, description="ECM DIRECTORY VALUE path")
+    ecm_schema_config_schema_name: Optional[str] = Field(default=None, description="ECM CONFIG SCHEMA NAME value")
+    ecm_schema_atomic_schema_name: Optional[str] = Field(default=None, description="ECM ATOMIC SCHEMA NAME value")
+
+    # ECM default.properties user-driven inputs (optional) - only required ECM keys
+    ecm_prop_base_country: Optional[str] = Field(default=None, description="ECM BASE_COUNTRY")
+    ecm_prop_default_jurisdiction: Optional[str] = Field(default=None, description="ECM DEFAULT_JURISDICTION")
+    ecm_prop_web_service_user: Optional[str] = Field(default=None, description="ECM WEB_SERVICE_USER")
+    ecm_prop_web_service_password: Optional[str] = Field(default=None, description="ECM WEB_SERVICE_PASSWORD")
+
+    # ECM OFSAAI_InstallConfig.xml user-driven inputs (optional)
+    # These can be inherited from BD Pack or provided separately
+    ecm_aai_webappservertype: Optional[str] = Field(default=None, description="ECM WEBAPPSERVERTYPE (inherited from BD Pack if not set)")
+    ecm_aai_dbserver_ip: Optional[str] = Field(default=None, description="ECM DBSERVER_IP")
+    ecm_aai_oracle_service_name: Optional[str] = Field(default=None, description="ECM ORACLE_SID/SERVICE_NAME")
+    ecm_aai_abs_driver_path: Optional[str] = Field(default=None, description="ECM ABS_DRIVER_PATH")
+    ecm_aai_web_server_ip: Optional[str] = Field(default=None, description="ECM WEB_SERVER_IP")
+    ecm_aai_web_server_port: Optional[str] = Field(default=None, description="ECM WEB_SERVER_PORT")
+    ecm_aai_context_name: Optional[str] = Field(default="FICHOME", description="ECM CONTEXT_NAME")
 
 class InstallationResponse(BaseModel):
     """Schema for installation response"""

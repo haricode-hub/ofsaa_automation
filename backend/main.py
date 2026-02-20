@@ -8,6 +8,7 @@ import uvicorn
 
 from core.logging import setup_logging
 from routers.installation import router as installation_router, installation_tasks, websocket_manager
+from routers.ecm import router as ecm_router, ecm_tasks
 
 
 load_dotenv()
@@ -29,6 +30,7 @@ app.add_middleware(
 )
 
 app.include_router(installation_router, prefix="/api/installation", tags=["installation"])
+app.include_router(ecm_router, prefix="/api/ecm", tags=["ecm"])
 
 
 @app.get("/")
@@ -46,8 +48,8 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
     await websocket_manager.connect(task_id, websocket)
     logger.info("WebSocket connected for task %s", task_id)
 
-    # Push current status if task exists
-    task = installation_tasks.get(task_id)
+    # Push current status if task exists (check both BD Pack and ECM tasks)
+    task = installation_tasks.get(task_id) or ecm_tasks.get(task_id)
     if task:
         await websocket_manager.send_status(task_id, task.status, task.current_step, task.progress)
         if task.logs:

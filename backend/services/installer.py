@@ -1224,9 +1224,6 @@ class InstallerService:
         logs = [f"[OK] setup.sh SILENT completed from {setup_path}"] + summary_logs
         return {"success": True, "logs": logs}
 
-            return {"success": False, "logs": [], "error": "ECM setup.sh SILENT failed"}
-        return {"success": True, "logs": [f"[OK] ECM setup.sh SILENT completed from {setup_path}"]}
-
     async def _collect_installation_summary_after_setup(
         self,
         host: str,
