@@ -1,7 +1,9 @@
 'use client'
 
 export interface EcmFormData {
-  jdbcUrl: string
+  jdbc_host: string
+  jdbc_port: string
+  jdbc_service: string
   hostname: string
   setupInfoName: string
   prefixSchemaName: 'Y' | 'N'
@@ -13,6 +15,8 @@ export interface EcmFormData {
   prop_base_country: string
   prop_default_jurisdiction: string
   prop_smtp_host: string
+  prop_web_service_user: string
+  prop_web_service_password: string
   prop_nls_length_semantics: string
   prop_analyst_data_source: string
   prop_miner_data_source: string
@@ -79,7 +83,9 @@ const REQUIRED_URL_FIELDS: Array<keyof EcmFormData> = [
 ]
 
 const REQUIRED_FIELDS: Array<keyof EcmFormData> = [
-  'jdbcUrl',
+  'jdbc_host',
+  'jdbc_port',
+  'jdbc_service',
   'hostname',
   'setupInfoName',
   'schemaPassword',
@@ -135,39 +141,43 @@ export function createDefaultEcmData(
   }
 ): EcmFormData {
   return {
-    jdbcUrl: '',
+    jdbc_host: '',
+    jdbc_port: '1521',
+    jdbc_service: '',
     hostname: host || '',
     setupInfoName: 'DEV',
     prefixSchemaName: 'N',
     applySameForAll: 'Y',
     schemaPassword: 'ofsaa8x',
-    datafileDir: '/CHANGE_ME/',
+    datafileDir: '/u01/app/oracle/oradata/OFSAA/OFSAADB',
     configSchemaName,
     atomicSchemaName,
-    prop_base_country: '',
-    prop_default_jurisdiction: '',
+    prop_base_country: 'US',
+    prop_default_jurisdiction: 'AMEA',
     prop_smtp_host: '',
+    prop_web_service_user: 'oracle',
+    prop_web_service_password: 'ofsaa8x',
     prop_nls_length_semantics: 'BYTE',
-    prop_analyst_data_source: '',
-    prop_miner_data_source: '',
+    prop_analyst_data_source: 'ANALYST',
+    prop_miner_data_source: 'MINER',
     prop_configure_obiee: '0',
     prop_fsdf_upload_model: '0',
-    prop_amlsource: '',
-    prop_kycsource: '',
-    prop_cssource: '',
-    prop_externalsystemsource: '',
-    prop_tbamlsource: '',
-    prop_fatcasource: '',
-    prop_ofsecm_datasrcname: '',
-    prop_comn_gateway_ds: '',
-    prop_t2jurl: '',
-    prop_j2turl: '',
-    prop_cmngtwyurl: '',
-    prop_bdurl: '',
-    prop_ofss_wls_url: '',
-    prop_aai_url: '',
-    prop_cs_url: '',
-    prop_arachnys_nns_service_url: '',
+    prop_amlsource: 'OFSATOMIC',
+    prop_kycsource: 'OFSATOMIC',
+    prop_cssource: 'OFSATOMIC',
+    prop_externalsystemsource: 'OFSATOMIC',
+    prop_tbamlsource: 'OFSATOMIC',
+    prop_fatcasource: 'OFSATOMIC',
+    prop_ofsecm_datasrcname: 'FCCMINFO',
+    prop_comn_gateway_ds: 'FCCMINFO',
+    prop_t2jurl: 'http://192.168.0.166:7002',
+    prop_j2turl: 'http://192.168.0.166:7002',
+    prop_cmngtwyurl: 'http://192.168.0.166:7002',
+    prop_bdurl: 'http://192.168.0.166:7002/FICHOME',
+    prop_ofss_wls_url: 'http://192.168.0.166:7002',
+    prop_aai_url: 'http://192.168.0.166:7002/FICHOME',
+    prop_cs_url: 'http://192.168.0.166:7002',
+    prop_arachnys_nns_service_url: 'http://192.168.0.166:7002/FICHOME',
     // OFSAAI values from BD Pack (inherited)
     aai_webappservertype: aaiConfig?.aai_webappservertype || '',
     aai_dbserver_ip: aaiConfig?.aai_dbserver_ip || '',
@@ -223,16 +233,22 @@ export function validateEcmData(data: EcmFormData): EcmValidationResult {
     }
   })
 
-  if (!data.jdbcUrl.startsWith('jdbc:oracle:thin:@')) {
-    errors.jdbcUrl = 'JDBC URL must start with jdbc:oracle:thin:@'
+  if (!data.jdbc_host.trim()) {
+    errors.jdbc_host = 'JDBC Host is required'
   }
 
-  if (!data.datafileDir.startsWith('/')) {
+  if (!data.jdbc_port.trim()) {
+    errors.jdbc_port = 'JDBC Port is required'
+  } else if (isNaN(Number(data.jdbc_port))) {
+    errors.jdbc_port = 'JDBC Port must be a number'
+  }
+
+  if (!data.jdbc_service.trim()) {
+    errors.jdbc_service = 'JDBC Service/SID is required'
+  }
+
+  if (data.datafileDir && !data.datafileDir.startsWith('/')) {
     errors.datafileDir = 'Datafile path must start with /'
-  }
-
-  if (!data.datafileDir.startsWith('/CHANGE_ME/')) {
-    errors.datafileDir = 'Datafile path must follow BD convention: /CHANGE_ME/...'
   }
 
   if (data.prop_configure_obiee !== '0' && data.prop_configure_obiee !== '1') {
@@ -291,9 +307,13 @@ export function EcmPackForm({ data, errors, onChange }: EcmPackFormProps) {
           <div className="text-xs font-mono text-text-muted hidden group-open:block">CLOSE</div>
         </summary>
         <div className="mt-5 space-y-4">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            {input('JDBC Host (DB IP)', 'jdbc_host', '192.168.0.165')}
+            {input('JDBC Port', 'jdbc_port', '1521')}
+            {input('JDBC Service/SID', 'jdbc_service', 'FLEXPDB1')}
+          </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {input('JDBC_URL', 'jdbcUrl', 'jdbc:oracle:thin:@//dbhost:1521/OFSAAPDB')}
-            {input('HOSTNAME', 'hostname', 'app-hostname')}
+            {input('Application IP (HOSTNAME)', 'hostname', '192.168.0.41')}
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {input('SETUPINFO NAME', 'setupInfoName', 'DEV')}
@@ -311,8 +331,7 @@ export function EcmPackForm({ data, errors, onChange }: EcmPackFormProps) {
             {input('ATOMIC Schema Name', 'atomicSchemaName')}
           </div>
           <div className="text-xs text-text-muted">Schema names are inherited from BD pack (Atomic + Config).</div>
-          {input('Datafile Directory Path', 'datafileDir', '/CHANGE_ME/')}
-          <div className="text-xs text-text-muted">Datafile path must match BD pack convention (/CHANGE_ME/...).</div>
+          {input('Datafile Directory Path', 'datafileDir', '/u01/app/oracle/oradata/OFSAA/OFSAADB')}
         </div>
       </details>
 
@@ -391,29 +410,29 @@ export function EcmPackForm({ data, errors, onChange }: EcmPackFormProps) {
             {input('ORACLE_SERVICE', 'aai_oracle_service_name', 'OFSAAPDB')}
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {input('ABS_DRIVER_PATH', 'aai_abs_driver_path')}
+            {input('ABS_DRIVER_PATH', 'aai_abs_driver_path', '/u01/oracle/jdbc')}
             {input('WEB_SERVER_IP', 'aai_web_server_ip', '192.168.3.41')}
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
             {input('HTTPS_ENABLE', 'aai_https_enable', '1')}
             {input('WEB_SERVER_PORT', 'aai_web_server_port', '7002')}
             {input('CONTEXT_NAME', 'aai_context_name', 'FICHOME')}
-            {input('WEBAPP_CONTEXT_PATH', 'aai_webapp_context_path')}
+            {input('WEBAPP_CONTEXT_PATH', 'aai_webapp_context_path', '/FICHOME')}
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            {input('WEB_LOCAL_PATH', 'aai_web_local_path')}
-            {input('WEBLOGIC_DOMAIN_HOME', 'aai_weblogic_domain_home')}
+            {input('WEB_LOCAL_PATH', 'aai_web_local_path', '/u01/OFSAA')}
+            {input('WEBLOGIC_DOMAIN_HOME', 'aai_weblogic_domain_home', '/u01/wls/domains/FICHOME')}
           </div>
           <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-            {input('JAVAPORT', 'aai_javaport')}
-            {input('NATIVEPORT', 'aai_nativeport')}
-            {input('AGENTPORT', 'aai_agentport')}
-            {input('ICCPORT', 'aai_iccport')}
-            {input('ICCNATIVE', 'aai_iccnativeport')}
-            {input('OLAPPORT', 'aai_olapport')}
-            {input('MSGPORT', 'aai_msgport')}
-            {input('ROUTERPORT', 'aai_routerport')}
-            {input('AMPORT', 'aai_amport')}
+            {input('JAVAPORT', 'aai_javaport', '8001')}
+            {input('NATIVEPORT', 'aai_nativeport', '8002')}
+            {input('AGENTPORT', 'aai_agentport', '8003')}
+            {input('ICCPORT', 'aai_iccport', '8004')}
+            {input('ICCNATIVE', 'aai_iccnativeport', '8005')}
+            {input('OLAPPORT', 'aai_olapport', '8006')}
+            {input('MSGPORT', 'aai_msgport', '8007')}
+            {input('ROUTERPORT', 'aai_routerport', '8008')}
+            {input('AMPORT', 'aai_amport', '8009')}
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             {input('SFTP_ENABLE', 'aai_sftp_enable', '1')}
@@ -421,7 +440,7 @@ export function EcmPackForm({ data, errors, onChange }: EcmPackFormProps) {
             {input('OFSAAI_SFTP_USER_ID', 'aai_sftp_user_id', 'oracle')}
           </div>
           <div>
-            {input('OFSAAI_FTPSHARE_PATH', 'aai_ftspshare_path')}
+            {input('OFSAAI_FTPSHARE_PATH', 'aai_ftspshare_path', '/u01/OFSAA/FICHOME/ftp')}
           </div>
           <div className="text-xs text-text-muted">
             OLAP_IMPL and other OFSAAI fields are derived from configuration. Edit as needed if different from inherited values.

@@ -367,7 +367,74 @@ export function InstallationForm() {
           installation_mode: formData.installation_mode,
           install_bdpack: formData.install_bdpack,
           install_ecm: formData.install_ecm,
-          ecm_config: formData.install_ecm ? ecmConfig : null
+          // Flatten ECM config fields for backend
+          ...(formData.install_ecm && ecmConfig ? {
+            // Schema configuration fields
+            ecm_schema_jdbc_host: ecmConfig.jdbc_host,
+            ecm_schema_jdbc_port: ecmConfig.jdbc_port ? Number(ecmConfig.jdbc_port) : 1521,
+            ecm_schema_jdbc_service: ecmConfig.jdbc_service,
+            ecm_schema_host: ecmConfig.hostname,
+            ecm_schema_setup_env: ecmConfig.setupInfoName,
+            ecm_schema_prefix_schema_name: ecmConfig.prefixSchemaName,
+            ecm_schema_apply_same_for_all: ecmConfig.applySameForAll,
+            ecm_schema_default_password: ecmConfig.schemaPassword,
+            ecm_schema_datafile_dir: ecmConfig.datafileDir,
+            ecm_schema_config_schema_name: ecmConfig.configSchemaName,
+            ecm_schema_atomic_schema_name: ecmConfig.atomicSchemaName,
+            // Properties (default.properties) fields
+            ecm_prop_base_country: ecmConfig.prop_base_country,
+            ecm_prop_default_jurisdiction: ecmConfig.prop_default_jurisdiction,
+            ecm_prop_smtp_host: ecmConfig.prop_smtp_host,
+            ecm_prop_web_service_user: ecmConfig.prop_web_service_user,
+            ecm_prop_web_service_password: ecmConfig.prop_web_service_password,
+            ecm_prop_nls_length_semantics: ecmConfig.prop_nls_length_semantics,
+            ecm_prop_analyst_data_source: ecmConfig.prop_analyst_data_source,
+            ecm_prop_miner_data_source: ecmConfig.prop_miner_data_source,
+            ecm_prop_configure_obiee: ecmConfig.prop_configure_obiee,
+            ecm_prop_fsdf_upload_model: ecmConfig.prop_fsdf_upload_model,
+            ecm_prop_amlsource: ecmConfig.prop_amlsource,
+            ecm_prop_kycsource: ecmConfig.prop_kycsource,
+            ecm_prop_cssource: ecmConfig.prop_cssource,
+            ecm_prop_externalsystemsource: ecmConfig.prop_externalsystemsource,
+            ecm_prop_tbamlsource: ecmConfig.prop_tbamlsource,
+            ecm_prop_fatcasource: ecmConfig.prop_fatcasource,
+            ecm_prop_ofsecm_datasrcname: ecmConfig.prop_ofsecm_datasrcname,
+            ecm_prop_comn_gateway_ds: ecmConfig.prop_comn_gateway_ds,
+            ecm_prop_t2jurl: ecmConfig.prop_t2jurl,
+            ecm_prop_j2turl: ecmConfig.prop_j2turl,
+            ecm_prop_cmngtwyurl: ecmConfig.prop_cmngtwyurl,
+            ecm_prop_bdurl: ecmConfig.prop_bdurl,
+            ecm_prop_ofss_wls_url: ecmConfig.prop_ofss_wls_url,
+            ecm_prop_aai_url: ecmConfig.prop_aai_url,
+            ecm_prop_cs_url: ecmConfig.prop_cs_url,
+            ecm_prop_arachnys_nns_service_url: ecmConfig.prop_arachnys_nns_service_url,
+            // OFSAAI configuration fields (OFSAAI_InstallConfig.xml)
+            ecm_aai_webappservertype: ecmConfig.aai_webappservertype,
+            ecm_aai_dbserver_ip: ecmConfig.aai_dbserver_ip,
+            ecm_aai_oracle_service_name: ecmConfig.aai_oracle_service_name,
+            ecm_aai_abs_driver_path: ecmConfig.aai_abs_driver_path,
+            ecm_aai_olap_server_implementation: ecmConfig.aai_olap_server_implementation,
+            ecm_aai_sftp_enable: ecmConfig.aai_sftp_enable,
+            ecm_aai_file_transfer_port: ecmConfig.aai_file_transfer_port,
+            ecm_aai_javaport: ecmConfig.aai_javaport,
+            ecm_aai_nativeport: ecmConfig.aai_nativeport,
+            ecm_aai_agentport: ecmConfig.aai_agentport,
+            ecm_aai_iccport: ecmConfig.aai_iccport,
+            ecm_aai_iccnativeport: ecmConfig.aai_iccnativeport,
+            ecm_aai_olapport: ecmConfig.aai_olapport,
+            ecm_aai_msgport: ecmConfig.aai_msgport,
+            ecm_aai_routerport: ecmConfig.aai_routerport,
+            ecm_aai_amport: ecmConfig.aai_amport,
+            ecm_aai_https_enable: ecmConfig.aai_https_enable,
+            ecm_aai_web_server_ip: ecmConfig.aai_web_server_ip,
+            ecm_aai_web_server_port: ecmConfig.aai_web_server_port,
+            ecm_aai_context_name: ecmConfig.aai_context_name,
+            ecm_aai_webapp_context_path: ecmConfig.aai_webapp_context_path,
+            ecm_aai_web_local_path: ecmConfig.aai_web_local_path,
+            ecm_aai_weblogic_domain_home: ecmConfig.aai_weblogic_domain_home,
+            ecm_aai_ftspshare_path: ecmConfig.aai_ftspshare_path,
+            ecm_aai_sftp_user_id: ecmConfig.aai_sftp_user_id
+          } : {})
         })
       })
       
@@ -617,7 +684,8 @@ export function InstallationForm() {
           </details>
         </motion.div>
 
-        {/* Schema Config Section */}
+        {/* Schema Config Section - BD Pack Only */}
+        {formData.install_bdpack && (
         <motion.div
           className="rounded-xl border border-border bg-bg-secondary/40 p-4 lg:p-5"
           initial={{ opacity: 0, y: 10 }}
@@ -802,8 +870,10 @@ export function InstallationForm() {
             </div>
           </details>
         </motion.div>
+        )}
 
-        {/* App Pack Config Section */}
+        {/* App Pack Config Section - BD Pack Only */}
+        {formData.install_bdpack && (
         <motion.div
           className="rounded-xl border border-border bg-bg-secondary/40 p-4 lg:p-5"
           initial={{ opacity: 0, y: 10 }}
@@ -860,8 +930,10 @@ export function InstallationForm() {
             </div>
           </details>
         </motion.div>
+        )}
 
-        {/* Silent Installer Section */}
+        {/* Silent Installer Section - BD Pack Only */}
+        {formData.install_bdpack && (
         <motion.div
           className="rounded-xl border border-border bg-bg-secondary/40 p-4 lg:p-5"
           initial={{ opacity: 0, y: 10 }}
@@ -1176,17 +1248,49 @@ export function InstallationForm() {
             </div>
           </details>
         </motion.div>
+        )}
 
+        {/* ECM Pack Configuration */}
+        {formData.install_ecm && (
         <EcmPackPage
           enabled={formData.install_ecm}
           host={formData.host}
           configSchemaName={formData.schema_config_schema_name}
           atomicSchemaName={formData.schema_atomic_schema_name}
+          aaiConfig={{
+            aai_webappservertype: formData.aai_webappservertype,
+            aai_dbserver_ip: formData.aai_dbserver_ip,
+            aai_oracle_service_name: formData.aai_oracle_service_name,
+            aai_abs_driver_path: formData.aai_abs_driver_path,
+            aai_olap_server_implementation: formData.aai_olap_server_implementation,
+            aai_sftp_enable: formData.aai_sftp_enable,
+            aai_file_transfer_port: formData.aai_file_transfer_port,
+            aai_javaport: formData.aai_javaport,
+            aai_nativeport: formData.aai_nativeport,
+            aai_agentport: formData.aai_agentport,
+            aai_iccport: formData.aai_iccport,
+            aai_iccnativeport: formData.aai_iccnativeport,
+            aai_olapport: formData.aai_olapport,
+            aai_msgport: formData.aai_msgport,
+            aai_routerport: formData.aai_routerport,
+            aai_amport: formData.aai_amport,
+            aai_https_enable: formData.aai_https_enable,
+            aai_web_server_ip: formData.aai_web_server_ip,
+            aai_web_server_port: formData.aai_web_server_port,
+            aai_context_name: formData.aai_context_name,
+            aai_webapp_context_path: formData.aai_webapp_context_path,
+            aai_web_local_path: formData.aai_web_local_path,
+            aai_weblogic_domain_home: formData.aai_weblogic_domain_home,
+            aai_ftspshare_path: formData.aai_ftspshare_path,
+            aai_sftp_user_id: formData.aai_sftp_user_id
+          }}
           onChange={handleEcmChange}
         />
+        )}
         {ecmSubmitError && <p className="text-xs text-error">{ecmSubmitError}</p>}
 
-        {/* OFSAAI Install Config Section */}
+        {/* OFSAAI Install Config Section - BD Pack Only */}
+        {formData.install_bdpack && (
         <motion.div
           className="rounded-xl border border-border bg-bg-secondary/40 p-4 lg:p-5"
           initial={{ opacity: 0, y: 10 }}
@@ -1315,6 +1419,7 @@ export function InstallationForm() {
             </div>
           </details>
         </motion.div>
+        )}
 
         {/* Submit Button */}
         <motion.div

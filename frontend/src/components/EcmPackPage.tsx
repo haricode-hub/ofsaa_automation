@@ -2,16 +2,13 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { EcmPackForm, EcmFormData, createDefaultEcmData, validateEcmData } from '@/components/EcmPackForm'
-import { MainConfigData } from '@/components/MainConfiguration'
 
 interface EcmPackPageProps {
   enabled: boolean
   host: string
   configSchemaName: string
   atomicSchemaName: string
-  mainConfig?: MainConfigData
   onChange: (data: EcmFormData, isValid: boolean) => void
-  onMainConfigChange?: (data: MainConfigData) => void
   aaiConfig?: {
     aai_webappservertype: string
     aai_dbserver_ip: string
@@ -41,7 +38,7 @@ interface EcmPackPageProps {
   }
 }
 
-export function EcmPackPage({ enabled, host, configSchemaName, atomicSchemaName, mainConfig, onChange, onMainConfigChange, aaiConfig }: EcmPackPageProps) {
+export function EcmPackPage({ enabled, host, configSchemaName, atomicSchemaName, onChange, aaiConfig }: EcmPackPageProps) {
   const [data, setData] = useState<EcmFormData>(() => createDefaultEcmData(configSchemaName, atomicSchemaName, host, aaiConfig))
 
   useEffect(() => {
