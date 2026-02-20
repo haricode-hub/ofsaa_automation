@@ -34,6 +34,32 @@ export interface EcmFormData {
   prop_aai_url: string
   prop_cs_url: string
   prop_arachnys_nns_service_url: string
+  // OFSAAI_InstallConfig.xml fields (inherited from BD Pack)
+  aai_webappservertype: string
+  aai_dbserver_ip: string
+  aai_oracle_service_name: string
+  aai_abs_driver_path: string
+  aai_olap_server_implementation: string
+  aai_sftp_enable: string
+  aai_file_transfer_port: string
+  aai_javaport: string
+  aai_nativeport: string
+  aai_agentport: string
+  aai_iccport: string
+  aai_iccnativeport: string
+  aai_olapport: string
+  aai_msgport: string
+  aai_routerport: string
+  aai_amport: string
+  aai_https_enable: string
+  aai_web_server_ip: string
+  aai_web_server_port: string
+  aai_context_name: string
+  aai_webapp_context_path: string
+  aai_web_local_path: string
+  aai_weblogic_domain_home: string
+  aai_ftspshare_path: string
+  aai_sftp_user_id: string
 }
 
 export interface EcmValidationResult {
@@ -76,7 +102,38 @@ const REQUIRED_FIELDS: Array<keyof EcmFormData> = [
 
 
 
-export function createDefaultEcmData(configSchemaName: string, atomicSchemaName: string, host: string): EcmFormData {
+export function createDefaultEcmData(
+  configSchemaName: string,
+  atomicSchemaName: string,
+  host: string,
+  aaiConfig?: {
+    aai_webappservertype: string
+    aai_dbserver_ip: string
+    aai_oracle_service_name: string
+    aai_abs_driver_path: string
+    aai_olap_server_implementation: string
+    aai_sftp_enable: string
+    aai_file_transfer_port: string
+    aai_javaport: string
+    aai_nativeport: string
+    aai_agentport: string
+    aai_iccport: string
+    aai_iccnativeport: string
+    aai_olapport: string
+    aai_msgport: string
+    aai_routerport: string
+    aai_amport: string
+    aai_https_enable: string
+    aai_web_server_ip: string
+    aai_web_server_port: string
+    aai_context_name: string
+    aai_webapp_context_path: string
+    aai_web_local_path: string
+    aai_weblogic_domain_home: string
+    aai_ftspshare_path: string
+    aai_sftp_user_id: string
+  }
+): EcmFormData {
   return {
     jdbcUrl: '',
     hostname: host || '',
@@ -110,7 +167,33 @@ export function createDefaultEcmData(configSchemaName: string, atomicSchemaName:
     prop_ofss_wls_url: '',
     prop_aai_url: '',
     prop_cs_url: '',
-    prop_arachnys_nns_service_url: ''
+    prop_arachnys_nns_service_url: '',
+    // OFSAAI values from BD Pack (inherited)
+    aai_webappservertype: aaiConfig?.aai_webappservertype || '',
+    aai_dbserver_ip: aaiConfig?.aai_dbserver_ip || '',
+    aai_oracle_service_name: aaiConfig?.aai_oracle_service_name || '',
+    aai_abs_driver_path: aaiConfig?.aai_abs_driver_path || '',
+    aai_olap_server_implementation: aaiConfig?.aai_olap_server_implementation || '',
+    aai_sftp_enable: aaiConfig?.aai_sftp_enable || '',
+    aai_file_transfer_port: aaiConfig?.aai_file_transfer_port || '',
+    aai_javaport: aaiConfig?.aai_javaport || '',
+    aai_nativeport: aaiConfig?.aai_nativeport || '',
+    aai_agentport: aaiConfig?.aai_agentport || '',
+    aai_iccport: aaiConfig?.aai_iccport || '',
+    aai_iccnativeport: aaiConfig?.aai_iccnativeport || '',
+    aai_olapport: aaiConfig?.aai_olapport || '',
+    aai_msgport: aaiConfig?.aai_msgport || '',
+    aai_routerport: aaiConfig?.aai_routerport || '',
+    aai_amport: aaiConfig?.aai_amport || '',
+    aai_https_enable: aaiConfig?.aai_https_enable || '',
+    aai_web_server_ip: aaiConfig?.aai_web_server_ip || '',
+    aai_web_server_port: aaiConfig?.aai_web_server_port || '',
+    aai_context_name: aaiConfig?.aai_context_name || '',
+    aai_webapp_context_path: aaiConfig?.aai_webapp_context_path || '',
+    aai_web_local_path: aaiConfig?.aai_web_local_path || '',
+    aai_weblogic_domain_home: aaiConfig?.aai_weblogic_domain_home || '',
+    aai_ftspshare_path: aaiConfig?.aai_ftspshare_path || '',
+    aai_sftp_user_id: aaiConfig?.aai_sftp_user_id || ''
   }
 }
 
@@ -288,6 +371,60 @@ export function EcmPackForm({ data, errors, onChange }: EcmPackFormProps) {
             {input('AAI_URL', 'prop_aai_url')}
             {input('CS_URL', 'prop_cs_url')}
             {input('ARACHNYS_NNS_SERVICE_URL', 'prop_arachnys_nns_service_url')}
+          </div>
+        </div>
+      </details>
+
+      <details className="group rounded-xl border border-border bg-bg-secondary/20 p-4">
+        <summary className="list-none cursor-pointer select-none flex items-center justify-between gap-3">
+          <div>
+            <div className="text-sm font-bold text-text-primary uppercase tracking-wider">OFSAAI Install (OFSAAI_InstallConfig.xml)</div>
+            <div className="text-xs text-text-muted mt-1">Web server, DB, SFTP and port configuration. Inherited from BD Pack if available.</div>
+          </div>
+          <div className="text-xs font-mono text-text-muted group-open:hidden">OPEN</div>
+          <div className="text-xs font-mono text-text-muted hidden group-open:block">CLOSE</div>
+        </summary>
+        <div className="mt-5 space-y-4">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            {input('WEBAPPSERVERTYPE', 'aai_webappservertype', '3')}
+            {input('DBSERVER_IP', 'aai_dbserver_ip', '192.168.3.42')}
+            {input('ORACLE_SERVICE', 'aai_oracle_service_name', 'OFSAAPDB')}
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {input('ABS_DRIVER_PATH', 'aai_abs_driver_path')}
+            {input('WEB_SERVER_IP', 'aai_web_server_ip', '192.168.3.41')}
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+            {input('HTTPS_ENABLE', 'aai_https_enable', '1')}
+            {input('WEB_SERVER_PORT', 'aai_web_server_port', '7002')}
+            {input('CONTEXT_NAME', 'aai_context_name', 'FICHOME')}
+            {input('WEBAPP_CONTEXT_PATH', 'aai_webapp_context_path')}
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {input('WEB_LOCAL_PATH', 'aai_web_local_path')}
+            {input('WEBLOGIC_DOMAIN_HOME', 'aai_weblogic_domain_home')}
+          </div>
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+            {input('JAVAPORT', 'aai_javaport')}
+            {input('NATIVEPORT', 'aai_nativeport')}
+            {input('AGENTPORT', 'aai_agentport')}
+            {input('ICCPORT', 'aai_iccport')}
+            {input('ICCNATIVE', 'aai_iccnativeport')}
+            {input('OLAPPORT', 'aai_olapport')}
+            {input('MSGPORT', 'aai_msgport')}
+            {input('ROUTERPORT', 'aai_routerport')}
+            {input('AMPORT', 'aai_amport')}
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            {input('SFTP_ENABLE', 'aai_sftp_enable', '1')}
+            {input('FILE_TRANSFER_PORT', 'aai_file_transfer_port', '22')}
+            {input('OFSAAI_SFTP_USER_ID', 'aai_sftp_user_id', 'oracle')}
+          </div>
+          <div>
+            {input('OFSAAI_FTPSHARE_PATH', 'aai_ftspshare_path')}
+          </div>
+          <div className="text-xs text-text-muted">
+            OLAP_IMPL and other OFSAAI fields are derived from configuration. Edit as needed if different from inherited values.
           </div>
         </div>
       </details>
