@@ -53,8 +53,6 @@ class InstallationRequest(BaseModel):
     prop_ssh_auth_alias: Optional[str] = Field(default="", description="SSH_AUTH_ALIAS")
     prop_ssh_host_name: Optional[str] = Field(default="", description="SSH_HOST_NAME")
     prop_ssh_port: Optional[str] = Field(default="", description="SSH_PORT")
-    prop_ecmsource: Optional[str] = Field(default="", description="ECMSOURCE")
-    prop_ecmloadtype: Optional[str] = Field(default="", description="ECMLOADTYPE")
     prop_cssource: Optional[str] = Field(default="", description="CSSOURCE")
     prop_csloadtype: Optional[str] = Field(default="", description="CSLOADTYPE")
     prop_crrsource: Optional[str] = Field(default="", description="CRRSOURCE")
@@ -88,8 +86,6 @@ class InstallationRequest(BaseModel):
     aai_ftspshare_path: Optional[str] = Field(default="/u01/OFSAA/FTPSHARE", description="OFSAAI_FTPSHARE_PATH")
     aai_sftp_user_id: Optional[str] = Field(default="oracle", description="OFSAAI_SFTP_USER_ID")
     installation_mode: Optional[str] = Field(default="fresh", description="Installation mode: fresh/addon/auto")
-    install_ecm: Optional[bool] = Field(default=None, description="Install ECM module")
-    ecm_config: Optional[Dict[str, Any]] = Field(default=None, description="ECM module scoped config inputs")
     install_sanc: Optional[bool] = Field(default=None, description="Install SANC module")
 
 class InstallationResponse(BaseModel):

@@ -63,9 +63,6 @@ class InstallationService:
     async def set_installer_permissions(self, host: str, username: str, password: str) -> dict:
         return await self.installer.set_permissions(host, username, password)
 
-    async def download_and_extract_ecm_installer(self, host: str, username: str, password: str) -> dict:
-        return await self.installer.download_and_extract_ecm_installer(host, username, password)
-
     async def apply_installer_config_files(
         self,
         host: str,
@@ -105,8 +102,6 @@ class InstallationService:
         prop_ssh_auth_alias: Optional[str] = None,
         prop_ssh_host_name: Optional[str] = None,
         prop_ssh_port: Optional[str] = None,
-        prop_ecmsource: Optional[str] = None,
-        prop_ecmloadtype: Optional[str] = None,
         prop_cssource: Optional[str] = None,
         prop_csloadtype: Optional[str] = None,
         prop_crrsource: Optional[str] = None,
@@ -175,8 +170,6 @@ class InstallationService:
             prop_ssh_auth_alias=prop_ssh_auth_alias,
             prop_ssh_host_name=prop_ssh_host_name,
             prop_ssh_port=prop_ssh_port,
-            prop_ecmsource=prop_ecmsource,
-            prop_ecmloadtype=prop_ecmloadtype,
             prop_cssource=prop_cssource,
             prop_csloadtype=prop_csloadtype,
             prop_crrsource=prop_crrsource,
@@ -215,32 +208,11 @@ class InstallationService:
     async def run_setup_silent(self, host: str, username: str, password: str, **kwargs) -> dict:
         return await self.installer.run_setup_silent(host, username, password, **kwargs)
 
-    async def run_ecm_osc_schema_creator(self, host: str, username: str, password: str, **kwargs) -> dict:
-        return await self.installer.run_ecm_osc_schema_creator(host, username, password, **kwargs)
-
-    async def run_ecm_setup_silent(self, host: str, username: str, password: str, **kwargs) -> dict:
-        return await self.installer.run_ecm_setup_silent(host, username, password, **kwargs)
-
     async def run_environment_check(self, host: str, username: str, password: str, **kwargs) -> dict:
         return await self.installer.run_environment_check(host, username, password, **kwargs)
 
     async def cleanup_failed_fresh_installation(self, host: str, username: str, password: str) -> dict:
         return await self.installer.cleanup_failed_fresh_installation(host, username, password)
-
-    async def apply_ecm_installer_config_files(
-        self,
-        host: str,
-        username: str,
-        password: str,
-        *,
-        ecm_config: Optional[dict] = None,
-    ) -> dict:
-        return await self.installer.apply_ecm_config_files_from_repo(
-            host,
-            username,
-            password,
-            ecm_config=ecm_config,
-        )
 
     async def update_profile_with_custom_variables(
         self,
