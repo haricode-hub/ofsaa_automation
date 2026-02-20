@@ -1,14 +1,5 @@
 'use client'
 
-export interface EcmTablespaceRow {
-  id: string
-  value: string
-  filename: string
-  size: string
-  autoextend: 'OFF' | 'ON'
-  encrypt: 'OFF' | 'ON'
-}
-
 export interface EcmFormData {
   jdbcUrl: string
   hostname: string
@@ -43,7 +34,6 @@ export interface EcmFormData {
   prop_aai_url: string
   prop_cs_url: string
   prop_arachnys_nns_service_url: string
-  tablespaces: EcmTablespaceRow[]
 }
 
 export interface EcmValidationResult {
@@ -84,12 +74,7 @@ const REQUIRED_FIELDS: Array<keyof EcmFormData> = [
   ...REQUIRED_URL_FIELDS
 ]
 
-const TABLESPACES: EcmTablespaceRow[] = [
-  { id: 'OFS_ECM_DATA_CM_TBSP', value: 'DATA_CM_TBSP', filename: 'case_data_01.dbf', size: '512M', autoextend: 'OFF', encrypt: 'OFF' },
-  { id: 'OFS_ECM_IDX_CM_TBSP', value: 'IDX_CM_TBSP', filename: 'case_idx_01.dbf', size: '512M', autoextend: 'OFF', encrypt: 'OFF' },
-  { id: 'OFS_COMM_DATA_TBSP', value: 'COMM_DATA_TBSP', filename: 'comm_data_01.dbf', size: '512M', autoextend: 'OFF', encrypt: 'OFF' },
-  { id: 'OFS_ECM_DATA_CONF_TBSP', value: 'DATA_CONF_TBSP', filename: 'conf_data_01.dbf', size: '1024M', autoextend: 'OFF', encrypt: 'OFF' }
-]
+
 
 export function createDefaultEcmData(configSchemaName: string, atomicSchemaName: string, host: string): EcmFormData {
   return {
@@ -125,8 +110,7 @@ export function createDefaultEcmData(configSchemaName: string, atomicSchemaName:
     prop_ofss_wls_url: '',
     prop_aai_url: '',
     prop_cs_url: '',
-    prop_arachnys_nns_service_url: '',
-    tablespaces: TABLESPACES
+    prop_arachnys_nns_service_url: ''
   }
 }
 
