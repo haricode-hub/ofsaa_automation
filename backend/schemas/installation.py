@@ -6,6 +6,9 @@ class InstallationRequest(BaseModel):
     host: str = Field(..., description="Target host IP address or hostname")
     username: str = Field(..., description="Root username for SSH connection")
     password: str = Field(..., description="Root password for SSH connection")
+    
+    # Checkpoint/Resume support
+    resume_from_checkpoint: bool = Field(default=False, description="Resume from BD Pack checkpoint (skip BD Pack, start ECM)")
     # Profile variables that user can customize
     fic_home: Optional[str] = Field(default="/u01/OFSAA/FICHOME", description="FIC_HOME path")
     java_home: Optional[str] = Field(default=None, description="Custom JAVA_HOME path (optional)")

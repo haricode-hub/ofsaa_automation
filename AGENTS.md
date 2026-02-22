@@ -125,7 +125,36 @@ frontend/
 | GET | `/api/installation/tasks` | List all tasks |
 | POST | `/api/installation/test-connection` | Test SSH connectivity |
 | GET | `/api/installation/rollback` | Get cached request for retry |
+| GET | `/api/installation/checkpoint` | Get BD Pack checkpoint status |
+| DELETE | `/api/installation/checkpoint` | Clear BD Pack checkpoint |
 | WS | `/ws/{task_id}` | Real-time logs/status/prompts |
+
+### Checkpoint/Resume System
+The system supports checkpointing after BD Pack completion for ECM resume capability:
+
+**Workflow:**
+1. If both BD Pack and ECM selected → BD Pack runs first, checkpoint saved after completion
+2. ECM runs after BD Pack completes
+3. If ECM fails → User can resume from checkpoint (BD Pack skipped, ECM restarts)
+4. After successful ECM completion → Checkpoint auto-cleared
+
+**Request Fields:**
+```python
+resume_from_checkpoint: bool = False  # Set to True to skip BD Pack and resume ECM
+```
+
+**Example - Resume ECM after failure:**
+```json
+{
+  "host": "1.2.3.4",
+  "username": "root",
+  "password": "secret",
+  "install_bdpack": true,
+  "install_ecm": true,
+  "resume_from_checkpoint": true,
+  "ecm_schema_jdbc_host": "db.example.com"
+}
+```
 
 ### Request Schema (InstallationRequest) - Key Fields
 ```python

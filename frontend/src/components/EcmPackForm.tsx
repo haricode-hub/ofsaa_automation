@@ -278,7 +278,12 @@ function fieldClass(hasError: boolean): string {
 
 export function EcmPackForm({ data, errors, onChange }: EcmPackFormProps) {
   const update = <K extends keyof EcmFormData>(field: K, value: EcmFormData[K]) => {
-    onChange({ ...data, [field]: value })
+    const updated = { ...data, [field]: value }
+    // Auto-populate jdbc_host when aai_dbserver_ip is changed
+    if (field === 'aai_dbserver_ip' && value) {
+      updated.jdbc_host = value as string
+    }
+    onChange(updated)
   }
 
   const input = (label: string, field: keyof EcmFormData, placeholder = '', type: 'text' | 'password' = 'text') => (

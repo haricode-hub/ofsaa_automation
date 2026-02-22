@@ -462,7 +462,15 @@ export function InstallationForm() {
   const handleInputChange = (field: keyof InstallationData) => (
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
-    setFormData(prev => ({ ...prev, [field]: e.target.value }))
+    const value = e.target.value
+    setFormData(prev => {
+      const updated = { ...prev, [field]: value }
+      // Auto-populate schema_jdbc_host when aai_dbserver_ip is changed
+      if (field === 'aai_dbserver_ip' && value) {
+        updated.schema_jdbc_host = value
+      }
+      return updated
+    })
   }
 
   const togglePackAppEnable = (appId: string) => {

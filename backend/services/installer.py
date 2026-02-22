@@ -1444,15 +1444,27 @@ class InstallerService:
                 or (f"Failed to unzip ECM installer kit (rc={rc})" if rc is not None else "Failed to unzip ECM installer kit"),
             }
         logs.append("[OK] ECM installer kit extracted")
+
+        # Set oracle ownership and 775 permissions on extracted folder
+        ecm_pack_dir = f"{target_dir}/OFS_ECM_PACK"
+        chown_chmod_cmd = f"chown -R oracle:oinstall {ecm_pack_dir} && chmod -R 775 {ecm_pack_dir}"
+        perm_result = await self.ssh_service.execute_command(
+            host, username, password, chown_chmod_cmd, timeout=300, get_pty=True
+        )
+        if perm_result["success"]:
+            logs.append("[OK] ECM pack ownership set to oracle:oinstall with 775 permissions")
+        else:
+            logs.append(f"[WARN] Failed to set permissions: {perm_result.get('stderr', '')}")
+
         return {"success": True, "logs": logs}
 
     async def set_ecm_permissions(self, host: str, username: str, password: str) -> dict:
-        """Set permissions on ECM kit directory."""
-        cmd = "chmod -R 775 /u01/INSTALLER_KIT/OFS_ECM_PACK"
+        """Set permissions and ownership on ECM kit directory."""
+        cmd = "chown -R oracle:oinstall /u01/INSTALLER_KIT/OFS_ECM_PACK && chmod -R 775 /u01/INSTALLER_KIT/OFS_ECM_PACK"
         result = await self.ssh_service.execute_command(host, username, password, cmd, get_pty=True)
         if not result["success"]:
             return {"success": False, "logs": [], "error": result.get("stderr") or "Failed to set ECM permissions"}
-        return {"success": True, "logs": ["[OK] Permissions set on OFS_ECM_PACK"]}
+        return {"success": True, "logs": ["[OK] Ownership and permissions set on OFS_ECM_PACK"]}
 
     async def _resolve_repo_ecm_pack_file_path(
         self,
@@ -1896,33 +1908,35 @@ class InstallerService:
             updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, schema_patch["source_path"]))
 
         # Patch ECM default.properties
+        # Apply defaults using target host IP dynamically
+        base_url = f"http://{host}:7002"
         ecm_props = {
-            "BASE_COUNTRY": ecm_prop_base_country,
-            "DEFAULT_JURISDICTION": ecm_prop_default_jurisdiction,
-            "SMTP_HOST": ecm_prop_smtp_host,
+            "BASE_COUNTRY": ecm_prop_base_country or "US",
+            "DEFAULT_JURISDICTION": ecm_prop_default_jurisdiction or "AMEA",
+            "SMTP_HOST": ecm_prop_smtp_host or host,
             "WEB_SERVICE_USER": ecm_prop_web_service_user,
             "WEB_SERVICE_PASSWORD": ecm_prop_web_service_password,
-            "NLS_LENGTH_SEMANTICS": ecm_prop_nls_length_semantics,
-            "ANALYST_DATA_SOURCE": ecm_prop_analyst_data_source,
-            "MINER_DATA_SOURCE": ecm_prop_miner_data_source,
-            "CONFIGURE_OBIEE": ecm_prop_configure_obiee,
-            "FSDF_UPLOAD_MODEL": ecm_prop_fsdf_upload_model,
-            "AMLSOURCE": ecm_prop_amlsource,
-            "KYCSOURCE": ecm_prop_kycsource,
-            "CSSOURCE": ecm_prop_cssource,
-            "EXTERNALSYSTEMSOURCE": ecm_prop_externalsystemsource,
-            "TBAMLSOURCE": ecm_prop_tbamlsource,
-            "FATCASOURCE": ecm_prop_fatcasource,
-            "OFSECM_DATASRCNAME": ecm_prop_ofsecm_datasrcname,
-            "COMN_GATWAY_DS": ecm_prop_comn_gateway_ds,
-            "T2JURL": ecm_prop_t2jurl,
-            "J2TURL": ecm_prop_j2turl,
-            "CMNGTWYURL": ecm_prop_cmngtwyurl,
-            "BDURL": ecm_prop_bdurl,
-            "OFSS_WLS_URL": ecm_prop_ofss_wls_url,
-            "AAI_URL": ecm_prop_aai_url,
-            "CS_URL": ecm_prop_cs_url,
-            "ARACHNYS_NNS_SERVICE_URL": ecm_prop_arachnys_nns_service_url,
+            "NLS_LENGTH_SEMANTICS": ecm_prop_nls_length_semantics or "CHAR",
+            "ANALYST_DATA_SOURCE": ecm_prop_analyst_data_source or "ANALYST",
+            "MINER_DATA_SOURCE": ecm_prop_miner_data_source or "MINER",
+            "CONFIGURE_OBIEE": ecm_prop_configure_obiee or "0",
+            "FSDF_UPLOAD_MODEL": ecm_prop_fsdf_upload_model or "1",
+            "AMLSOURCE": ecm_prop_amlsource or "FCCMATOMIC",
+            "KYCSOURCE": ecm_prop_kycsource or "FCCMATOMIC",
+            "CSSOURCE": ecm_prop_cssource or "FCCMATOMIC",
+            "EXTERNALSYSTEMSOURCE": ecm_prop_externalsystemsource or "FCCMATOMIC",
+            "TBAMLSOURCE": ecm_prop_tbamlsource or "FCCMATOMIC",
+            "FATCASOURCE": ecm_prop_fatcasource or "",
+            "OFSECM_DATASRCNAME": ecm_prop_ofsecm_datasrcname or "FCCMINFO",
+            "COMN_GATWAY_DS": ecm_prop_comn_gateway_ds or "FCCMINFO",
+            "T2JURL": ecm_prop_t2jurl or base_url,
+            "J2TURL": ecm_prop_j2turl or base_url,
+            "CMNGTWYURL": ecm_prop_cmngtwyurl or base_url,
+            "BDURL": ecm_prop_bdurl or f"{base_url}/FICHOME",
+            "OFSS_WLS_URL": ecm_prop_ofss_wls_url or base_url,
+            "AAI_URL": ecm_prop_aai_url or f"{base_url}/FICHOME",
+            "CS_URL": ecm_prop_cs_url or f"{base_url}/FICHOME",
+            "ARACHNYS_NNS_SERVICE_URL": ecm_prop_arachnys_nns_service_url or f"{base_url}/FICHOME",
         }
         props_patch = await self._patch_ecm_default_properties_repo(
             host, username, password, repo_dir=repo_dir, updates=ecm_props
@@ -2011,6 +2025,11 @@ class InstallerService:
                 }
             logs.append(f"[OK] Updated ECM kit file: {dest_path}")
 
+        # Fix ownership of entire ECM kit directory to oracle
+        fix_ownership_cmd = "chown -R oracle:oinstall /u01/INSTALLER_KIT/OFS_ECM_PACK && chmod -R 775 /u01/INSTALLER_KIT/OFS_ECM_PACK"
+        await self.ssh_service.execute_command(host, username, password, fix_ownership_cmd, get_pty=True)
+        logs.append("[OK] Fixed ECM kit ownership to oracle:oinstall")
+
         # Push changes to git if enabled
         if enable_config_push:
             push_result = await self._commit_and_push_repo_changes(
@@ -2065,22 +2084,17 @@ class InstallerService:
             "fi"
         )
 
+        # Use script -c to provide a proper TTY for osc.sh which reads from /dev/tty
+        osc_run_cmd = f"cd $(dirname {osc_path}) && (./osc.sh -s || ./osc.sh -S)"
         inner_cmd = (
             "source /home/oracle/.profile >/dev/null 2>&1; "
             f"{verinfo_preflight_cmd}; "
-            f"cd $(dirname {osc_path}) && "
-            "(./osc.sh -s || ./osc.sh -S)"
+            f"script -q -c {shell_escape(osc_run_cmd)} /dev/null"
         )
         if username == "oracle":
             command = f"bash -lc {shell_escape(inner_cmd)}"
         else:
-            command = (
-                "if command -v sudo >/dev/null 2>&1; then "
-                f"sudo -u oracle bash -lc {shell_escape(inner_cmd)}; "
-                "else "
-                f"su - oracle -c {shell_escape('bash -lc ' + shell_escape(inner_cmd))}; "
-                "fi"
-            )
+            command = f"su - oracle -c {shell_escape('bash -lc ' + shell_escape(inner_cmd))}"
 
         captured_lines: list[str] = []
         pending = ""
@@ -2199,13 +2213,7 @@ class InstallerService:
         if username == "oracle":
             command = f"bash -lc {shell_escape(inner_cmd)}"
         else:
-            command = (
-                "if command -v sudo >/dev/null 2>&1; then "
-                f"sudo -u oracle bash -lc {shell_escape(inner_cmd)}; "
-                "else "
-                f"su - oracle -c {shell_escape('bash -lc ' + shell_escape(inner_cmd))}; "
-                "fi"
-            )
+            command = f"su - oracle -c {shell_escape('bash -lc ' + shell_escape(inner_cmd))}"
 
         result = await self.ssh_service.execute_interactive_command(
             host, username, password, command,

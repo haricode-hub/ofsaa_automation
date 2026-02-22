@@ -162,6 +162,7 @@ class SSHService:
             # "Validating the input XML file..." (contains 'input' but is not a prompt).
             "Please enter",
             "Enter ",
+            "enter ",
             "Password",
             "password",
             "Username",
@@ -169,11 +170,14 @@ class SSHService:
             "SID",
             "sid",
             "Continue",
+            "continue",
             "Proceed",
+            "proceed",
             "[Y/n]",
             "[y/N]",
             # Common OFSAA scripts (envCheck/osc) prompts
-            "Y/N", "(Y/N)", "Do you wish", "Do you want", "ONLINE mode",
+            "Y/N", "(Y/N)", "(Y/y)", "(N/n)", "(y/n)",
+            "Do you wish", "Do you want", "ONLINE mode",
         ])
 
         def schedule_output(text: str) -> None:
@@ -231,9 +235,11 @@ class SSHService:
                         stripped = last_line.strip()
                         # Be strict: consider it a prompt only when it both:
                         # 1) contains a known prompt keyword, AND
-                        # 2) looks like an actual prompt line (ends with ':' or '?' or contains (Y/N)).
+                        # 2) looks like an actual prompt line (ends with ':' or '?' or ')' or contains Y/N variants).
                         has_keyword = any(p in last_line for p in patterns)
-                        looks_like_prompt = stripped.endswith((':', '?')) or "(Y/N)" in last_line or "Y/N" in last_line
+                        # Check for Y/N pattern variants: (Y/N), Y/N, (Y/y), (N/n), etc.
+                        has_yn_pattern = any(p in last_line for p in ["(Y/N)", "Y/N", "(Y/y)", "(N/n)", "(y/n)", "(y/N)"])
+                        looks_like_prompt = stripped.endswith((':', '?', ')')) or has_yn_pattern
                         is_prompt = has_keyword and looks_like_prompt
 
                         if is_prompt and last_line.strip() and last_line != last_prompt:
