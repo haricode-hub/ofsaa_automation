@@ -122,101 +122,6 @@ class InstallerService:
         logs.append("[OK] Installer kit extracted")
         return {"success": True, "logs": logs}
 
-    async def download_and_extract_ecm_installer(
-        self,
-        host: str,
-        username: str,
-        password: str,
-    ) -> dict:
-        logs: list[str] = []
-        target_dir = "/u01/INSTALLER_KIT"
-        repo_dir = Config.REPO_DIR
-        safe_dir_cfg = f"-c safe.directory={repo_dir}"
-
-        await self.ssh_service.execute_command(host, username, password, f"mkdir -p {target_dir}", get_pty=True)
-        check_existing = await self.validation.check_directory_exists(host, username, password, f"{target_dir}/OFS_ECM_PACK")
-        if check_existing.get("exists"):
-            logs.append("[OK] ECM installer kit already extracted")
-            return {"success": True, "logs": logs}
-
-        git_auth_setup = self._git_auth_setup_cmd()
-        cmd_prepare = (
-            f"{git_auth_setup}"
-            f"if [ -d {repo_dir}/.git ]; then "
-            f"cd {repo_dir} && "
-            f"(git -c http.sslVerify=false -c protocol.version=2 {safe_dir_cfg} pull --ff-only --no-tags || "
-            f"(git config --global --add safe.directory {repo_dir} && git -c http.sslVerify=false -c protocol.version=2 {safe_dir_cfg} pull --ff-only --no-tags)); "
-            f"else git -c http.sslVerify=false -c protocol.version=2 clone --depth 1 --single-branch --no-tags {Config.REPO_URL} {repo_dir}; fi"
-        )
-        repo_result = await self.ssh_service.execute_command(host, username, password, cmd_prepare, timeout=1800, get_pty=True)
-        if not repo_result["success"]:
-            if repo_result.get("stdout"):
-                logs.append(repo_result["stdout"])
-            if repo_result.get("stderr"):
-                logs.append(repo_result["stderr"])
-            return {"success": False, "logs": logs, "error": repo_result.get("stderr") or "Failed to prepare repo for ECM pack"}
-        logs.append("[OK] Repo prepared for ECM installer kit")
-
-        find_zip_cmd = (
-            f"installer_zip=$(find {repo_dir}/ECM_PACK -maxdepth 2 -type f -name '*.zip' -print | head -n 1); "
-            "if [ -z \"$installer_zip\" ]; then echo 'INSTALLER_ZIP_NOT_FOUND'; exit 1; fi; "
-            "echo $installer_zip"
-        )
-        zip_result = await self.ssh_service.execute_command(host, username, password, find_zip_cmd)
-        if not zip_result["success"] or "INSTALLER_ZIP_NOT_FOUND" in zip_result.get("stdout", ""):
-            return {"success": False, "logs": logs, "error": "ECM installer zip not found in ECM_PACK"}
-        zip_path = (zip_result.get("stdout") or "").splitlines()[0].strip()
-        logs.append(f"[INFO] ECM installer zip found: {zip_path}")
-
-        unzip_cmd = (
-            "if command -v bsdtar >/dev/null 2>&1; then "
-            f"bsdtar -xf {shell_escape(zip_path)} -C {target_dir}; "
-            "else "
-            f"unzip -oq {shell_escape(zip_path)} -d {target_dir}; "
-            "fi"
-        )
-        unzip_cmd_shell = f"bash -lc {shell_escape(unzip_cmd)}"
-        if username == "oracle":
-            unzip_as_oracle_cmd = f"mkdir -p {target_dir} && {unzip_cmd_shell}"
-        else:
-            unzip_as_oracle_cmd = (
-                "if command -v sudo >/dev/null 2>&1; then "
-                f"sudo mkdir -p {target_dir} && "
-                f"sudo chown -R oracle:oinstall {target_dir} && "
-                f"sudo chmod -R 775 {target_dir} && "
-                f"(sudo chmod a+r {shell_escape(zip_path)} 2>/dev/null || true) && "
-                f"sudo -u oracle {unzip_cmd_shell}; "
-                "else "
-                f"mkdir -p {target_dir} && "
-                f"chown -R oracle:oinstall {target_dir} && "
-                f"chmod -R 775 {target_dir} && "
-                f"(chmod a+r {shell_escape(zip_path)} 2>/dev/null || true) && "
-                f"su - oracle -c {shell_escape(unzip_cmd_shell)}; "
-                "fi"
-            )
-        unzip_result = await self.ssh_service.execute_command(
-            host, username, password, unzip_as_oracle_cmd, timeout=1800, get_pty=True
-        )
-        if not unzip_result["success"]:
-            if unzip_result.get("stdout"):
-                logs.append(unzip_result["stdout"])
-            if unzip_result.get("stderr"):
-                logs.append(unzip_result["stderr"])
-            rc = unzip_result.get("returncode")
-            return {
-                "success": False,
-                "logs": logs,
-                "error": unzip_result.get("stderr")
-                or unzip_result.get("stdout")
-                or (f"Failed to unzip ECM installer kit (rc={rc})" if rc is not None else "Failed to unzip ECM installer kit"),
-            }
-
-        check_ecm = await self.validation.check_directory_exists(host, username, password, f"{target_dir}/OFS_ECM_PACK")
-        if not check_ecm.get("exists"):
-            return {"success": False, "logs": logs, "error": "ECM installer unzip completed but /u01/INSTALLER_KIT/OFS_ECM_PACK not found"}
-        logs.append("[OK] ECM installer kit extracted to /u01/INSTALLER_KIT/OFS_ECM_PACK")
-        return {"success": True, "logs": logs}
-
     async def set_permissions(self, host: str, username: str, password: str) -> dict:
         cmd = "chmod -R 775 /u01/installer_kit/OFS_BD_PACK"
         result = await self.ssh_service.execute_command(host, username, password, cmd, get_pty=True)
@@ -330,8 +235,7 @@ class InstallerService:
         prop_ssh_auth_alias: Optional[str] = None,
         prop_ssh_host_name: Optional[str] = None,
         prop_ssh_port: Optional[str] = None,
-        prop_ecmsource: Optional[str] = None,
-        prop_ecmloadtype: Optional[str] = None,
+
         prop_cssource: Optional[str] = None,
         prop_csloadtype: Optional[str] = None,
         prop_crrsource: Optional[str] = None,
@@ -487,8 +391,7 @@ class InstallerService:
             "SSH_AUTH_ALIAS": prop_ssh_auth_alias,
             "SSH_HOST_NAME": prop_ssh_host_name,
             "SSH_PORT": prop_ssh_port,
-            "ECMSOURCE": prop_ecmsource,
-            "ECMLOADTYPE": prop_ecmloadtype,
+
             "CSSOURCE": prop_cssource,
             "CSLOADTYPE": prop_csloadtype,
             "CRRSOURCE": prop_crrsource,
@@ -589,117 +492,6 @@ class InstallerService:
 
         return {"success": True, "logs": logs}
 
-    async def apply_ecm_config_files_from_repo(
-        self,
-        host: str,
-        username: str,
-        password: str,
-        *,
-        ecm_config: Optional[dict[str, Any]] = None,
-    ) -> dict:
-        logs: list[str] = []
-        repo_dir = Config.REPO_DIR
-        ecm_kit_dir = "/u01/INSTALLER_KIT/OFS_ECM_PACK"
-        safe_dir_cfg = f"-c safe.directory={repo_dir}"
-        enable_config_push = str(Config.ENABLE_CONFIG_PUSH).strip().lower() in {"1", "true", "yes", "y"}
-
-        ecm_ui = ecm_config or {}
-
-        git_auth_setup = self._git_auth_setup_cmd()
-        cmd_prepare_repo = (
-            "mkdir -p /u01/INSTALLER_KIT && "
-            f"{git_auth_setup}"
-            f"if [ -d {repo_dir}/.git ]; then "
-            f"cd {repo_dir} && "
-            f"(git -c http.sslVerify=false -c protocol.version=2 {safe_dir_cfg} pull --ff-only --no-tags || "
-            f"(git config --global --add safe.directory {repo_dir} && git -c http.sslVerify=false -c protocol.version=2 {safe_dir_cfg} pull --ff-only --no-tags)); "
-            f"else git -c http.sslVerify=false -c protocol.version=2 clone --depth 1 --single-branch --no-tags {Config.REPO_URL} {repo_dir}; fi"
-        )
-        repo_result = await self.ssh_service.execute_command(host, username, password, cmd_prepare_repo, timeout=1800, get_pty=True)
-        if not repo_result["success"]:
-            if repo_result.get("stdout"):
-                logs.append(repo_result["stdout"])
-            if repo_result.get("stderr"):
-                logs.append(repo_result["stderr"])
-            return {"success": False, "logs": logs, "error": repo_result.get("stderr") or "Failed to prepare repo for ECM config"}
-        logs.append("[OK] Repo prepared for ECM config fetch")
-
-        check_kit = await self.ssh_service.execute_command(host, username, password, f"test -d {ecm_kit_dir}")
-        if not check_kit["success"]:
-            return {"success": False, "logs": logs, "error": f"ECM installer kit not found: {ecm_kit_dir}"}
-
-        ecm_props_updates = self._extract_ecm_properties_updates(ecm_ui)
-        props_patch = await self._patch_ecm_default_properties_repo(
-            host, username, password, repo_dir=repo_dir, updates=ecm_props_updates
-        )
-        logs.extend(props_patch.get("logs", []))
-        if not props_patch.get("success"):
-            return {"success": False, "logs": logs, "error": props_patch.get("error") or "Failed to patch ECM default.properties"}
-
-        schema_patch = await self._patch_ofs_ecm_schema_in_repo(
-            host,
-            username,
-            password,
-            repo_dir=repo_dir,
-            ecm_config=ecm_ui,
-        )
-        logs.extend(schema_patch.get("logs", []))
-        if not schema_patch.get("success"):
-            return {"success": False, "logs": logs, "error": schema_patch.get("error") or "Failed to patch OFS_ECM_SCHEMA_IN.xml"}
-
-        mappings = [
-            ("OFS_NGECM/conf/default.properties", f"{ecm_kit_dir}/OFS_NGECM/conf/default.properties"),
-            ("schema_creator/conf/OFS_ECM_SCHEMA_IN.xml", f"{ecm_kit_dir}/schema_creator/conf/OFS_ECM_SCHEMA_IN.xml"),
-        ]
-
-        for rel_path, dest_path in mappings:
-            src_path = await self._resolve_repo_ecm_pack_file_path(
-                host, username, password, repo_dir=repo_dir, rel_path=rel_path
-            )
-            if not src_path:
-                return {"success": False, "logs": logs, "error": f"ECM file not found in repo: {rel_path}"}
-            logs.append(f"[INFO] Using ECM repo file: {src_path}")
-            copy_cmd = (
-                f"mkdir -p $(dirname {dest_path}) && "
-                f"cp -f {src_path} {dest_path} && "
-                f"chown oracle:oinstall {dest_path} && "
-                f"chmod 664 {dest_path}"
-            )
-            copy_result = await self.ssh_service.execute_command(host, username, password, copy_cmd, get_pty=True)
-            if not copy_result["success"]:
-                return {"success": False, "logs": logs, "error": copy_result.get("stderr") or f"Failed to copy ECM file to {dest_path}"}
-            logs.append(f"[OK] Updated ECM kit file: {dest_path}")
-
-        copy_aai_cmd = (
-            "src=/u01/INSTALLER_KIT/OFS_BD_PACK/OFS_AAI/conf/OFSAAI_InstallConfig.xml; "
-            "dst=/u01/INSTALLER_KIT/OFS_ECM_PACK/OFS_AAI/conf/OFSAAI_InstallConfig.xml; "
-            "if [ ! -f \"$src\" ]; then echo 'SRC_NOT_FOUND'; exit 1; fi; "
-            "mkdir -p $(dirname \"$dst\") && cp -f \"$src\" \"$dst\" && chown oracle:oinstall \"$dst\" && chmod 664 \"$dst\""
-        )
-        copy_aai_result = await self.ssh_service.execute_command(host, username, password, copy_aai_cmd, get_pty=True)
-        if not copy_aai_result["success"]:
-            return {
-                "success": False,
-                "logs": logs,
-                "error": copy_aai_result.get("stderr") or "Failed to copy OFSAAI_InstallConfig.xml from BD pack to ECM pack",
-            }
-        logs.append("[OK] Copied OFSAAI_InstallConfig.xml from BD pack to ECM pack")
-
-        if enable_config_push:
-            push_result = await self._commit_and_push_repo_changes(
-                host,
-                username,
-                password,
-                repo_dir=repo_dir,
-                commit_message="Update ECM installer configs from UI inputs",
-                pathspecs=["ECM_PACK"],
-            )
-            logs.extend(push_result.get("logs", []))
-        else:
-            logs.append("[INFO] ECM config push skipped (OFSAA_ENABLE_CONFIG_PUSH is disabled)")
-
-        return {"success": True, "logs": logs}
-
     async def _read_remote_file(self, host: str, username: str, password: str, path: str) -> dict:
         result = await self.ssh_service.execute_command(host, username, password, f"cat {path}")
         if not result.get("success"):
@@ -731,37 +523,6 @@ class InstallerService:
 
         fallback_cmd = (
             f"src=$(find {repo_dir} -type f -name '{filename}' ! -name '*_BEFORE*' -print | head -n 1); "
-            "if [ -z \"$src\" ]; then echo 'NOT_FOUND'; exit 0; fi; "
-            "echo $src"
-        )
-        fallback_result = await self.ssh_service.execute_command(host, username, password, fallback_cmd)
-        src_lines = (fallback_result.get("stdout") or "").splitlines()
-        if not src_lines:
-            return None
-        first = src_lines[0].strip()
-        if not first or first == "NOT_FOUND":
-            return None
-        return first
-
-    async def _resolve_repo_ecm_pack_file_path(
-        self,
-        host: str,
-        username: str,
-        password: str,
-        *,
-        repo_dir: str,
-        rel_path: str,
-    ) -> Optional[str]:
-        preferred_path = f"{repo_dir}/ECM_PACK/{rel_path}"
-        preferred_check = await self.ssh_service.execute_command(
-            host, username, password, f"test -f {shell_escape(preferred_path)} && echo FOUND"
-        )
-        if preferred_check.get("success") and "FOUND" in (preferred_check.get("stdout") or ""):
-            return preferred_path
-
-        filename = os.path.basename(rel_path)
-        fallback_cmd = (
-            f"src=$(find {repo_dir}/ECM_PACK -type f -name '{filename}' ! -name '*_BEFORE*' -print | head -n 1); "
             "if [ -z \"$src\" ]; then echo 'NOT_FOUND'; exit 0; fi; "
             "echo $src"
         )
@@ -864,167 +625,7 @@ class InstallerService:
             "export GIT_TERMINAL_PROMPT=0; "
         )
 
-    def _extract_ecm_properties_updates(self, ecm_config: dict[str, Any]) -> dict[str, Optional[str]]:
-        field_map = {
-            "BASE_COUNTRY": "prop_base_country",
-            "DEFAULT_JURISDICTION": "prop_default_jurisdiction",
-            "SMTP_HOST": "prop_smtp_host",
-            "NLS_LENGTH_SEMANTICS": "prop_nls_length_semantics",
-            "ANALYST_DATA_SOURCE": "prop_analyst_data_source",
-            "MINER_DATA_SOURCE": "prop_miner_data_source",
-            "CONFIGURE_OBIEE": "prop_configure_obiee",
-            "FSDF_UPLOAD_MODEL": "prop_fsdf_upload_model",
-            "AMLSOURCE": "prop_amlsource",
-            "KYCSOURCE": "prop_kycsource",
-            "CSSOURCE": "prop_cssource",
-            "EXTERNALSYSTEMSOURCE": "prop_externalsystemsource",
-            "TBAMLSOURCE": "prop_tbamlsource",
-            "FATCASOURCE": "prop_fatcasource",
-            "OFSECM_DATASRCNAME": "prop_ofsecm_datasrcname",
-            "COMN_GATWAY_DS": "prop_comn_gateway_ds",
-            "T2JURL": "prop_t2jurl",
-            "J2TURL": "prop_j2turl",
-            "CMNGTWYURL": "prop_cmngtwyurl",
-            "BDURL": "prop_bdurl",
-            "OFSS_WLS_URL": "prop_ofss_wls_url",
-            "AAI_URL": "prop_aai_url",
-            "CS_URL": "prop_cs_url",
-            "ARACHNYS_NNS_SERVICE_URL": "prop_arachnys_nns_service_url",
-        }
-        return {key: ecm_config.get(source_key) for key, source_key in field_map.items()}
-
-    async def _patch_ecm_default_properties_repo(
-        self,
-        host: str,
-        username: str,
-        password: str,
-        *,
-        repo_dir: str,
-        updates: dict[str, Optional[str]],
-    ) -> dict:
-        logs: list[str] = []
-        src_path = await self._resolve_repo_ecm_pack_file_path(
-            host, username, password, repo_dir=repo_dir, rel_path="OFS_NGECM/conf/default.properties"
-        )
-        if not src_path:
-            return {"success": False, "logs": logs, "error": "ECM default.properties not found in repo"}
-        logs.append(f"[INFO] Patching ECM repo properties: {src_path}")
-
-        read = await self._read_remote_file(host, username, password, src_path)
-        if not read.get("success"):
-            return {"success": False, "logs": logs, "error": read.get("error")}
-
-        original = read.get("content", "")
-        patched = self._patch_default_properties_content(original, updates=updates)
-        if patched == original:
-            logs.append("[INFO] No changes needed for ECM default.properties")
-            return {"success": True, "logs": logs, "changed": False, "source_path": src_path}
-
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        await self.ssh_service.execute_command(host, username, password, f"cp -f {src_path} {src_path}.backup.{ts}", get_pty=True)
-        write = await self._write_remote_file(host, username, password, src_path, patched)
-        if not write.get("success"):
-            return {"success": False, "logs": logs, "error": write.get("error")}
-        logs.append("[OK] Updated ECM default.properties in repo (local clone)")
-        return {"success": True, "logs": logs, "changed": True, "source_path": src_path}
-
-    def _patch_ofs_ecm_schema_in_content(self, content: str, *, ecm_config: dict[str, Any]) -> str:
-        updated = content
-
-        jdbc_url = str(ecm_config.get("jdbcUrl") or "")
-        hostname = str(ecm_config.get("hostname") or "")
-        setup_name = str(ecm_config.get("setupInfoName") or "")
-        prefix_schema_name = str(ecm_config.get("prefixSchemaName") or "")
-        schema_password = str(ecm_config.get("schemaPassword") or "")
-        datafile_dir = str(ecm_config.get("datafileDir") or "")
-        config_schema_name = str(ecm_config.get("configSchemaName") or "")
-        atomic_schema_name = str(ecm_config.get("atomicSchemaName") or "")
-
-        if jdbc_url:
-            updated = re.sub(r"<JDBC_URL>.*?</JDBC_URL>", f"<JDBC_URL>{jdbc_url}</JDBC_URL>", updated, flags=re.DOTALL)
-        if hostname:
-            updated = re.sub(r"<HOST>.*?</HOST>", f"<HOST>{hostname}</HOST>", updated, flags=re.DOTALL)
-        if setup_name:
-            updated = re.sub(r'(<SETUPINFO\b[^>]*\bNAME=")[^"]*(")', rf"\g<1>{setup_name}\g<2>", updated)
-        if prefix_schema_name:
-            updated = re.sub(r'(<SETUPINFO\b[^>]*\bPREFIX_SCHEMA_NAME=")[^"]*(")', rf"\g<1>{prefix_schema_name}\g<2>", updated)
-        if schema_password:
-            updated = re.sub(r'(<PASSWORD\b[^>]*\bAPPLYSAMEFORALL=")[^"]*(")', r'\g<1>Y\g<2>', updated)
-            updated = re.sub(r'(<PASSWORD\b[^>]*\bDEFAULT=")[^"]*(")', rf"\g<1>{schema_password}\g<2>", updated)
-            updated = re.sub(r'(<SCHEMA\b[^>]*\bPASSWORD=")[^"]*(")', rf"\g<1>{schema_password}\g<2>", updated)
-
-        if datafile_dir:
-            base_dir = datafile_dir.rstrip("/")
-
-            def _repl_datafile(m: re.Match) -> str:
-                prefix, path, suffix = m.group(1), m.group(2), m.group(3)
-                filename = os.path.basename(path)
-                return f'{prefix}{base_dir}/{filename}{suffix}'
-
-            updated = re.sub(r'(\bDATAFILE=")([^"]+)(")', _repl_datafile, updated)
-
-        updated = re.sub(r'(\bAUTOEXTEND=")[^"]*(")', r'\g<1>OFF\g<2>', updated)
-        updated = re.sub(r'(\bENCRYPT=")[^"]*(")', r'\g<1>OFF\g<2>', updated)
-
-        if config_schema_name:
-            updated = re.sub(r'(<SCHEMA\b[^>]*\bTYPE="CONFIG"[^>]*\bNAME=")[^"]*(")', rf"\g<1>{config_schema_name}\g<2>", updated)
-            updated = re.sub(r'(<SCHEMA\b[^>]*\bTYPE="CONFIG"[^>]*\bAPP_ID=")[^"]*(")', r'\g<1>OFS_AAI\g<2>', updated)
-            updated = re.sub(r'(<SCHEMA\b[^>]*\bTYPE="CONFIG"[^>]*\bDEFAULTTABLESPACE=")[^"]*(")', r'\g<1>OFS_ECM_DATA_CONF_TBSP\g<2>', updated)
-            updated = re.sub(r'(<SCHEMA\b[^>]*\bTYPE="CONFIG"[^>]*\bTEMPTABLESPACE=")[^"]*(")', r'\g<1>TEMP\g<2>', updated)
-            updated = re.sub(r'(<SCHEMA\b[^>]*\bTYPE="CONFIG"[^>]*\bQUOTA=")[^"]*(")', r'\g<1>10G\g<2>', updated)
-
-        if atomic_schema_name:
-            updated = re.sub(r'(<SCHEMA\b[^>]*\bTYPE="ATOMIC"[^>]*\bNAME=")[^"]*(")', rf"\g<1>{atomic_schema_name}\g<2>", updated)
-            updated = re.sub(r'(<SCHEMA\b[^>]*\bTYPE="ATOMIC"[^>]*\bDEFAULTTABLESPACE=")[^"]*(")', r'\g<1>OFS_ECM_DATA_CM_TBSP\g<2>', updated)
-            updated = re.sub(r'(<SCHEMA\b[^>]*\bTYPE="ATOMIC"[^>]*\bTEMPTABLESPACE=")[^"]*(")', r'\g<1>TEMP\g<2>', updated)
-            updated = re.sub(r'(<SCHEMA\b[^>]*\bTYPE="ATOMIC"[^>]*\bQUOTA=")[^"]*(")', r'\g<1>10G\g<2>', updated)
-
-        updated = re.sub(
-            r'(<SCHEMA\b[^>]*\bTYPE="ATOMIC"[^>]*\bAPP_ID="OFS_IPE"[^>]*\bINFODOM=")[^"]*(")',
-            r'\g<1>ECMINFO\g<2>',
-            updated,
-        )
-        updated = re.sub(
-            r'(<SCHEMA\b[^>]*\bTYPE="ATOMIC"[^>]*\bAPP_ID="OFS_NGECM"[^>]*\bINFODOM=")[^"]*(")',
-            r'\g<1>ECMINFO\g<2>',
-            updated,
-        )
         return updated
-
-    async def _patch_ofs_ecm_schema_in_repo(
-        self,
-        host: str,
-        username: str,
-        password: str,
-        *,
-        repo_dir: str,
-        ecm_config: dict[str, Any],
-    ) -> dict:
-        logs: list[str] = []
-        src_path = await self._resolve_repo_ecm_pack_file_path(
-            host, username, password, repo_dir=repo_dir, rel_path="schema_creator/conf/OFS_ECM_SCHEMA_IN.xml"
-        )
-        if not src_path:
-            return {"success": False, "logs": logs, "error": "OFS_ECM_SCHEMA_IN.xml not found in repo"}
-        logs.append(f"[INFO] Patching ECM repo XML: {src_path}")
-
-        read = await self._read_remote_file(host, username, password, src_path)
-        if not read.get("success"):
-            return {"success": False, "logs": logs, "error": read.get("error")}
-
-        original = read.get("content", "")
-        patched = self._patch_ofs_ecm_schema_in_content(original, ecm_config=ecm_config)
-        if patched == original:
-            logs.append("[INFO] No changes needed for OFS_ECM_SCHEMA_IN.xml")
-            return {"success": True, "logs": logs}
-
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        await self.ssh_service.execute_command(host, username, password, f"cp -f {src_path} {src_path}.backup.{ts}", get_pty=True)
-        write = await self._write_remote_file(host, username, password, src_path, patched)
-        if not write.get("success"):
-            return {"success": False, "logs": logs, "error": write.get("error")}
-        logs.append("[OK] Updated OFS_ECM_SCHEMA_IN.xml in repo (local clone)")
-        return {"success": True, "logs": logs}
 
     def _patch_ofs_bd_schema_in_content(
         self,
@@ -1562,7 +1163,7 @@ class InstallerService:
         on_prompt_callback: Optional[Callable[[str], Any]] = None,
         pack_app_enable: Optional[dict[str, bool]] = None,
         installation_mode: Optional[str] = None,
-        install_ecm: Optional[bool] = None,
+
         install_sanc: Optional[bool] = None,
     ) -> dict:
         setup_candidates = [
@@ -1610,7 +1211,7 @@ class InstallerService:
             password,
             pack_app_enable=pack_app_enable,
             installation_mode=installation_mode,
-            install_ecm=install_ecm,
+
             install_sanc=install_sanc,
         )
         summary_logs = summary.get("logs", [])
@@ -1620,90 +1221,6 @@ class InstallerService:
 
         logs = [f"[OK] setup.sh SILENT completed from {setup_path}"] + summary_logs
         return {"success": True, "logs": logs}
-
-    async def run_ecm_osc_schema_creator(
-        self,
-        host: str,
-        username: str,
-        password: str,
-        on_output_callback: Optional[Callable[[str], Any]] = None,
-        on_prompt_callback: Optional[Callable[[str], Any]] = None,
-    ) -> dict:
-        osc_path = "/u01/INSTALLER_KIT_AUTOMATION/OFS_ECM_PACK/schema_creator/bin/osc.sh"
-        check = await self.ssh_service.execute_command(host, username, password, f"test -x {osc_path}")
-        if not check["success"]:
-            return {"success": False, "logs": [], "error": f"ECM osc.sh not found or not executable: {osc_path}"}
-
-        inner_cmd = (
-            "source /home/oracle/.profile >/dev/null 2>&1; "
-            f"cd $(dirname {osc_path}) && "
-            "./osc.sh -s"
-        )
-        if username == "oracle":
-            command = f"bash -lc {shell_escape(inner_cmd)}"
-        else:
-            command = (
-                "if command -v sudo >/dev/null 2>&1; then "
-                f"sudo -u oracle bash -lc {shell_escape(inner_cmd)}; "
-                "else "
-                f"su - oracle -c {shell_escape('bash -lc ' + shell_escape(inner_cmd))}; "
-                "fi"
-            )
-
-        result = await self.ssh_service.execute_interactive_command(
-            host,
-            username,
-            password,
-            command,
-            on_output_callback=on_output_callback,
-            on_prompt_callback=on_prompt_callback,
-            timeout=18000,
-        )
-        if not result.get("success"):
-            return {"success": False, "logs": [], "error": "ECM osc.sh -s failed"}
-        return {"success": True, "logs": [f"[OK] ECM osc.sh -s completed from {osc_path}"]}
-
-    async def run_ecm_setup_silent(
-        self,
-        host: str,
-        username: str,
-        password: str,
-        on_output_callback: Optional[Callable[[str], Any]] = None,
-        on_prompt_callback: Optional[Callable[[str], Any]] = None,
-    ) -> dict:
-        setup_path = "/u01/INSTALLER_KIT_AUTOMATION/OFS_ECM_PACK/bin/setup.sh"
-        check = await self.ssh_service.execute_command(host, username, password, f"test -x {setup_path}")
-        if not check["success"]:
-            return {"success": False, "logs": [], "error": f"ECM setup.sh not found or not executable: {setup_path}"}
-
-        inner_cmd = (
-            "source /home/oracle/.profile >/dev/null 2>&1; "
-            f"cd $(dirname {setup_path}) && "
-            "./setup.sh SILENT"
-        )
-        if username == "oracle":
-            command = f"bash -lc {shell_escape(inner_cmd)}"
-        else:
-            command = (
-                "if command -v sudo >/dev/null 2>&1; then "
-                f"sudo -u oracle bash -lc {shell_escape(inner_cmd)}; "
-                "else "
-                f"su - oracle -c {shell_escape('bash -lc ' + shell_escape(inner_cmd))}; "
-                "fi"
-            )
-
-        result = await self.ssh_service.execute_interactive_command(
-            host,
-            username,
-            password,
-            command,
-            on_output_callback=on_output_callback,
-            on_prompt_callback=on_prompt_callback,
-            timeout=18000,
-        )
-        if not result.get("success"):
-            return {"success": False, "logs": [], "error": "ECM setup.sh SILENT failed"}
-        return {"success": True, "logs": [f"[OK] ECM setup.sh SILENT completed from {setup_path}"]}
 
     async def _collect_installation_summary_after_setup(
         self,
@@ -1829,3 +1346,903 @@ class InstallerService:
             return {"success": False, "logs": logs, "error": "envCheck output contains ERROR/FAIL"}
 
         return {"success": True, "logs": ["[OK] No Error, envCheck SUCCESS"]}
+
+    # ============== ECM MODULE METHODS ==============
+
+    async def download_and_extract_ecm_installer(
+        self,
+        host: str,
+        username: str,
+        password: str,
+    ) -> dict:
+        """Download and extract ECM installer kit from ECM_PACK folder in repo."""
+        logs: list[str] = []
+        target_dir = "/u01/INSTALLER_KIT"
+        repo_dir = Config.REPO_DIR
+        safe_dir_cfg = f"-c safe.directory={repo_dir}"
+
+        # Check if already extracted
+        await self.ssh_service.execute_command(host, username, password, f"mkdir -p {target_dir}", get_pty=True)
+        check_existing = await self.validation.check_directory_exists(host, username, password, f"{target_dir}/OFS_ECM_PACK")
+        if check_existing.get("exists"):
+            logs.append("[OK] ECM installer kit already extracted")
+            return {"success": True, "logs": logs}
+
+        git_auth_setup = self._git_auth_setup_cmd()
+        cmd_prepare = (
+            f"{git_auth_setup}"
+            f"if [ -d {repo_dir}/.git ]; then "
+            f"cd {repo_dir} && "
+            f"(git -c http.sslVerify=false -c protocol.version=2 {safe_dir_cfg} pull --ff-only --no-tags || "
+            f"(git config --global --add safe.directory {repo_dir} && git -c http.sslVerify=false -c protocol.version=2 {safe_dir_cfg} pull --ff-only --no-tags)); "
+            f"else git -c http.sslVerify=false -c protocol.version=2 clone --depth 1 --single-branch --no-tags {Config.REPO_URL} {repo_dir}; fi"
+        )
+        result = await self.ssh_service.execute_command(host, username, password, cmd_prepare, timeout=1800, get_pty=True)
+        if not result["success"]:
+            if result.get("stdout"):
+                logs.append(result["stdout"])
+            if result.get("stderr"):
+                logs.append(result["stderr"])
+            return {"success": False, "logs": logs, "error": result.get("stderr") or "Failed to prepare installer repo"}
+        logs.append("[OK] Repository ready for ECM installer kit")
+
+        # Find ECM zip file in ECM_PACK folder
+        find_zip_cmd = (
+            f"installer_zip=$(ls -1t {repo_dir}/ECM_PACK/*.zip 2>/dev/null | head -n 1); "
+            "if [ -z \"$installer_zip\" ]; then echo 'INSTALLER_ZIP_NOT_FOUND'; exit 1; fi; "
+            "echo $installer_zip"
+        )
+        zip_result = await self.ssh_service.execute_command(host, username, password, find_zip_cmd)
+        if not zip_result["success"] or "INSTALLER_ZIP_NOT_FOUND" in zip_result.get("stdout", ""):
+            return {"success": False, "logs": logs, "error": "ECM installer kit zip not found in repo ECM_PACK folder"}
+
+        zip_path = zip_result.get("stdout", "").splitlines()[0].strip()
+        logs.append(f"[INFO] ECM installer zip found: {zip_path}")
+
+        # Extract as oracle user
+        unzip_cmd = (
+            "if command -v bsdtar >/dev/null 2>&1; then "
+            f"bsdtar -xf {shell_escape(zip_path)} -C {target_dir}; "
+            "else "
+            f"unzip -oq {shell_escape(zip_path)} -d {target_dir}; "
+            "fi"
+        )
+        unzip_cmd_shell = f"bash -lc {shell_escape(unzip_cmd)}"
+        if username == "oracle":
+            unzip_as_oracle_cmd = f"mkdir -p {target_dir} && {unzip_cmd_shell}"
+        else:
+            unzip_as_oracle_cmd = (
+                "if command -v sudo >/dev/null 2>&1; then "
+                f"sudo mkdir -p {target_dir} && "
+                f"sudo chown -R oracle:oinstall {target_dir} && "
+                f"sudo chmod -R 775 {target_dir} && "
+                f"(sudo chmod a+r {shell_escape(zip_path)} 2>/dev/null || true) && "
+                f"sudo -u oracle {unzip_cmd_shell}; "
+                "else "
+                f"mkdir -p {target_dir} && "
+                f"chown -R oracle:oinstall {target_dir} && "
+                f"chmod -R 775 {target_dir} && "
+                f"(chmod a+r {shell_escape(zip_path)} 2>/dev/null || true) && "
+                f"su - oracle -c {shell_escape(unzip_cmd_shell)}; "
+                "fi"
+            )
+
+        unzip_result = await self.ssh_service.execute_command(
+            host, username, password, unzip_as_oracle_cmd, timeout=1800, get_pty=True
+        )
+        if not unzip_result["success"]:
+            if unzip_result.get("stdout"):
+                logs.append(unzip_result["stdout"])
+            if unzip_result.get("stderr"):
+                logs.append(unzip_result["stderr"])
+            rc = unzip_result.get("returncode")
+            return {
+                "success": False,
+                "logs": logs,
+                "error": unzip_result.get("stderr")
+                or unzip_result.get("stdout")
+                or (f"Failed to unzip ECM installer kit (rc={rc})" if rc is not None else "Failed to unzip ECM installer kit"),
+            }
+        logs.append("[OK] ECM installer kit extracted")
+
+        # Set oracle ownership and 775 permissions on extracted folder
+        ecm_pack_dir = f"{target_dir}/OFS_ECM_PACK"
+        chown_chmod_cmd = f"chown -R oracle:oinstall {ecm_pack_dir} && chmod -R 775 {ecm_pack_dir}"
+        perm_result = await self.ssh_service.execute_command(
+            host, username, password, chown_chmod_cmd, timeout=300, get_pty=True
+        )
+        if perm_result["success"]:
+            logs.append("[OK] ECM pack ownership set to oracle:oinstall with 775 permissions")
+        else:
+            logs.append(f"[WARN] Failed to set permissions: {perm_result.get('stderr', '')}")
+
+        return {"success": True, "logs": logs}
+
+    async def set_ecm_permissions(self, host: str, username: str, password: str) -> dict:
+        """Set permissions and ownership on ECM kit directory."""
+        cmd = "chown -R oracle:oinstall /u01/INSTALLER_KIT/OFS_ECM_PACK && chmod -R 775 /u01/INSTALLER_KIT/OFS_ECM_PACK"
+        result = await self.ssh_service.execute_command(host, username, password, cmd, get_pty=True)
+        if not result["success"]:
+            return {"success": False, "logs": [], "error": result.get("stderr") or "Failed to set ECM permissions"}
+        return {"success": True, "logs": ["[OK] Ownership and permissions set on OFS_ECM_PACK"]}
+
+    async def _resolve_repo_ecm_pack_file_path(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        repo_dir: str,
+        filename: str,
+    ) -> Optional[str]:
+        """Resolve file path in ECM_PACK folder of repo."""
+        preferred_path = f"{repo_dir}/ECM_PACK/{filename}"
+        preferred_check = await self.ssh_service.execute_command(
+            host, username, password, f"test -f {shell_escape(preferred_path)} && echo FOUND"
+        )
+        if preferred_check.get("success") and "FOUND" in (preferred_check.get("stdout") or ""):
+            return preferred_path
+
+        fallback_cmd = (
+            f"src=$(find {repo_dir}/ECM_PACK -type f -name '{filename}' ! -name '*_BEFORE*' -print | head -n 1); "
+            "if [ -z \"$src\" ]; then echo 'NOT_FOUND'; exit 0; fi; "
+            "echo $src"
+        )
+        fallback_result = await self.ssh_service.execute_command(host, username, password, fallback_cmd)
+        src_lines = (fallback_result.get("stdout") or "").splitlines()
+        if not src_lines:
+            return None
+        first = src_lines[0].strip()
+        if not first or first == "NOT_FOUND":
+            return None
+        return first
+
+    def _patch_ofs_ecm_schema_in_content(
+        self,
+        content: str,
+        *,
+        ecm_schema_jdbc_host: Optional[str],
+        ecm_schema_jdbc_port: Optional[int],
+        ecm_schema_jdbc_service: Optional[str],
+        ecm_schema_host: Optional[str],
+        ecm_schema_setup_env: Optional[str],
+        ecm_schema_prefix_schema_name: Optional[str],
+        ecm_schema_apply_same_for_all: Optional[str],
+        ecm_schema_default_password: Optional[str],
+        ecm_schema_datafile_dir: Optional[str],
+        ecm_schema_config_schema_name: Optional[str],
+        ecm_schema_atomic_schema_name: Optional[str],
+    ) -> str:
+        """Patch OFS_ECM_SCHEMA_IN.xml content with provided values."""
+        updated = content
+
+        # Update JDBC_URL
+        if ecm_schema_jdbc_host is not None and ecm_schema_jdbc_port is not None and ecm_schema_jdbc_service is not None:
+            jdbc_url = f"jdbc:oracle:thin:@//{ecm_schema_jdbc_host}:{ecm_schema_jdbc_port}/{ecm_schema_jdbc_service}"
+            updated = re.sub(
+                r"<JDBC_URL>.*?</JDBC_URL>",
+                f"<JDBC_URL>{jdbc_url}</JDBC_URL>",
+                updated,
+                flags=re.DOTALL,
+            )
+
+        # Update HOST
+        if ecm_schema_host is not None and str(ecm_schema_host).strip():
+            updated = re.sub(r"<HOST>.*?</HOST>", f"<HOST>{ecm_schema_host}</HOST>", updated, flags=re.DOTALL)
+
+        # Update SETUPINFO NAME and PREFIX_SCHEMA_NAME
+        if ecm_schema_setup_env is not None or ecm_schema_prefix_schema_name is not None:
+            def replace_setupinfo(m: re.Match) -> str:
+                tag = m.group(0)
+                if ecm_schema_setup_env is not None:
+                    tag = re.sub(r'NAME="[^"]*"', f'NAME="{ecm_schema_setup_env}"', tag)
+                if ecm_schema_prefix_schema_name is not None:
+                    tag = re.sub(r'PREFIX_SCHEMA_NAME="[^"]*"', f'PREFIX_SCHEMA_NAME="{ecm_schema_prefix_schema_name}"', tag)
+                return tag
+            updated = re.sub(r'<SETUPINFO\b[^>]*/>', replace_setupinfo, updated)
+
+        # Update PASSWORD
+        if ecm_schema_apply_same_for_all is not None:
+            updated = re.sub(
+                r'(<PASSWORD\b[^>]*\bAPPLYSAMEFORALL=")[^"]*(")',
+                rf"\g<1>{ecm_schema_apply_same_for_all}\g<2>",
+                updated,
+            )
+
+        if ecm_schema_default_password is not None:
+            updated = re.sub(
+                r'(<PASSWORD\b[^>]*\bDEFAULT=")[^"]*(")',
+                rf"\g<1>{ecm_schema_default_password}\g<2>",
+                updated,
+            )
+
+        # Update DATAFILE paths
+        if ecm_schema_datafile_dir:
+            base_dir = ecm_schema_datafile_dir.rstrip("/")
+
+            def _repl_datafile(m: re.Match) -> str:
+                prefix, path, suffix = m.group(1), m.group(2), m.group(3)
+                filename = os.path.basename(path)
+                return f'{prefix}{base_dir}/{filename}{suffix}'
+
+            updated = re.sub(r'(\bDATAFILE=")([^"]+)(")', _repl_datafile, updated)
+
+        # Update CONFIG schema name
+        if ecm_schema_config_schema_name is not None:
+            updated = re.sub(
+                r'(<SCHEMA\b[^>]*\bTYPE="CONFIG"[^>]*\bNAME=")[^"]*(")',
+                rf"\g<1>{ecm_schema_config_schema_name}\g<2>",
+                updated,
+            )
+
+        # Update ATOMIC schema name
+        if ecm_schema_atomic_schema_name is not None:
+            updated = re.sub(
+                r'(<SCHEMA\b[^>]*\bTYPE="ATOMIC"[^>]*\bNAME=")[^"]*(")',
+                rf"\g<1>{ecm_schema_atomic_schema_name}\g<2>",
+                updated,
+            )
+
+        return updated
+
+    async def _patch_ofs_ecm_schema_in_repo(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        repo_dir: str,
+        ecm_schema_jdbc_host: Optional[str],
+        ecm_schema_jdbc_port: Optional[int],
+        ecm_schema_jdbc_service: Optional[str],
+        ecm_schema_host: Optional[str],
+        ecm_schema_setup_env: Optional[str],
+        ecm_schema_prefix_schema_name: Optional[str],
+        ecm_schema_apply_same_for_all: Optional[str],
+        ecm_schema_default_password: Optional[str],
+        ecm_schema_datafile_dir: Optional[str],
+        ecm_schema_config_schema_name: Optional[str],
+        ecm_schema_atomic_schema_name: Optional[str],
+    ) -> dict:
+        """Patch OFS_ECM_SCHEMA_IN.xml in the repo."""
+        logs: list[str] = []
+
+        src_path = await self._resolve_repo_ecm_pack_file_path(
+            host, username, password, repo_dir=repo_dir, filename="OFS_ECM_SCHEMA_IN.xml"
+        )
+        if not src_path:
+            return {"success": False, "logs": logs, "error": "OFS_ECM_SCHEMA_IN.xml not found in repo ECM_PACK folder"}
+        logs.append(f"[INFO] Patching ECM schema XML: {src_path}")
+
+        read = await self._read_remote_file(host, username, password, src_path)
+        if not read.get("success"):
+            return {"success": False, "logs": logs, "error": read.get("error")}
+
+        original = read.get("content", "")
+        patched = self._patch_ofs_ecm_schema_in_content(
+            original,
+            ecm_schema_jdbc_host=ecm_schema_jdbc_host,
+            ecm_schema_jdbc_port=ecm_schema_jdbc_port,
+            ecm_schema_jdbc_service=ecm_schema_jdbc_service,
+            ecm_schema_host=ecm_schema_host,
+            ecm_schema_setup_env=ecm_schema_setup_env,
+            ecm_schema_prefix_schema_name=ecm_schema_prefix_schema_name,
+            ecm_schema_apply_same_for_all=ecm_schema_apply_same_for_all,
+            ecm_schema_default_password=ecm_schema_default_password,
+            ecm_schema_datafile_dir=ecm_schema_datafile_dir,
+            ecm_schema_config_schema_name=ecm_schema_config_schema_name,
+            ecm_schema_atomic_schema_name=ecm_schema_atomic_schema_name,
+        )
+
+        if patched == original:
+            logs.append("[INFO] No changes needed for OFS_ECM_SCHEMA_IN.xml")
+            return {"success": True, "logs": logs, "changed": False, "source_path": src_path}
+
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        backup_cmd = f"cp -f {src_path} {src_path}.backup.{ts}"
+        await self.ssh_service.execute_command(host, username, password, backup_cmd, get_pty=True)
+        write = await self._write_remote_file(host, username, password, src_path, patched)
+        if not write.get("success"):
+            return {"success": False, "logs": logs, "error": write.get("error")}
+
+        logs.append("[OK] Updated OFS_ECM_SCHEMA_IN.xml in repo")
+        return {"success": True, "logs": logs, "changed": True, "source_path": src_path}
+
+    def _patch_ecm_default_properties_content(self, content: str, *, updates: dict[str, Optional[str]]) -> str:
+        """Patch ECM default.properties content with provided values."""
+        lines = content.splitlines(keepends=True)
+        out_lines: list[str] = []
+
+        for raw_line in lines:
+            line_no_eol = raw_line.rstrip("\r\n")
+            eol = raw_line[len(line_no_eol):]
+
+            # Keep headers and blank lines
+            if not line_no_eol or line_no_eol.startswith("##"):
+                out_lines.append(raw_line)
+                continue
+
+            # Handle property lines
+            if "=" in line_no_eol:
+                key_part = line_no_eol.split("=", 1)[0].strip()
+                user_value = updates.get(key_part)
+                if user_value is not None:
+                    # Strip inline comments if present
+                    if "--" in line_no_eol:
+                        out_lines.append(f"{key_part}={str(user_value)}{eol}")
+                    else:
+                        out_lines.append(f"{key_part}={str(user_value)}{eol}")
+                    continue
+
+            out_lines.append(raw_line)
+
+        return "".join(out_lines)
+
+    async def _patch_ecm_default_properties_repo(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        repo_dir: str,
+        updates: dict[str, Optional[str]],
+    ) -> dict:
+        """Patch ECM default.properties in the repo."""
+        logs: list[str] = []
+        src_path = await self._resolve_repo_ecm_pack_file_path(
+            host, username, password, repo_dir=repo_dir, filename="default.properties"
+        )
+        if not src_path:
+            return {"success": False, "logs": logs, "error": "ECM default.properties not found in repo"}
+        logs.append(f"[INFO] Patching ECM properties: {src_path}")
+
+        read = await self._read_remote_file(host, username, password, src_path)
+        if not read.get("success"):
+            return {"success": False, "logs": logs, "error": read.get("error")}
+
+        original = read.get("content", "")
+        patched = self._patch_ecm_default_properties_content(original, updates=updates)
+
+        if patched == original:
+            logs.append("[INFO] No changes needed for ECM default.properties")
+            return {"success": True, "logs": logs, "changed": False, "source_path": src_path}
+
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        await self.ssh_service.execute_command(host, username, password, f"cp -f {src_path} {src_path}.backup.{ts}", get_pty=True)
+        write = await self._write_remote_file(host, username, password, src_path, patched)
+        if not write.get("success"):
+            return {"success": False, "logs": logs, "error": write.get("error")}
+
+        logs.append("[OK] Updated ECM default.properties in repo")
+        return {"success": True, "logs": logs, "changed": True, "source_path": src_path}
+
+    async def _patch_ecm_ofsaai_install_config_repo(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        repo_dir: str,
+        updates: dict[str, Optional[str]],
+    ) -> dict:
+        """Patch ECM OFSAAI_InstallConfig.xml in the repo."""
+        logs: list[str] = []
+        src_path = await self._resolve_repo_ecm_pack_file_path(
+            host, username, password, repo_dir=repo_dir, filename="OFSAAI_InstallConfig.xml"
+        )
+        if not src_path:
+            return {"success": False, "logs": logs, "error": "ECM OFSAAI_InstallConfig.xml not found in repo"}
+        logs.append(f"[INFO] Patching ECM OFSAAI XML: {src_path}")
+
+        read = await self._read_remote_file(host, username, password, src_path)
+        if not read.get("success"):
+            return {"success": False, "logs": logs, "error": read.get("error")}
+
+        original = read.get("content", "")
+        patched, warnings = self._patch_ofsaai_install_config_content(original, updates=updates)
+        logs.extend(warnings)
+
+        if patched == original:
+            logs.append("[INFO] No changes needed for ECM OFSAAI_InstallConfig.xml")
+            return {"success": True, "logs": logs, "changed": False, "source_path": src_path}
+
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        await self.ssh_service.execute_command(host, username, password, f"cp -f {src_path} {src_path}.backup.{ts}", get_pty=True)
+        write = await self._write_remote_file(host, username, password, src_path, patched)
+        if not write.get("success"):
+            return {"success": False, "logs": logs, "error": write.get("error")}
+
+        logs.append("[OK] Updated ECM OFSAAI_InstallConfig.xml in repo")
+        return {"success": True, "logs": logs, "changed": True, "source_path": src_path}
+
+    async def apply_ecm_config_files_from_repo(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        # OFS_ECM_SCHEMA_IN.xml params
+        ecm_schema_jdbc_host: Optional[str] = None,
+        ecm_schema_jdbc_port: Optional[int] = None,
+        ecm_schema_jdbc_service: Optional[str] = None,
+        ecm_schema_host: Optional[str] = None,
+        ecm_schema_setup_env: Optional[str] = None,
+        ecm_schema_prefix_schema_name: Optional[str] = None,
+        ecm_schema_apply_same_for_all: Optional[str] = None,
+        ecm_schema_default_password: Optional[str] = None,
+        ecm_schema_datafile_dir: Optional[str] = None,
+        ecm_schema_config_schema_name: Optional[str] = None,
+        ecm_schema_atomic_schema_name: Optional[str] = None,
+        # ECM default.properties params
+        ecm_prop_base_country: Optional[str] = None,
+        ecm_prop_default_jurisdiction: Optional[str] = None,
+        ecm_prop_smtp_host: Optional[str] = None,
+        ecm_prop_web_service_user: Optional[str] = None,
+        ecm_prop_web_service_password: Optional[str] = None,
+        ecm_prop_nls_length_semantics: Optional[str] = None,
+        ecm_prop_analyst_data_source: Optional[str] = None,
+        ecm_prop_miner_data_source: Optional[str] = None,
+        ecm_prop_configure_obiee: Optional[str] = None,
+        ecm_prop_fsdf_upload_model: Optional[str] = None,
+        ecm_prop_amlsource: Optional[str] = None,
+        ecm_prop_kycsource: Optional[str] = None,
+        ecm_prop_cssource: Optional[str] = None,
+        ecm_prop_externalsystemsource: Optional[str] = None,
+        ecm_prop_tbamlsource: Optional[str] = None,
+        ecm_prop_fatcasource: Optional[str] = None,
+        ecm_prop_ofsecm_datasrcname: Optional[str] = None,
+        ecm_prop_comn_gateway_ds: Optional[str] = None,
+        ecm_prop_t2jurl: Optional[str] = None,
+        ecm_prop_j2turl: Optional[str] = None,
+        ecm_prop_cmngtwyurl: Optional[str] = None,
+        ecm_prop_bdurl: Optional[str] = None,
+        ecm_prop_ofss_wls_url: Optional[str] = None,
+        ecm_prop_aai_url: Optional[str] = None,
+        ecm_prop_cs_url: Optional[str] = None,
+        ecm_prop_arachnys_nns_service_url: Optional[str] = None,
+        # ECM OFSAAI_InstallConfig.xml params
+        ecm_aai_webappservertype: Optional[str] = None,
+        ecm_aai_dbserver_ip: Optional[str] = None,
+        ecm_aai_oracle_service_name: Optional[str] = None,
+        ecm_aai_abs_driver_path: Optional[str] = None,
+        ecm_aai_olap_server_implementation: Optional[str] = None,
+        ecm_aai_sftp_enable: Optional[str] = None,
+        ecm_aai_file_transfer_port: Optional[str] = None,
+        ecm_aai_javaport: Optional[str] = None,
+        ecm_aai_nativeport: Optional[str] = None,
+        ecm_aai_agentport: Optional[str] = None,
+        ecm_aai_iccport: Optional[str] = None,
+        ecm_aai_iccnativeport: Optional[str] = None,
+        ecm_aai_olapport: Optional[str] = None,
+        ecm_aai_msgport: Optional[str] = None,
+        ecm_aai_routerport: Optional[str] = None,
+        ecm_aai_amport: Optional[str] = None,
+        ecm_aai_https_enable: Optional[str] = None,
+        ecm_aai_web_server_ip: Optional[str] = None,
+        ecm_aai_web_server_port: Optional[str] = None,
+        ecm_aai_context_name: Optional[str] = None,
+        ecm_aai_webapp_context_path: Optional[str] = None,
+        ecm_aai_web_local_path: Optional[str] = None,
+        ecm_aai_weblogic_domain_home: Optional[str] = None,
+        ecm_aai_ftspshare_path: Optional[str] = None,
+        ecm_aai_sftp_user_id: Optional[str] = None,
+    ) -> dict:
+        """
+        Fetch ECM config files from git repo, patch with UI values, and copy to ECM kit locations.
+        """
+        logs: list[str] = []
+        updated_repo_pathspecs: set[str] = set()
+        repo_dir = Config.REPO_DIR
+        kit_dir = "/u01/INSTALLER_KIT/OFS_ECM_PACK"
+        safe_dir_cfg = f"-c safe.directory={repo_dir}"
+        fast_config_apply = str(Config.FAST_CONFIG_APPLY).strip().lower() in {"1", "true", "yes", "y"}
+        enable_config_push = str(Config.ENABLE_CONFIG_PUSH).strip().lower() in {"1", "true", "yes", "y"}
+
+        # Ensure repo is present
+        git_auth_setup = self._git_auth_setup_cmd()
+        if fast_config_apply:
+            cmd_prepare_repo = (
+                "mkdir -p /u01/INSTALLER_KIT && "
+                f"{git_auth_setup}"
+                f"if [ -d {repo_dir}/.git ]; then "
+                "echo 'REPO_READY_FAST'; "
+                f"else git -c http.sslVerify=false -c protocol.version=2 clone --depth 1 --single-branch --no-tags {Config.REPO_URL} {repo_dir}; fi"
+            )
+        else:
+            cmd_prepare_repo = (
+                "mkdir -p /u01/INSTALLER_KIT && "
+                f"{git_auth_setup}"
+                f"if [ -d {repo_dir}/.git ]; then "
+                f"cd {repo_dir} && "
+                f"(git -c http.sslVerify=false -c protocol.version=2 {safe_dir_cfg} pull --ff-only --no-tags || "
+                f"(git config --global --add safe.directory {repo_dir} && git -c http.sslVerify=false -c protocol.version=2 {safe_dir_cfg} pull --ff-only --no-tags)); "
+                f"else git -c http.sslVerify=false -c protocol.version=2 clone --depth 1 --single-branch --no-tags {Config.REPO_URL} {repo_dir}; fi"
+            )
+        repo_result = await self.ssh_service.execute_command(
+            host, username, password, cmd_prepare_repo, timeout=1800, get_pty=True
+        )
+        if not repo_result["success"]:
+            if repo_result.get("stdout"):
+                logs.append(repo_result["stdout"])
+            if repo_result.get("stderr"):
+                logs.append(repo_result["stderr"])
+            return {"success": False, "logs": logs, "error": repo_result.get("stderr") or "Failed to prepare repo for ECM"}
+        logs.append("[OK] Repo prepared for ECM config file fetch")
+
+        # ECM file mappings (source in repo -> destination in kit)
+        mappings = [
+            ("OFS_ECM_SCHEMA_IN.xml", f"{kit_dir}/schema_creator/conf/OFS_ECM_SCHEMA_IN.xml"),
+            ("default.properties", f"{kit_dir}/OFS_NGECM/conf/default.properties"),
+            ("OFSAAI_InstallConfig.xml", f"{kit_dir}/OFS_AAI/conf/OFSAAI_InstallConfig.xml"),
+        ]
+
+        # Sanity checks
+        check_repo = await self.ssh_service.execute_command(host, username, password, f"test -d {repo_dir}")
+        if not check_repo["success"]:
+            return {"success": False, "logs": logs, "error": f"Repo dir not found: {repo_dir}"}
+        check_kit = await self.ssh_service.execute_command(host, username, password, f"test -d {kit_dir}")
+        if not check_kit["success"]:
+            return {"success": False, "logs": logs, "error": f"ECM installer kit not found: {kit_dir}"}
+
+        # Patch OFS_ECM_SCHEMA_IN.xml
+        schema_patch = await self._patch_ofs_ecm_schema_in_repo(
+            host, username, password,
+            repo_dir=repo_dir,
+            ecm_schema_jdbc_host=ecm_schema_jdbc_host,
+            ecm_schema_jdbc_port=ecm_schema_jdbc_port,
+            ecm_schema_jdbc_service=ecm_schema_jdbc_service,
+            ecm_schema_host=ecm_schema_host,
+            ecm_schema_setup_env=ecm_schema_setup_env,
+            ecm_schema_prefix_schema_name=ecm_schema_prefix_schema_name,
+            ecm_schema_apply_same_for_all=ecm_schema_apply_same_for_all,
+            ecm_schema_default_password=ecm_schema_default_password,
+            ecm_schema_datafile_dir=ecm_schema_datafile_dir,
+            ecm_schema_config_schema_name=ecm_schema_config_schema_name,
+            ecm_schema_atomic_schema_name=ecm_schema_atomic_schema_name,
+        )
+        logs.extend(schema_patch.get("logs", []))
+        if not schema_patch.get("success"):
+            return {"success": False, "logs": logs, "error": schema_patch.get("error")}
+        schema_changed = bool(schema_patch.get("changed"))
+        if schema_patch.get("source_path"):
+            updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, schema_patch["source_path"]))
+
+        # Patch ECM default.properties
+        # Apply defaults using target host IP dynamically
+        base_url = f"http://{host}:7002"
+        ecm_props = {
+            "BASE_COUNTRY": ecm_prop_base_country or "US",
+            "DEFAULT_JURISDICTION": ecm_prop_default_jurisdiction or "AMEA",
+            "SMTP_HOST": ecm_prop_smtp_host or host,
+            "WEB_SERVICE_USER": ecm_prop_web_service_user,
+            "WEB_SERVICE_PASSWORD": ecm_prop_web_service_password,
+            "NLS_LENGTH_SEMANTICS": ecm_prop_nls_length_semantics or "CHAR",
+            "ANALYST_DATA_SOURCE": ecm_prop_analyst_data_source or "ANALYST",
+            "MINER_DATA_SOURCE": ecm_prop_miner_data_source or "MINER",
+            "CONFIGURE_OBIEE": ecm_prop_configure_obiee or "0",
+            "FSDF_UPLOAD_MODEL": ecm_prop_fsdf_upload_model or "1",
+            "AMLSOURCE": ecm_prop_amlsource or "FCCMATOMIC",
+            "KYCSOURCE": ecm_prop_kycsource or "FCCMATOMIC",
+            "CSSOURCE": ecm_prop_cssource or "FCCMATOMIC",
+            "EXTERNALSYSTEMSOURCE": ecm_prop_externalsystemsource or "FCCMATOMIC",
+            "TBAMLSOURCE": ecm_prop_tbamlsource or "FCCMATOMIC",
+            "FATCASOURCE": ecm_prop_fatcasource or "",
+            "OFSECM_DATASRCNAME": ecm_prop_ofsecm_datasrcname or "FCCMINFO",
+            "COMN_GATWAY_DS": ecm_prop_comn_gateway_ds or "FCCMINFO",
+            "T2JURL": ecm_prop_t2jurl or base_url,
+            "J2TURL": ecm_prop_j2turl or base_url,
+            "CMNGTWYURL": ecm_prop_cmngtwyurl or base_url,
+            "BDURL": ecm_prop_bdurl or f"{base_url}/FICHOME",
+            "OFSS_WLS_URL": ecm_prop_ofss_wls_url or base_url,
+            "AAI_URL": ecm_prop_aai_url or f"{base_url}/FICHOME",
+            "CS_URL": ecm_prop_cs_url or f"{base_url}/FICHOME",
+            "ARACHNYS_NNS_SERVICE_URL": ecm_prop_arachnys_nns_service_url or f"{base_url}/FICHOME",
+        }
+        props_patch = await self._patch_ecm_default_properties_repo(
+            host, username, password, repo_dir=repo_dir, updates=ecm_props
+        )
+        logs.extend(props_patch.get("logs", []))
+        if not props_patch.get("success"):
+            return {"success": False, "logs": logs, "error": props_patch.get("error")}
+        props_changed = bool(props_patch.get("changed"))
+        if props_patch.get("source_path"):
+            updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, props_patch["source_path"]))
+
+        # Patch ECM OFSAAI_InstallConfig.xml
+        ecm_aai_updates = {
+            "WEBAPPSERVERTYPE": ecm_aai_webappservertype,
+            "DBSERVER_IP": ecm_aai_dbserver_ip,
+            "ORACLE_SID/SERVICE_NAME": ecm_aai_oracle_service_name,
+            "ABS_DRIVER_PATH": ecm_aai_abs_driver_path,
+            "OLAP_SERVER_IMPLEMENTATION": ecm_aai_olap_server_implementation,
+            "SFTP_ENABLE": ecm_aai_sftp_enable,
+            "FILE_TRANSFER_PORT": ecm_aai_file_transfer_port,
+            "JAVAPORT": ecm_aai_javaport,
+            "NATIVEPORT": ecm_aai_nativeport,
+            "AGENTPORT": ecm_aai_agentport,
+            "ICCPORT": ecm_aai_iccport,
+            "ICCNATIVEPORT": ecm_aai_iccnativeport,
+            "OLAPPORT": ecm_aai_olapport,
+            "MSGPORT": ecm_aai_msgport,
+            "ROUTERPORT": ecm_aai_routerport,
+            "AMPORT": ecm_aai_amport,
+            "HTTPS_ENABLE": ecm_aai_https_enable,
+            "WEB_SERVER_IP": ecm_aai_web_server_ip,
+            "WEB_SERVER_PORT": ecm_aai_web_server_port,
+            "CONTEXT_NAME": ecm_aai_context_name,
+            "WEBAPP_CONTEXT_PATH": ecm_aai_webapp_context_path,
+            "WEB_LOCAL_PATH": ecm_aai_web_local_path,
+            "WEBLOGIC_DOMAIN_HOME": ecm_aai_weblogic_domain_home,
+            "OFSAAI_FTPSHARE_PATH": ecm_aai_ftspshare_path,
+            "OFSAAI_SFTP_USER_ID": ecm_aai_sftp_user_id,
+        }
+        aai_patch = await self._patch_ecm_ofsaai_install_config_repo(
+            host, username, password, repo_dir=repo_dir, updates=ecm_aai_updates
+        )
+        logs.extend(aai_patch.get("logs", []))
+        if not aai_patch.get("success"):
+            return {"success": False, "logs": logs, "error": aai_patch.get("error")}
+        aai_changed = bool(aai_patch.get("changed"))
+        if aai_patch.get("source_path"):
+            updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, aai_patch["source_path"]))
+
+        logs.append(
+            "[INFO] ECM UI sync summary: "
+            f"OFS_ECM_SCHEMA_IN.xml={'UPDATED' if schema_changed else 'UNCHANGED'}, "
+            f"default.properties={'UPDATED' if props_changed else 'UNCHANGED'}, "
+            f"OFSAAI_InstallConfig.xml={'UPDATED' if aai_changed else 'UNCHANGED'}"
+        )
+
+        # Copy files from repo to kit locations
+        for filename, dest_path in mappings:
+            src_path = await self._resolve_repo_ecm_pack_file_path(
+                host, username, password, repo_dir=repo_dir, filename=filename
+            )
+            if not src_path:
+                return {"success": False, "logs": logs, "error": f"ECM file not found in repo: {filename}"}
+            logs.append(f"[INFO] Using ECM {filename} from repo: {src_path}")
+
+            # Backup existing file before replacing
+            backup_cmd = (
+                f"if [ -f {dest_path} ]; then "
+                f"cp -f {dest_path} {dest_path}.backup.$(date +%Y%m%d_%H%M%S); "
+                "fi"
+            )
+            await self.ssh_service.execute_command(host, username, password, backup_cmd, get_pty=True)
+
+            copy_cmd = (
+                f"mkdir -p $(dirname {dest_path}) && "
+                f"cp -f {src_path} {dest_path} && "
+                f"chown oracle:oinstall {dest_path} && "
+                f"chmod 664 {dest_path}"
+            )
+            copy_result = await self.ssh_service.execute_command(host, username, password, copy_cmd, get_pty=True)
+            if not copy_result["success"]:
+                return {
+                    "success": False,
+                    "logs": logs,
+                    "error": copy_result.get("stderr") or f"Failed to copy ECM {filename} to kit",
+                }
+            logs.append(f"[OK] Updated ECM kit file: {dest_path}")
+
+        # Fix ownership of entire ECM kit directory to oracle
+        fix_ownership_cmd = "chown -R oracle:oinstall /u01/INSTALLER_KIT/OFS_ECM_PACK && chmod -R 775 /u01/INSTALLER_KIT/OFS_ECM_PACK"
+        await self.ssh_service.execute_command(host, username, password, fix_ownership_cmd, get_pty=True)
+        logs.append("[OK] Fixed ECM kit ownership to oracle:oinstall")
+
+        # Push changes to git if enabled
+        if enable_config_push:
+            push_result = await self._commit_and_push_repo_changes(
+                host, username, password,
+                repo_dir=repo_dir,
+                commit_message="Update ECM installer configs from UI inputs",
+                pathspecs=sorted(updated_repo_pathspecs) if updated_repo_pathspecs else ["ECM_PACK"],
+            )
+            logs.extend(push_result.get("logs", []))
+        else:
+            logs.append("[INFO] ECM config push skipped (OFSAA_ENABLE_CONFIG_PUSH is disabled)")
+
+        return {"success": True, "logs": logs}
+
+    async def run_ecm_osc_schema_creator(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        on_output_callback: Optional[Callable[[str], Any]] = None,
+        on_prompt_callback: Optional[Callable[[str], Any]] = None,
+    ) -> dict:
+        """Run ECM schema creator osc.sh."""
+        osc_path = "/u01/INSTALLER_KIT/OFS_ECM_PACK/schema_creator/bin/osc.sh"
+        
+        check = await self.ssh_service.execute_command(host, username, password, f"test -x {osc_path}")
+        if not check["success"]:
+            return {"success": False, "logs": [], "error": "ECM osc.sh not found or not executable"}
+
+        schema_creator_dir = os.path.dirname(os.path.dirname(osc_path))
+        pack_root_dir = os.path.dirname(schema_creator_dir)
+
+        # Patch VerInfo.txt for Linux version compatibility
+        verinfo_preflight_cmd = (
+            f"pack_root={shell_escape(pack_root_dir)}; "
+            "patched=0; "
+            "found=0; "
+            "while IFS= read -r vf; do "
+            "  found=1; "
+            "  if grep -Eq '^[[:space:]]*Linux_VERSION' \"$vf\"; then "
+            "    sed -i -E 's/^[[:space:]]*Linux_VERSION.*$/Linux_VERSION=7,8,9/' \"$vf\"; "
+            "  else "
+            "    echo 'Linux_VERSION=7,8,9' >> \"$vf\"; "
+            "  fi; "
+            "  patched=$((patched+1)); "
+            "  echo \"[INFO] VerInfo patched: $vf\"; "
+            "done < <(find \"$pack_root\" -type f -name 'VerInfo.txt' 2>/dev/null); "
+            "if [ \"$found\" -eq 0 ]; then "
+            "  echo '[WARN] VerInfo.txt not found under OFS_ECM_PACK'; "
+            "else "
+            "  echo \"[INFO] VerInfo files patched count: $patched\"; "
+            "fi"
+        )
+
+        # Use script -c to provide a proper TTY for osc.sh which reads from /dev/tty
+        osc_run_cmd = f"cd $(dirname {osc_path}) && (./osc.sh -s || ./osc.sh -S)"
+        inner_cmd = (
+            "source /home/oracle/.profile >/dev/null 2>&1; "
+            f"{verinfo_preflight_cmd}; "
+            f"script -q -c {shell_escape(osc_run_cmd)} /dev/null"
+        )
+        if username == "oracle":
+            command = f"bash -lc {shell_escape(inner_cmd)}"
+        else:
+            command = f"su - oracle -c {shell_escape('bash -lc ' + shell_escape(inner_cmd))}"
+
+        captured_lines: list[str] = []
+        pending = ""
+
+        async def output_collector(text: str) -> None:
+            nonlocal pending
+            if not text:
+                return
+
+            pending += text.replace("\r", "\n")
+            parts = pending.split("\n")
+            for line in parts[:-1]:
+                cleaned = line.strip()
+                if cleaned:
+                    captured_lines.append(cleaned)
+            pending = parts[-1]
+
+            if on_output_callback is not None:
+                forwarded = on_output_callback(text)
+                if inspect.isawaitable(forwarded):
+                    await forwarded
+
+        result = await self.ssh_service.execute_interactive_command(
+            host, username, password, command,
+            on_output_callback=output_collector,
+            on_prompt_callback=on_prompt_callback,
+            timeout=3600,
+        )
+        tail = pending.strip()
+        if tail:
+            captured_lines.append(tail)
+
+        # Check for fatal errors in output
+        fatal_runtime_patterns = [
+            re.compile(r"Exception in thread \"main\"", re.IGNORECASE),
+            re.compile(r"NoClassDefFoundError", re.IGNORECASE),
+            re.compile(r"ClassNotFoundException", re.IGNORECASE),
+            re.compile(r"\bSP2-0306\b", re.IGNORECASE),
+            re.compile(r"\bSP2-0157\b", re.IGNORECASE),
+            re.compile(r"\bORA-01017\b", re.IGNORECASE),
+            re.compile(r"\bFAIL\b", re.IGNORECASE),
+            re.compile(r"ERROR while applying", re.IGNORECASE),
+        ]
+        runtime_fatal_lines = [
+            line for line in captured_lines if any(p.search(line) for p in fatal_runtime_patterns)
+        ]
+        if runtime_fatal_lines:
+            logs = ["[ERROR] ECM osc.sh runtime output contains fatal errors:"] + [
+                f"[OSCOUT] {line}" for line in runtime_fatal_lines[:20]
+            ]
+            return {"success": False, "logs": logs, "error": "ECM osc.sh runtime output contains fatal errors"}
+
+        # Check log file
+        logs_dir = f"{schema_creator_dir}/logs"
+        latest_log_cmd = (
+            f"log_file=$(ls -1t {logs_dir}/* 2>/dev/null | head -n 1); "
+            "if [ -z \"$log_file\" ]; then echo 'LOG_NOT_FOUND'; exit 0; fi; "
+            "echo $log_file"
+        )
+        latest_log_result = await self.ssh_service.execute_command(host, username, password, latest_log_cmd)
+        latest_log = (latest_log_result.get("stdout") or "").splitlines()[0].strip() if latest_log_result.get("stdout") else ""
+
+        if not latest_log or latest_log == "LOG_NOT_FOUND":
+            return {
+                "success": False,
+                "logs": ["[ERROR] ECM osc.sh completed but schema_creator log file was not found"],
+                "error": "ECM schema_creator log file not found",
+            }
+
+        grep_cmd = f"grep -Ein 'ERROR|FAIL' {shell_escape(latest_log)} || true"
+        grep_result = await self.ssh_service.execute_command(host, username, password, grep_cmd)
+        matches = [line.strip() for line in (grep_result.get('stdout') or '').splitlines() if line.strip()]
+
+        schema_exists_pattern = re.compile(r"(already\s+exist|already\s+exists|ora-00955|name is already used)", re.IGNORECASE)
+        schema_exists_lines = [line for line in matches if schema_exists_pattern.search(line)]
+        fatal_lines = [line for line in matches if line not in schema_exists_lines]
+
+        if schema_exists_lines:
+            logs = [f"[INFO] Checked ECM log: {latest_log}"]
+            logs.append("[WARN] ECM Schema already exists. Skipping schema creation and moving to next step.")
+            logs.extend([f"[OSCLOG] {line}" for line in schema_exists_lines])
+            if fatal_lines:
+                logs.extend([f"[OSCLOG] {line}" for line in fatal_lines])
+                return {"success": False, "logs": logs, "error": "ECM osc.sh log contains non-skippable ERROR/FAIL"}
+            return {"success": True, "logs": logs}
+
+        if fatal_lines:
+            logs = [f"[ERROR] ECM osc.sh log contains ERROR/FAIL in {latest_log}:"] + [f"[OSCLOG] {line}" for line in fatal_lines]
+            return {"success": False, "logs": logs, "error": "ECM osc.sh log contains ERROR/FAIL"}
+
+        if not result.get("success"):
+            return {"success": False, "logs": [f"[INFO] Checked ECM log: {latest_log}"], "error": "ECM osc.sh failed"}
+
+        return {"success": True, "logs": [f"[INFO] Checked ECM log: {latest_log}", "[OK] No Error, ECM osc.sh SUCCESS"]}
+
+    async def run_ecm_setup_silent(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        on_output_callback: Optional[Callable[[str], Any]] = None,
+        on_prompt_callback: Optional[Callable[[str], Any]] = None,
+    ) -> dict:
+        """Run ECM setup.sh SILENT."""
+        setup_path = "/u01/INSTALLER_KIT/OFS_ECM_PACK/bin/setup.sh"
+
+        check = await self.ssh_service.execute_command(host, username, password, f"test -x {setup_path}")
+        if not check["success"]:
+            return {"success": False, "logs": [], "error": "ECM setup.sh not found or not executable"}
+
+        inner_cmd = (
+            "source /home/oracle/.profile >/dev/null 2>&1; "
+            f"cd $(dirname {setup_path}) && "
+            "./setup.sh SILENT"
+        )
+        if username == "oracle":
+            command = f"bash -lc {shell_escape(inner_cmd)}"
+        else:
+            command = f"su - oracle -c {shell_escape('bash -lc ' + shell_escape(inner_cmd))}"
+
+        result = await self.ssh_service.execute_interactive_command(
+            host, username, password, command,
+            on_output_callback=on_output_callback,
+            on_prompt_callback=on_prompt_callback,
+            timeout=36000,
+        )
+
+        # Collect installation summary
+        pack_log_path = "/u01/INSTALLER_KIT/OFS_ECM_PACK/logs/Pack_Install.log"
+        summary_cmd = (
+            f'log={shell_escape(pack_log_path)}; '
+            'if [ -f "$log" ]; then '
+            'tail -80 "$log"; '
+            'else '
+            'echo "FILE_NOT_FOUND"; '
+            'fi'
+        )
+        summary_result = await self.ssh_service.execute_command(host, username, password, summary_cmd)
+        summary_out = (summary_result.get("stdout") or "").strip()
+
+        summary_logs: list[str] = []
+        if not summary_out or summary_out == "FILE_NOT_FOUND":
+            summary_logs.append(f"[WARN] ECM Pack_Install.log not found at: {pack_log_path}")
+        else:
+            summary_logs = ["", f"--- ECM Pack_Install.log ({pack_log_path}) ---"] + summary_out.splitlines()
+
+        if not result.get("success"):
+            return {"success": False, "logs": summary_logs, "error": "ECM setup.sh SILENT failed"}
+
+        logs = [f"[OK] ECM setup.sh SILENT completed from {setup_path}"] + summary_logs
+        return {"success": True, "logs": logs}

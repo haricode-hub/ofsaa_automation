@@ -1,31 +1,10 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { EcmFormData } from '@/components/EcmPackForm'
 
 interface EcmPackPreviewProps {
   data: EcmFormData
-}
-
-function buildSchemaXml(data: EcmFormData): string {
-  const tablespaceXml = data.tablespaces
-    .map((row) => `  <TABLESPACE ID="${row.id}" VALUE="${row.value}" DATAFILE="${data.datafileDir.replace(/\/$/, '')}/${row.filename}" SIZE="${row.size}" AUTOEXTEND="${row.autoextend}" ENCRYPT="${row.encrypt}" />`)
-    .join('\n')
-
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<INSTALL>
-  <JDBC_URL>${data.jdbcUrl}</JDBC_URL>
-  <HOST>${data.hostname}</HOST>
-  <SETUPINFO NAME="${data.setupInfoName}" PREFIX_SCHEMA_NAME="${data.prefixSchemaName}" />
-  <PASSWORD APPLYSAMEFORALL="Y" DEFAULT="${data.schemaPassword}" />
-
-${tablespaceXml}
-
-  <SCHEMA TYPE="CONFIG" NAME="${data.configSchemaName}" APP_ID="OFS_AAI" DEFAULTTABLESPACE="OFS_ECM_DATA_CONF_TBSP" TEMPTABLESPACE="TEMP" QUOTA="10G" />
-  <SCHEMA TYPE="ATOMIC" NAME="${data.atomicSchemaName}" APP_ID="OFS_IPE" INFODOM="ECMINFO" DEFAULTTABLESPACE="OFS_ECM_DATA_CM_TBSP" TEMPTABLESPACE="TEMP" QUOTA="10G" />
-  <SCHEMA TYPE="ATOMIC" NAME="${data.atomicSchemaName}" APP_ID="OFS_NGECM" INFODOM="ECMINFO" DEFAULTTABLESPACE="OFS_ECM_DATA_CM_TBSP" TEMPTABLESPACE="TEMP" QUOTA="10G" />
-</INSTALL>
-`
 }
 
 function buildDefaultProperties(data: EcmFormData): string {
@@ -67,32 +46,24 @@ function downloadText(filename: string, content: string): void {
 }
 
 export function EcmPackPreview({ data }: EcmPackPreviewProps) {
-  const [tab, setTab] = useState<'xml' | 'properties'>('xml')
-  const schemaXml = useMemo(() => buildSchemaXml(data), [data])
   const defaultProperties = useMemo(() => buildDefaultProperties(data), [data])
-  const activeContent = tab === 'xml' ? schemaXml : defaultProperties
 
   const copyToClipboard = async () => {
-    await navigator.clipboard.writeText(activeContent)
+    await navigator.clipboard.writeText(defaultProperties)
   }
 
   return (
     <div className="rounded-xl border border-border bg-bg-secondary/40 p-4 space-y-3">
       <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <button type="button" onClick={() => setTab('xml')} className={`px-3 py-1 text-xs rounded ${tab === 'xml' ? 'bg-white text-black' : 'bg-bg-secondary text-text-primary border border-border'}`}>
-            OFS_ECM_SCHEMA_IN.xml
-          </button>
-          <button type="button" onClick={() => setTab('properties')} className={`px-3 py-1 text-xs rounded ${tab === 'properties' ? 'bg-white text-black' : 'bg-bg-secondary text-text-primary border border-border'}`}>
-            default.properties
-          </button>
+        <div className="text-sm font-bold text-text-primary uppercase tracking-wider">
+          default.properties Preview
         </div>
         <div className="flex items-center gap-2">
           <button type="button" onClick={copyToClipboard} className="px-3 py-1 text-xs rounded border border-border">Copy</button>
-          <button type="button" onClick={() => downloadText(tab === 'xml' ? 'OFS_ECM_SCHEMA_IN.xml' : 'default.properties', activeContent)} className="px-3 py-1 text-xs rounded border border-border">Download</button>
+          <button type="button" onClick={() => downloadText('default.properties', defaultProperties)} className="px-3 py-1 text-xs rounded border border-border">Download</button>
         </div>
       </div>
-      <pre className="h-[360px] overflow-auto rounded-lg border border-border bg-black/40 p-3 text-xs text-text-secondary whitespace-pre-wrap">{activeContent}</pre>
+      <pre className="h-[360px] overflow-auto rounded-lg border border-border bg-black/40 p-3 text-xs text-text-secondary whitespace-pre-wrap">{defaultProperties}</pre>
     </div>
   )
 }

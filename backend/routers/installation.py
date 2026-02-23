@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import uuid
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -27,6 +28,15 @@ latest_request_cache: dict = {
     "request": None,
     "task_id": None,
     "error": None,
+}
+
+# Checkpoint cache for BD Pack completion (used to resume ECM without re-running BD Pack)
+bd_pack_checkpoint: dict = {
+    "completed": False,
+    "request": None,
+    "task_id": None,
+    "host": None,
+    "timestamp": None,
 }
 
 
@@ -104,6 +114,37 @@ async def rollback():
         "previous_error": latest_request_cache.get("error"),
         "message": "Returning cached request values from previous run. You can modify and resubmit."
     }
+
+
+@router.get("/checkpoint")
+async def get_checkpoint():
+    """Get BD Pack checkpoint status. If BD Pack completed, ECM can resume from here."""
+    if not bd_pack_checkpoint.get("completed"):
+        raise HTTPException(
+            status_code=404,
+            detail="No BD Pack checkpoint found. BD Pack has not completed successfully yet."
+        )
+    
+    return {
+        "success": True,
+        "bd_pack_completed": True,
+        "host": bd_pack_checkpoint.get("host"),
+        "task_id": bd_pack_checkpoint.get("task_id"),
+        "timestamp": bd_pack_checkpoint.get("timestamp"),
+        "cached_request": bd_pack_checkpoint.get("request"),
+        "message": "BD Pack completed. You can resume ECM installation using resume_from_checkpoint=true."
+    }
+
+
+@router.delete("/checkpoint")
+async def clear_checkpoint():
+    """Clear the BD Pack checkpoint (use after full installation completes or to start fresh)."""
+    bd_pack_checkpoint["completed"] = False
+    bd_pack_checkpoint["request"] = None
+    bd_pack_checkpoint["task_id"] = None
+    bd_pack_checkpoint["host"] = None
+    bd_pack_checkpoint["timestamp"] = None
+    return {"success": True, "message": "BD Pack checkpoint cleared."}
 
 
 async def append_output(task_id: str, text: str) -> None:
@@ -184,316 +225,460 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
         await append_output(task_id, "[OK] SSH connection established")
         await trace("SSH connection established; starting installation workflow")
 
-        # Step 1: Oracle user and oinstall group
-        await update_status(task_id, "running", steps[0], InstallationSteps.progress_for_index(0))
-        result = await installation_service.create_oracle_user_and_oinstall_group(request.host, request.username, request.password)
-        await append_output(task_id, "\n".join(result.get("logs", [])))
-        if not result.get("success"):
-            await handle_failure("Oracle user setup failed", result.get("error"))
-            return
-
-        # Step 2: Mount point /u01
-        await update_status(task_id, "running", steps[1], InstallationSteps.progress_for_index(1))
-        result = await installation_service.create_mount_point(request.host, request.username, request.password)
-        await append_output(task_id, "\n".join(result.get("logs", [])))
-        if not result.get("success"):
-            await handle_failure("Mount point creation failed", result.get("error"))
-            return
-
-        # Step 3: Install packages
-        await update_status(task_id, "running", steps[2], InstallationSteps.progress_for_index(2))
-        result = await installation_service.install_ksh_and_git(request.host, request.username, request.password)
-        await append_output(task_id, "\n".join(result.get("logs", [])))
-        if not result.get("success"):
-            await handle_failure("Package installation failed", result.get("error"))
-            return
-
-        # Step 4: Create .profile
-        await update_status(task_id, "running", steps[3], InstallationSteps.progress_for_index(3))
-        result = await installation_service.create_profile_file(request.host, request.username, request.password)
-        await append_output(task_id, "\n".join(result.get("logs", [])))
-        if not result.get("success"):
-            await handle_failure("Profile creation failed", result.get("error"))
-            return
-
-        # Step 5: Java installation
-        await update_status(task_id, "running", steps[4], InstallationSteps.progress_for_index(4))
-        await trace("Starting Java installation step")
-        result = await installation_service.install_java_from_repo(request.host, request.username, request.password)
-        await append_output(task_id, "\n".join(result.get("logs", [])))
-        if not result.get("success"):
-            await handle_failure("Java installation failed", result.get("error"))
-            return
-        await trace("Java installation step completed")
-
-        java_home = result.get("java_home")
-        if java_home:
-            update_java = await installation_service.update_java_profile(
-                request.host, request.username, request.password, java_home
-            )
-            await append_output(task_id, "\n".join(update_java.get("logs", [])))
-            if not update_java.get("success"):
-                await handle_failure("Updating JAVA_HOME failed", update_java.get("error"))
+        # Validate resume_from_checkpoint
+        if request.resume_from_checkpoint:
+            if not bd_pack_checkpoint.get("completed"):
+                await handle_failure("Cannot resume: No BD Pack checkpoint found. Run BD Pack first or disable resume_from_checkpoint.")
                 return
+            if bd_pack_checkpoint.get("host") != request.host:
+                await append_output(task_id, f"[WARN] Checkpoint was for host {bd_pack_checkpoint.get('host')}, current host is {request.host}")
 
-        # Step 6: OFSAA directories
-        await update_status(task_id, "running", steps[5], InstallationSteps.progress_for_index(5))
-        result = await installation_service.create_ofsaa_directories(request.host, request.username, request.password)
-        await append_output(task_id, "\n".join(result.get("logs", [])))
-        if not result.get("success"):
-            await handle_failure("OFSAA directory creation failed", result.get("error"))
-            return
-
-        # Step 7: Oracle client check
-        await update_status(task_id, "running", steps[6], InstallationSteps.progress_for_index(6))
-        result = await installation_service.check_existing_oracle_client_and_update_profile(
-            request.host, request.username, request.password, request.oracle_sid
-        )
-        await append_output(task_id, "\n".join(result.get("logs", [])))
-        if not result.get("success"):
-            await handle_failure("Oracle client detection failed", result.get("error"))
-            return
-
-        # Step 8: Installer setup and envCheck
-        await update_status(task_id, "running", steps[7], InstallationSteps.progress_for_index(7))
-        await trace("Starting installer download/extract step")
-        result = await installation_service.download_and_extract_installer(request.host, request.username, request.password)
-        await append_output(task_id, "\n".join(result.get("logs", [])))
-        if not result.get("success"):
-            await handle_failure("Installer download failed", result.get("error"))
-            return
-        await trace("Installer download/extract step completed")
-
-        perm_result = await installation_service.set_installer_permissions(request.host, request.username, request.password)
-        await append_output(task_id, "\n".join(perm_result.get("logs", [])))
-        if not perm_result.get("success"):
-            await handle_failure("Installer permission setup failed", perm_result.get("error"))
-            return
-
-        await append_output(task_id, "[INFO] Sourcing /home/oracle/.profile before envCheck")
-
+        # Define callbacks for interactive commands (available for both BD Pack and ECM)
         async def output_callback(text: str):
             await append_output(task_id, text)
 
         async def prompt_callback(prompt: str) -> str:
+            """Wait for user input via WebSocket for interactive prompts."""
             await append_output(task_id, f"[PROMPT] {prompt}")
             await websocket_manager.send_prompt(task_id, prompt)
-            await update_status(task_id, "waiting_input", steps[7], InstallationSteps.progress_for_index(7))
+            await update_status(task_id, "waiting_input", task.current_step, task.progress)
             response = await websocket_manager.wait_for_user_input(task_id, timeout=3600)
-            await update_status(task_id, "running", steps[7], InstallationSteps.progress_for_index(7))
+            await update_status(task_id, "running", task.current_step, task.progress)
             return response
 
         async def auto_yes_callback(prompt: str) -> str:
-            """Automatically answer Y to any Y/N prompts during setup.sh SILENT.
-            setup.sh is invoked with SILENT flag but some prompts are not suppressed.
-            Blocking on WebSocket input here would cause the process to hang for hours.
+            """Automatically answer Y only for Y/N confirmation prompts.
+            For other prompts (passwords, usernames, etc.), wait for user input.
             """
-            await append_output(task_id, f"[AUTO-ANSWER Y] {prompt}")
-            return "Y"
-
-        env_result = await installation_service.run_environment_check(
-            request.host,
-            request.username,
-            request.password,
-            on_output_callback=output_callback,
-            on_prompt_callback=prompt_callback,
-        )
-        await append_output(task_id, "\n".join(env_result.get("logs", [])))
-        if not env_result.get("success"):
-            await handle_failure("Environment check failed", env_result.get("error"))
-            return
-        await trace("Environment check step completed")
-
-        # Step 9: Apply XML/properties and run schema creator (osc.sh)
-        await update_status(task_id, "running", steps[8], InstallationSteps.progress_for_index(8))
-        await trace("Starting config apply and osc.sh step")
-        cfg_result = await installation_service.apply_installer_config_files(
-            request.host,
-            request.username,
-            request.password,
-            schema_jdbc_host=request.schema_jdbc_host,
-            schema_jdbc_port=request.schema_jdbc_port,
-            schema_jdbc_service=request.schema_jdbc_service,
-            schema_host=request.schema_host,
-            schema_setup_env=request.schema_setup_env,
-            schema_apply_same_for_all=request.schema_apply_same_for_all,
-            schema_default_password=request.schema_default_password,
-            schema_datafile_dir=request.schema_datafile_dir,
-            schema_tablespace_autoextend=request.schema_tablespace_autoextend,
-            schema_external_directory_value=request.schema_external_directory_value,
-            schema_config_schema_name=request.schema_config_schema_name,
-            schema_atomic_schema_name=request.schema_atomic_schema_name,
-            pack_app_enable=request.pack_app_enable,
-            prop_base_country=request.prop_base_country,
-            prop_default_jurisdiction=request.prop_default_jurisdiction,
-            prop_smtp_host=request.prop_smtp_host,
-            prop_partition_date_format=request.prop_partition_date_format,
-            prop_datadumpdt_minus_0=request.prop_datadumpdt_minus_0,
-            prop_endthisweek_minus_00=request.prop_endthisweek_minus_00,
-            prop_startnextmnth_minus_00=request.prop_startnextmnth_minus_00,
-            prop_analyst_data_source=request.prop_analyst_data_source,
-            prop_miner_data_source=request.prop_miner_data_source,
-            prop_web_service_user=request.prop_web_service_user,
-            prop_web_service_password=request.prop_web_service_password,
-            prop_nls_length_semantics=request.prop_nls_length_semantics,
-            prop_configure_obiee=request.prop_configure_obiee,
-            prop_obiee_url=request.prop_obiee_url,
-            prop_sw_rmiport=request.prop_sw_rmiport,
-            prop_big_data_enable=request.prop_big_data_enable,
-            prop_sqoop_working_dir=request.prop_sqoop_working_dir,
-            prop_ssh_auth_alias=request.prop_ssh_auth_alias,
-            prop_ssh_host_name=request.prop_ssh_host_name,
-            prop_ssh_port=request.prop_ssh_port,
-            prop_ecmsource=request.prop_ecmsource,
-            prop_ecmloadtype=request.prop_ecmloadtype,
-            prop_cssource=request.prop_cssource,
-            prop_csloadtype=request.prop_csloadtype,
-            prop_crrsource=request.prop_crrsource,
-            prop_crrloadtype=request.prop_crrloadtype,
-            prop_fsdf_upload_model=request.prop_fsdf_upload_model,
-            aai_webappservertype=request.aai_webappservertype,
-            aai_dbserver_ip=request.aai_dbserver_ip,
-            aai_oracle_service_name=request.aai_oracle_service_name,
-            aai_abs_driver_path=request.aai_abs_driver_path,
-            aai_olap_server_implementation=request.aai_olap_server_implementation,
-            aai_sftp_enable=request.aai_sftp_enable,
-            aai_file_transfer_port=request.aai_file_transfer_port,
-            aai_javaport=request.aai_javaport,
-            aai_nativeport=request.aai_nativeport,
-            aai_agentport=request.aai_agentport,
-            aai_iccport=request.aai_iccport,
-            aai_iccnativeport=request.aai_iccnativeport,
-            aai_olapport=request.aai_olapport,
-            aai_msgport=request.aai_msgport,
-            aai_routerport=request.aai_routerport,
-            aai_amport=request.aai_amport,
-            aai_https_enable=request.aai_https_enable,
-            aai_web_server_ip=request.aai_web_server_ip,
-            aai_web_server_port=request.aai_web_server_port,
-            aai_context_name=request.aai_context_name,
-            aai_webapp_context_path=request.aai_webapp_context_path,
-            aai_web_local_path=request.aai_web_local_path,
-            aai_weblogic_domain_home=request.aai_weblogic_domain_home,
-            aai_ftspshare_path=request.aai_ftspshare_path,
-            aai_sftp_user_id=request.aai_sftp_user_id,
-        )
-        await append_output(task_id, "\n".join(cfg_result.get("logs", [])))
-        if not cfg_result.get("success"):
-            await handle_failure("Applying installer config files failed", cfg_result.get("error"))
-            return
-
-        osc_result = await installation_service.run_osc_schema_creator(
-            request.host,
-            request.username,
-            request.password,
-            on_output_callback=output_callback,
-            on_prompt_callback=prompt_callback,
-        )
-        await append_output(task_id, "\n".join(osc_result.get("logs", [])))
-        if not osc_result.get("success"):
-            # Auto-cleanup on osc.sh failure
-            await append_output(task_id, "\n[RECOVERY] osc.sh execution failed. Starting automatic recovery cleanup...")
-            cleanup_result = await installation_service.cleanup_after_osc_failure(
-                app_host=request.host,
-                app_username=request.username,
-                app_password=request.password,
-                db_host=request.schema_jdbc_host or request.host,
-                db_username=request.username,
-                db_password=request.password,
-            )
-            await append_output(task_id, "\n".join(cleanup_result.get("logs", [])))
-            if cleanup_result.get("failed_steps"):
-                await append_output(task_id, f"\n[RECOVERY] The following cleanup steps failed: {', '.join(cleanup_result['failed_steps'])}")
-                await append_output(task_id, "[RECOVERY] Please manually complete the failed steps before retrying installation")
+            prompt_lower = prompt.lower()
+            # Detect Y/N confirmation patterns (all lowercase since we check against prompt_lower)
+            yn_patterns = [
+                # Parenthesized patterns (lowercase versions)
+                "(y/n)", "(y/y)", "(n/n)", "(n/y)",
+                "(y)", "(n)",
+                # Slash patterns without parens
+                "y/y", "n/n", "y/n", "n/y",
+                # Enter patterns
+                "enter (y", "enter (n", "enter y", "enter n",
+                # Proceed patterns  
+                "to proceed",
+                # Other confirmation patterns
+                "y to", "n to",
+                "y or n", "yes or no",
+                "(yes/no)", "yes/no",
+                # Selection change patterns
+                "to change the selection",
+            ]
+            is_yn_prompt = any(pattern in prompt_lower for pattern in yn_patterns)
             
-            await handle_failure("osc.sh execution failed - automatic cleanup initiated", osc_result.get("error"))
-            return
-        await trace("osc.sh step completed")
+            if is_yn_prompt:
+                await append_output(task_id, f"[AUTO-ANSWER Y] {prompt}")
+                return "Y"
+            else:
+                # Not a Y/N prompt - wait for user input
+                await append_output(task_id, f"[PROMPT] {prompt}")
+                await websocket_manager.send_prompt(task_id, prompt)
+                await update_status(task_id, "waiting_input", task.current_step, task.progress)
+                response = await websocket_manager.wait_for_user_input(task_id, timeout=3600)
+                await update_status(task_id, "running", task.current_step, task.progress)
+                return response
 
-        # Step 10: setup.sh SILENT
-        await update_status(task_id, "running", steps[9], InstallationSteps.progress_for_index(9))
-        await trace("Starting setup.sh SILENT step")
-        setup_result = await installation_service.run_setup_silent(
-            request.host,
-            request.username,
-            request.password,
-            on_output_callback=output_callback,
-            on_prompt_callback=auto_yes_callback,
-            pack_app_enable=request.pack_app_enable,
-            installation_mode=request.installation_mode,
-            install_ecm=request.install_ecm,
-            install_sanc=request.install_sanc,
-        )
-        await append_output(task_id, "\n".join(setup_result.get("logs", [])))
-        if not setup_result.get("success"):
-            await handle_failure("setup.sh SILENT execution failed", setup_result.get("error"))
-            return
-        await trace("setup.sh SILENT step completed")
+        # Run BD Pack only if selected AND not resuming from checkpoint
+        if request.install_bdpack and not request.resume_from_checkpoint:
+            # Step 1: Oracle user and oinstall group
+            await update_status(task_id, "running", steps[0], InstallationSteps.progress_for_index(0))
+            result = await installation_service.create_oracle_user_and_oinstall_group(request.host, request.username, request.password)
+            await append_output(task_id, "\n".join(result.get("logs", [])))
+            if not result.get("success"):
+                await handle_failure("Oracle user setup failed", result.get("error"))
+                return
 
+            # Step 2: Mount point /u01
+            await update_status(task_id, "running", steps[1], InstallationSteps.progress_for_index(1))
+            result = await installation_service.create_mount_point(request.host, request.username, request.password)
+            await append_output(task_id, "\n".join(result.get("logs", [])))
+            if not result.get("success"):
+                await handle_failure("Mount point creation failed", result.get("error"))
+                return
+
+            # Step 3: Install packages
+            await update_status(task_id, "running", steps[2], InstallationSteps.progress_for_index(2))
+            result = await installation_service.install_ksh_and_git(request.host, request.username, request.password)
+            await append_output(task_id, "\n".join(result.get("logs", [])))
+            if not result.get("success"):
+                await handle_failure("Package installation failed", result.get("error"))
+                return
+
+            # Step 4: Create .profile
+            await update_status(task_id, "running", steps[3], InstallationSteps.progress_for_index(3))
+            result = await installation_service.create_profile_file(request.host, request.username, request.password)
+            await append_output(task_id, "\n".join(result.get("logs", [])))
+            if not result.get("success"):
+                await handle_failure("Profile creation failed", result.get("error"))
+                return
+
+            # Step 5: Java installation
+            await update_status(task_id, "running", steps[4], InstallationSteps.progress_for_index(4))
+            await trace("Starting Java installation step")
+            result = await installation_service.install_java_from_repo(request.host, request.username, request.password)
+            await append_output(task_id, "\n".join(result.get("logs", [])))
+            if not result.get("success"):
+                await handle_failure("Java installation failed", result.get("error"))
+                return
+            await trace("Java installation step completed")
+
+            java_home = result.get("java_home")
+            if java_home:
+                update_java = await installation_service.update_java_profile(
+                    request.host, request.username, request.password, java_home
+                )
+                await append_output(task_id, "\n".join(update_java.get("logs", [])))
+                if not update_java.get("success"):
+                    await handle_failure("Updating JAVA_HOME failed", update_java.get("error"))
+                    return
+
+            # Step 6: OFSAA directories
+            await update_status(task_id, "running", steps[5], InstallationSteps.progress_for_index(5))
+            result = await installation_service.create_ofsaa_directories(request.host, request.username, request.password)
+            await append_output(task_id, "\n".join(result.get("logs", [])))
+            if not result.get("success"):
+                await handle_failure("OFSAA directory creation failed", result.get("error"))
+                return
+
+            # Step 7: Oracle client check
+            await update_status(task_id, "running", steps[6], InstallationSteps.progress_for_index(6))
+            result = await installation_service.check_existing_oracle_client_and_update_profile(
+                request.host, request.username, request.password, request.oracle_sid
+            )
+            await append_output(task_id, "\n".join(result.get("logs", [])))
+            if not result.get("success"):
+                await handle_failure("Oracle client detection failed", result.get("error"))
+                return
+
+            # Step 8: Installer setup and envCheck
+            await update_status(task_id, "running", steps[7], InstallationSteps.progress_for_index(7))
+            await trace("Starting installer download/extract step")
+            result = await installation_service.download_and_extract_installer(request.host, request.username, request.password)
+            await append_output(task_id, "\n".join(result.get("logs", [])))
+            if not result.get("success"):
+                await handle_failure("Installer download failed", result.get("error"))
+                return
+            await trace("Installer download/extract step completed")
+
+            perm_result = await installation_service.set_installer_permissions(request.host, request.username, request.password)
+            await append_output(task_id, "\n".join(perm_result.get("logs", [])))
+            if not perm_result.get("success"):
+                await handle_failure("Installer permission setup failed", perm_result.get("error"))
+                return
+
+            await append_output(task_id, "[INFO] Sourcing /home/oracle/.profile before envCheck")
+
+            env_result = await installation_service.run_environment_check(
+                request.host,
+                request.username,
+                request.password,
+                on_output_callback=output_callback,
+                on_prompt_callback=prompt_callback,
+            )
+            await append_output(task_id, "\n".join(env_result.get("logs", [])))
+            if not env_result.get("success"):
+                await handle_failure("Environment check failed", env_result.get("error"))
+                return
+            await trace("Environment check step completed")
+
+            # Step 9: Apply XML/properties and run schema creator (osc.sh)
+            await update_status(task_id, "running", steps[8], InstallationSteps.progress_for_index(8))
+            await trace("Starting config apply and osc.sh step")
+            cfg_result = await installation_service.apply_installer_config_files(
+                request.host,
+                request.username,
+                request.password,
+                schema_jdbc_host=request.schema_jdbc_host,
+                schema_jdbc_port=request.schema_jdbc_port,
+                schema_jdbc_service=request.schema_jdbc_service,
+                schema_host=request.schema_host,
+                schema_setup_env=request.schema_setup_env,
+                schema_apply_same_for_all=request.schema_apply_same_for_all,
+                schema_default_password=request.schema_default_password,
+                schema_datafile_dir=request.schema_datafile_dir,
+                schema_tablespace_autoextend=request.schema_tablespace_autoextend,
+                schema_external_directory_value=request.schema_external_directory_value,
+                schema_config_schema_name=request.schema_config_schema_name,
+                schema_atomic_schema_name=request.schema_atomic_schema_name,
+                pack_app_enable=request.pack_app_enable,
+                prop_base_country=request.prop_base_country,
+                prop_default_jurisdiction=request.prop_default_jurisdiction,
+                prop_smtp_host=request.prop_smtp_host,
+                prop_partition_date_format=request.prop_partition_date_format,
+                prop_datadumpdt_minus_0=request.prop_datadumpdt_minus_0,
+                prop_endthisweek_minus_00=request.prop_endthisweek_minus_00,
+                prop_startnextmnth_minus_00=request.prop_startnextmnth_minus_00,
+                prop_analyst_data_source=request.prop_analyst_data_source,
+                prop_miner_data_source=request.prop_miner_data_source,
+                prop_web_service_user=request.prop_web_service_user,
+                prop_web_service_password=request.prop_web_service_password,
+                prop_nls_length_semantics=request.prop_nls_length_semantics,
+                prop_configure_obiee=request.prop_configure_obiee,
+                prop_obiee_url=request.prop_obiee_url,
+                prop_sw_rmiport=request.prop_sw_rmiport,
+                prop_big_data_enable=request.prop_big_data_enable,
+                prop_sqoop_working_dir=request.prop_sqoop_working_dir,
+                prop_ssh_auth_alias=request.prop_ssh_auth_alias,
+                prop_ssh_host_name=request.prop_ssh_host_name,
+                prop_ssh_port=request.prop_ssh_port,
+
+                prop_cssource=request.prop_cssource,
+                prop_csloadtype=request.prop_csloadtype,
+                prop_crrsource=request.prop_crrsource,
+                prop_crrloadtype=request.prop_crrloadtype,
+                prop_fsdf_upload_model=request.prop_fsdf_upload_model,
+                aai_webappservertype=request.aai_webappservertype,
+                aai_dbserver_ip=request.aai_dbserver_ip,
+                aai_oracle_service_name=request.aai_oracle_service_name,
+                aai_abs_driver_path=request.aai_abs_driver_path,
+                aai_olap_server_implementation=request.aai_olap_server_implementation,
+                aai_sftp_enable=request.aai_sftp_enable,
+                aai_file_transfer_port=request.aai_file_transfer_port,
+                aai_javaport=request.aai_javaport,
+                aai_nativeport=request.aai_nativeport,
+                aai_agentport=request.aai_agentport,
+                aai_iccport=request.aai_iccport,
+                aai_iccnativeport=request.aai_iccnativeport,
+                aai_olapport=request.aai_olapport,
+                aai_msgport=request.aai_msgport,
+                aai_routerport=request.aai_routerport,
+                aai_amport=request.aai_amport,
+                aai_https_enable=request.aai_https_enable,
+                aai_web_server_ip=request.aai_web_server_ip,
+                aai_web_server_port=request.aai_web_server_port,
+                aai_context_name=request.aai_context_name,
+                aai_webapp_context_path=request.aai_webapp_context_path,
+                aai_web_local_path=request.aai_web_local_path,
+                aai_weblogic_domain_home=request.aai_weblogic_domain_home,
+                aai_ftspshare_path=request.aai_ftspshare_path,
+                aai_sftp_user_id=request.aai_sftp_user_id,
+            )
+            await append_output(task_id, "\n".join(cfg_result.get("logs", [])))
+            if not cfg_result.get("success"):
+                await handle_failure("Applying installer config files failed", cfg_result.get("error"))
+                return
+
+            osc_result = await installation_service.run_osc_schema_creator(
+                request.host,
+                request.username,
+                request.password,
+                on_output_callback=output_callback,
+                on_prompt_callback=prompt_callback,
+            )
+            await append_output(task_id, "\n".join(osc_result.get("logs", [])))
+            if not osc_result.get("success"):
+                # Auto-cleanup on osc.sh failure
+                await append_output(task_id, "\n[RECOVERY] osc.sh execution failed. Starting automatic recovery cleanup...")
+                cleanup_result = await installation_service.cleanup_after_osc_failure(
+                    app_host=request.host,
+                    app_username=request.username,
+                    app_password=request.password,
+                    db_host=request.schema_jdbc_host or request.host,
+                    db_username=request.username,
+                    db_password=request.password,
+                )
+                await append_output(task_id, "\n".join(cleanup_result.get("logs", [])))
+                if cleanup_result.get("failed_steps"):
+                    await append_output(task_id, f"\n[RECOVERY] The following cleanup steps failed: {', '.join(cleanup_result['failed_steps'])}")
+                    await append_output(task_id, "[RECOVERY] Please manually complete the failed steps before retrying installation")
+                
+                await handle_failure("osc.sh execution failed - automatic cleanup initiated", osc_result.get("error"))
+                return
+            await trace("osc.sh step completed")
+
+            # Step 10: setup.sh SILENT
+            await update_status(task_id, "running", steps[9], InstallationSteps.progress_for_index(9))
+            await trace("Starting setup.sh SILENT step")
+            setup_result = await installation_service.run_setup_silent(
+                request.host,
+                request.username,
+                request.password,
+                on_output_callback=output_callback,
+                on_prompt_callback=auto_yes_callback,
+                pack_app_enable=request.pack_app_enable,
+                installation_mode=request.installation_mode,
+                install_sanc=request.install_sanc,
+            )
+            await append_output(task_id, "\n".join(setup_result.get("logs", [])))
+            if not setup_result.get("success"):
+                await handle_failure("setup.sh SILENT execution failed", setup_result.get("error"))
+                return
+            await trace("setup.sh SILENT step completed")
+            await append_output(task_id, "[OK] BD Pack installation completed")
+            
+            # Save BD Pack checkpoint for ECM resume capability
+            if request.install_ecm:
+                bd_pack_checkpoint["completed"] = True
+                bd_pack_checkpoint["request"] = request.dict()
+                bd_pack_checkpoint["task_id"] = task_id
+                bd_pack_checkpoint["host"] = request.host
+                bd_pack_checkpoint["timestamp"] = datetime.now().isoformat()
+                await append_output(task_id, "[CHECKPOINT] BD Pack checkpoint saved. ECM can resume from here if interrupted.")
+        else:
+            # Check if we're resuming from checkpoint or just skipping BD Pack
+            if request.resume_from_checkpoint and bd_pack_checkpoint.get("completed"):
+                await append_output(task_id, "[INFO] Resuming from BD Pack checkpoint - skipping BD Pack installation")
+                await trace("Resuming from BD Pack checkpoint")
+            else:
+                await append_output(task_id, "[INFO] Skipping BD Pack installation as per request")
+                await trace("Skipping BD Pack installation")
+
+        # ============== ECM MODULE INSTALLATION ==============
         if request.install_ecm:
-            if (request.installation_mode or "fresh").lower() != "fresh":
-                await handle_failure("ECM installation is supported only in fresh mode", "BD pack must be installed first in fresh mode before ECM")
+            await append_output(task_id, "\n[INFO] ==================== ECM MODULE INSTALLATION ====================")
+            
+            # ECM Step 1: Download and extract ECM installer kit
+            await update_status(task_id, "running", "Downloading and extracting ECM installer kit", 82)
+            await trace("Starting ECM installer download/extract step")
+            ecm_download_result = await installation_service.download_and_extract_ecm_installer(
+                request.host, request.username, request.password
+            )
+            await append_output(task_id, "\n".join(ecm_download_result.get("logs", [])))
+            if not ecm_download_result.get("success"):
+                await handle_failure("ECM installer download failed", ecm_download_result.get("error"))
+                return
+            await trace("ECM installer download/extract step completed")
+
+            # ECM Step 2: Set permissions
+            await update_status(task_id, "running", "Setting ECM kit permissions", 85)
+            ecm_perm_result = await installation_service.set_ecm_permissions(
+                request.host, request.username, request.password
+            )
+            await append_output(task_id, "\n".join(ecm_perm_result.get("logs", [])))
+            if not ecm_perm_result.get("success"):
+                await handle_failure("ECM permission setup failed", ecm_perm_result.get("error"))
                 return
 
-            await trace("Starting ECM post-BD installation flow")
-            ecm_extract = await installation_service.download_and_extract_ecm_installer(
+            # ECM Step 3: Apply ECM config files
+            await update_status(task_id, "running", "Applying ECM configuration files", 88)
+            await trace("Starting ECM config apply step")
+            ecm_cfg_result = await installation_service.apply_ecm_config_files(
                 request.host,
                 request.username,
                 request.password,
+                # OFS_ECM_SCHEMA_IN.xml params
+                ecm_schema_jdbc_host=request.ecm_schema_jdbc_host,
+                ecm_schema_jdbc_port=request.ecm_schema_jdbc_port,
+                ecm_schema_jdbc_service=request.ecm_schema_jdbc_service,
+                ecm_schema_host=request.ecm_schema_host,
+                ecm_schema_setup_env=request.ecm_schema_setup_env,
+                ecm_schema_prefix_schema_name=request.ecm_schema_prefix_schema_name,
+                ecm_schema_apply_same_for_all=request.ecm_schema_apply_same_for_all,
+                ecm_schema_default_password=request.ecm_schema_default_password,
+                ecm_schema_datafile_dir=request.ecm_schema_datafile_dir,
+                ecm_schema_config_schema_name=request.ecm_schema_config_schema_name,
+                ecm_schema_atomic_schema_name=request.ecm_schema_atomic_schema_name,
+                # ECM default.properties params
+                ecm_prop_base_country=request.ecm_prop_base_country,
+                ecm_prop_default_jurisdiction=request.ecm_prop_default_jurisdiction,
+                ecm_prop_smtp_host=request.ecm_prop_smtp_host,
+                ecm_prop_web_service_user=request.ecm_prop_web_service_user,
+                ecm_prop_web_service_password=request.ecm_prop_web_service_password,
+                ecm_prop_nls_length_semantics=request.ecm_prop_nls_length_semantics,
+                ecm_prop_analyst_data_source=request.ecm_prop_analyst_data_source,
+                ecm_prop_miner_data_source=request.ecm_prop_miner_data_source,
+                ecm_prop_configure_obiee=request.ecm_prop_configure_obiee,
+                ecm_prop_fsdf_upload_model=request.ecm_prop_fsdf_upload_model,
+                ecm_prop_amlsource=request.ecm_prop_amlsource,
+                ecm_prop_kycsource=request.ecm_prop_kycsource,
+                ecm_prop_cssource=request.ecm_prop_cssource,
+                ecm_prop_externalsystemsource=request.ecm_prop_externalsystemsource,
+                ecm_prop_tbamlsource=request.ecm_prop_tbamlsource,
+                ecm_prop_fatcasource=request.ecm_prop_fatcasource,
+                ecm_prop_ofsecm_datasrcname=request.ecm_prop_ofsecm_datasrcname,
+                ecm_prop_comn_gateway_ds=request.ecm_prop_comn_gateway_ds,
+                ecm_prop_t2jurl=request.ecm_prop_t2jurl,
+                ecm_prop_j2turl=request.ecm_prop_j2turl,
+                ecm_prop_cmngtwyurl=request.ecm_prop_cmngtwyurl,
+                ecm_prop_bdurl=request.ecm_prop_bdurl,
+                ecm_prop_ofss_wls_url=request.ecm_prop_ofss_wls_url,
+                ecm_prop_aai_url=request.ecm_prop_aai_url,
+                ecm_prop_cs_url=request.ecm_prop_cs_url,
+                ecm_prop_arachnys_nns_service_url=request.ecm_prop_arachnys_nns_service_url,
+                # ECM OFSAAI_InstallConfig.xml params
+                ecm_aai_webappservertype=request.ecm_aai_webappservertype,
+                ecm_aai_dbserver_ip=request.ecm_aai_dbserver_ip,
+                ecm_aai_oracle_service_name=request.ecm_aai_oracle_service_name,
+                ecm_aai_abs_driver_path=request.ecm_aai_abs_driver_path,
+                ecm_aai_olap_server_implementation=request.ecm_aai_olap_server_implementation,
+                ecm_aai_sftp_enable=request.ecm_aai_sftp_enable,
+                ecm_aai_file_transfer_port=request.ecm_aai_file_transfer_port,
+                ecm_aai_javaport=request.ecm_aai_javaport,
+                ecm_aai_nativeport=request.ecm_aai_nativeport,
+                ecm_aai_agentport=request.ecm_aai_agentport,
+                ecm_aai_iccport=request.ecm_aai_iccport,
+                ecm_aai_iccnativeport=request.ecm_aai_iccnativeport,
+                ecm_aai_olapport=request.ecm_aai_olapport,
+                ecm_aai_msgport=request.ecm_aai_msgport,
+                ecm_aai_routerport=request.ecm_aai_routerport,
+                ecm_aai_amport=request.ecm_aai_amport,
+                ecm_aai_https_enable=request.ecm_aai_https_enable,
+                ecm_aai_web_server_ip=request.ecm_aai_web_server_ip,
+                ecm_aai_web_server_port=request.ecm_aai_web_server_port,
+                ecm_aai_context_name=request.ecm_aai_context_name,
+                ecm_aai_webapp_context_path=request.ecm_aai_webapp_context_path,
+                ecm_aai_web_local_path=request.ecm_aai_web_local_path,
+                ecm_aai_weblogic_domain_home=request.ecm_aai_weblogic_domain_home,
+                ecm_aai_ftspshare_path=request.ecm_aai_ftspshare_path,
+                ecm_aai_sftp_user_id=request.ecm_aai_sftp_user_id,
             )
-            await append_output(task_id, "\n".join(ecm_extract.get("logs", [])))
-            if not ecm_extract.get("success"):
-                await handle_failure("ECM installer extraction failed", ecm_extract.get("error"))
+            await append_output(task_id, "\n".join(ecm_cfg_result.get("logs", [])))
+            if not ecm_cfg_result.get("success"):
+                await handle_failure("ECM config files apply failed", ecm_cfg_result.get("error"))
                 return
+            await trace("ECM config apply step completed")
 
-            ecm_cfg = await installation_service.apply_ecm_installer_config_files(
-                request.host,
-                request.username,
-                request.password,
-                ecm_config=request.ecm_config,
-            )
-            await append_output(task_id, "\n".join(ecm_cfg.get("logs", [])))
-            if not ecm_cfg.get("success"):
-                await handle_failure("Applying ECM config files failed", ecm_cfg.get("error"))
-                return
-
-            await trace("Starting ECM osc.sh -s")
-            ecm_osc = await installation_service.run_ecm_osc_schema_creator(
+            # ECM Step 4a: Run ECM osc.sh -s
+            await update_status(task_id, "running", "Running ECM schema creator (osc.sh)", 92)
+            await trace("Starting ECM osc.sh step")
+            ecm_osc_result = await installation_service.run_ecm_osc_schema_creator(
                 request.host,
                 request.username,
                 request.password,
                 on_output_callback=output_callback,
                 on_prompt_callback=prompt_callback,
             )
-            await append_output(task_id, "\n".join(ecm_osc.get("logs", [])))
-            if not ecm_osc.get("success"):
-                await handle_failure("ECM osc.sh execution failed", ecm_osc.get("error"))
+            await append_output(task_id, "\n".join(ecm_osc_result.get("logs", [])))
+            if not ecm_osc_result.get("success"):
+                await handle_failure("ECM osc.sh execution failed", ecm_osc_result.get("error"))
                 return
+            await trace("ECM osc.sh step completed")
 
-            await trace("Starting ECM setup.sh SILENT")
-            ecm_setup = await installation_service.run_ecm_setup_silent(
+            # ECM Step 4b: Run ECM setup.sh SILENT
+            await update_status(task_id, "running", "Running ECM setup (setup.sh SILENT)", 96)
+            await trace("Starting ECM setup.sh SILENT step")
+            ecm_setup_result = await installation_service.run_ecm_setup_silent(
                 request.host,
                 request.username,
                 request.password,
                 on_output_callback=output_callback,
-                on_prompt_callback=prompt_callback,
+                on_prompt_callback=auto_yes_callback,
             )
-            await append_output(task_id, "\n".join(ecm_setup.get("logs", [])))
-            if not ecm_setup.get("success"):
-                await handle_failure("ECM setup.sh SILENT execution failed", ecm_setup.get("error"))
+            await append_output(task_id, "\n".join(ecm_setup_result.get("logs", [])))
+            if not ecm_setup_result.get("success"):
+                await handle_failure("ECM setup.sh SILENT execution failed", ecm_setup_result.get("error"))
                 return
-            await trace("ECM post-BD installation flow completed")
+            await trace("ECM setup.sh SILENT step completed")
+            await append_output(task_id, "[OK] ECM Module installation completed")
+            
+            # Clear BD Pack checkpoint after successful ECM completion
+            if bd_pack_checkpoint.get("completed"):
+                bd_pack_checkpoint["completed"] = False
+                bd_pack_checkpoint["request"] = None
+                bd_pack_checkpoint["task_id"] = None
+                bd_pack_checkpoint["host"] = None
+                bd_pack_checkpoint["timestamp"] = None
+                await append_output(task_id, "[CHECKPOINT] BD Pack checkpoint cleared after successful ECM completion.")
 
         task.status = "completed"
         task.progress = 100
         await update_status(task_id, "completed", steps[9], 100)
-        await append_output(task_id, "[OK] osc.sh completed")
-        await append_output(task_id, "[OK] setup.sh SILENT completed")
-        if request.install_ecm:
-            await append_output(task_id, "[OK] ECM installer extraction and config update completed")
-            await append_output(task_id, "[OK] ECM osc.sh completed")
-            await append_output(task_id, "[OK] ECM setup.sh SILENT completed")
-        await append_output(task_id, "[OK] Schema creation completed")
+        await append_output(task_id, "[OK] Installation completed successfully")
         return
 
     except asyncio.TimeoutError as exc:
