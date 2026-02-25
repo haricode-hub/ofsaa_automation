@@ -186,8 +186,11 @@ async def _restore_bd_on_ecm_failure(
     await append_output(task_id, "\n[RECOVERY] ==================== ECM FAILURE - RESTORING BD STATE ====================")
     await update_status(task_id, "running", "Restoring to BD state after ECM failure", 0)
 
-    db_sys_pass = request.db_sys_password
-    db_service = request.schema_jdbc_service
+    db_sys_pass = request.db_sys_password or getattr(request, "schema_default_password", None)
+    db_service = (
+        request.schema_jdbc_service
+        or getattr(request, "ecm_schema_jdbc_service", None)
+    )
 
     if not db_sys_pass or not db_service:
         await append_output(task_id, "[RECOVERY] WARNING: db_sys_password or schema_jdbc_service not provided.")
@@ -199,6 +202,9 @@ async def _restore_bd_on_ecm_failure(
         request.host, request.username, request.password,
         db_sys_password=db_sys_pass or "",
         db_jdbc_service=db_service or "",
+        db_ssh_host=getattr(request, "db_ssh_host", None),
+        db_ssh_username=getattr(request, "db_ssh_username", None),
+        db_ssh_password=getattr(request, "db_ssh_password", None),
     )
     await append_output(task_id, "\n".join(restore_result.get("logs", [])))
 
@@ -530,6 +536,9 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                     db_jdbc_host=request.schema_jdbc_host or request.host,
                     db_jdbc_port=request.schema_jdbc_port or 1521,
                     db_jdbc_service=request.schema_jdbc_service,
+                    db_ssh_host=getattr(request, "db_ssh_host", None),
+                    db_ssh_username=getattr(request, "db_ssh_username", None),
+                    db_ssh_password=getattr(request, "db_ssh_password", None),
                 )
                 await append_output(task_id, "\n".join(cleanup_result.get("logs", [])))
                 if cleanup_result.get("failed_steps"):
@@ -602,6 +611,9 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                     request.host, request.username, request.password,
                     db_sys_password=db_sys_pass,
                     db_jdbc_service=db_service,
+                        db_ssh_host=getattr(request, "db_ssh_host", None),
+                        db_ssh_username=getattr(request, "db_ssh_username", None),
+                        db_ssh_password=getattr(request, "db_ssh_password", None),
                 )
                 await append_output(task_id, "\n".join(db_backup_result.get("logs", [])))
                 if not db_backup_result.get("success"):
@@ -622,8 +634,59 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 await append_output(task_id, "[INFO] BD Pack will NOT be reinstalled. Starting ECM from BD backup restore point.")
                 await trace("Resuming from BD Pack backup - BD reinstall skipped")
             else:
-                await append_output(task_id, "[INFO] Skipping BD Pack installation as per request")
-                await trace("Skipping BD Pack installation")
+                    await append_output(task_id, "[INFO] Skipping BD Pack installation as per request")
+                    await trace("Skipping BD Pack installation")
+
+            # If user requested ECM-only but wants a BD app+DB backup before ECM starts,
+            # perform the same backup steps we take after a BD Pack success so ECM can
+            # be restored to this point on failure.
+            if (not request.install_bdpack) and getattr(request, "ecm_take_bd_backup", False):
+                await append_output(task_id, "\n[INFO] ECM-only run: taking BD application + DB schema backup before ECM start as requested")
+                await update_status(task_id, "running", "Preparing BD backup before ECM", 80)
+
+                scripts_result = await installation_service.ensure_backup_restore_scripts(
+                    request.host, request.username, request.password
+                )
+                await append_output(task_id, "\n".join(scripts_result.get("logs", [])))
+                if not scripts_result.get("success"):
+                    await append_output(task_id, "[WARN] Backup scripts not found in Git repo. Backup may fail for DB schemas.")
+
+                await update_status(task_id, "running", "Taking application backup (tar)", 81)
+                app_backup_result = await installation_service.backup_application(
+                    request.host, request.username, request.password
+                )
+                await append_output(task_id, "\n".join(app_backup_result.get("logs", [])))
+                if not app_backup_result.get("success"):
+                    await append_output(task_id, "[WARN] Application backup failed. ECM restore capability may be limited.")
+                else:
+                    await trace("Application backup completed (pre-ECM)")
+
+                db_sys_pass = request.db_sys_password
+                db_service = request.schema_jdbc_service
+                if db_sys_pass and db_service:
+                    await update_status(task_id, "running", "Taking DB schema backup", 82)
+                    db_backup_result = await installation_service.backup_db_schemas(
+                        request.host, request.username, request.password,
+                        db_sys_password=db_sys_pass,
+                        db_jdbc_service=db_service,
+                        db_ssh_host=getattr(request, "db_ssh_host", None),
+                        db_ssh_username=getattr(request, "db_ssh_username", None),
+                        db_ssh_password=getattr(request, "db_ssh_password", None),
+                    )
+                    await append_output(task_id, "\n".join(db_backup_result.get("logs", [])))
+                    if not db_backup_result.get("success"):
+                        await append_output(task_id, "[WARN] DB schema backup failed. ECM restore capability may be limited.")
+                    else:
+                        bd_pack_checkpoint["completed"] = True
+                        bd_pack_checkpoint["backup_taken"] = True
+                        bd_pack_checkpoint["request"] = request.dict()
+                        bd_pack_checkpoint["task_id"] = task_id
+                        bd_pack_checkpoint["host"] = request.host
+                        bd_pack_checkpoint["timestamp"] = datetime.now().isoformat()
+                        await trace("DB schema backup completed (pre-ECM) and checkpoint saved")
+                else:
+                    await append_output(task_id, "[WARN] db_sys_password or schema_jdbc_service not provided. Skipping DB schema backup.")
+
 
         # ============== ECM MODULE INSTALLATION ==============
         if request.install_ecm:

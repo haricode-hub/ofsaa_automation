@@ -46,6 +46,9 @@ class RecoveryService:
         db_jdbc_host: Optional[str] = None,
         db_jdbc_port: int = 1521,
         db_jdbc_service: Optional[str] = None,
+        db_ssh_host: Optional[str] = None,
+        db_ssh_username: Optional[str] = None,
+        db_ssh_password: Optional[str] = None,
     ) -> dict:
         """Execute full cleanup after OSC.SH failure: kill Java, drop schema, clear cache."""
         logs = ["[RECOVERY] Starting cleanup after osc.sh failure..."]
@@ -58,30 +61,55 @@ class RecoveryService:
         if not kill_result.get("success"):
             failed_steps.append("Kill Java processes")
 
-        # Step 2: Drop database schema on DB server
-        logs.append("[RECOVERY] Step 2: Dropping database schemas and tablespaces...")
-        drop_result = await self._drop_database_schema(
-            db_host, db_username, db_password,
-            db_sys_password=db_sys_password,
-            db_jdbc_host=db_jdbc_host,
-            db_jdbc_port=db_jdbc_port,
-            db_jdbc_service=db_jdbc_service,
-        )
+        # Step 2: Remove OFSAA folder on app server
+        logs.append("[RECOVERY] Step 2: Removing /u01/OFSAA directory...")
+        rm_result = await self._remove_ofsaa_directory(app_host, app_username, app_password)
+        logs.extend(rm_result.get("logs", []))
+        if not rm_result.get("success"):
+            failed_steps.append("Remove OFSAA directory")
+
+        # Step 3: Drop database schema (run sqlplus from app server, connects to DB remotely)
+        logs.append("[RECOVERY] Step 3: Dropping database schemas and tablespaces...")
+        # If DB-side SSH credentials provided, execute the schema drop on the DB host directly.
+        if db_ssh_host and db_ssh_host != app_host:
+            drop_exec_host = db_ssh_host
+            drop_exec_user = db_ssh_username or db_username
+            drop_exec_pass = db_ssh_password or db_password
+            # When running on DB host, connect to local Oracle instance unless a separate jdbc host was provided
+            drop_jdbc_host = db_jdbc_host or 'localhost'
+            drop_result = await self._drop_database_schema(
+                drop_exec_host, drop_exec_user, drop_exec_pass,
+                db_sys_password=db_sys_password,
+                db_jdbc_host=drop_jdbc_host,
+                db_jdbc_port=db_jdbc_port,
+                db_jdbc_service=db_jdbc_service,
+            )
+        else:
+            drop_result = await self._drop_database_schema(
+                app_host, app_username, app_password,
+                db_sys_password=db_sys_password,
+                db_jdbc_host=db_jdbc_host,
+                db_jdbc_port=db_jdbc_port,
+                db_jdbc_service=db_jdbc_service,
+            )
         logs.extend(drop_result.get("logs", []))
         if not drop_result.get("success"):
             failed_steps.append("Drop database schema")
 
-        # Step 3: Clear cache on app server
-        logs.append("[RECOVERY] Step 3: Clearing system cache on app server...")
+        # Step 4: Clear cache on app server
+        logs.append("[RECOVERY] Step 4: Clearing system cache on app server...")
         cache_result_app = await self._clear_system_cache(app_host, app_username, app_password)
         logs.extend(cache_result_app.get("logs", []))
         if not cache_result_app.get("success"):
             failed_steps.append("Clear app server cache")
 
-        # Step 4: Clear cache on DB server (only if DB host differs from app host)
-        if db_host and db_host != app_host:
-            logs.append("[RECOVERY] Step 4: Clearing system cache on DB server...")
-            cache_result_db = await self._clear_system_cache(db_host, db_username, db_password)
+        # Step 5: Clear cache on DB server (only if DB host differs from app host)
+        target_cache_host = db_ssh_host or db_host
+        target_cache_user = db_ssh_username or db_username
+        target_cache_pass = db_ssh_password or db_password
+        if target_cache_host and target_cache_host != app_host:
+            logs.append("[RECOVERY] Step 5: Clearing system cache on DB server...")
+            cache_result_db = await self._clear_system_cache(target_cache_host, target_cache_user, target_cache_pass)
             logs.extend(cache_result_db.get("logs", []))
             if not cache_result_db.get("success"):
                 failed_steps.append("Clear DB server cache")
@@ -119,10 +147,28 @@ class RecoveryService:
 
         if "SCRIPTS_FOUND" in stdout:
             logs.append(f"[BACKUP] Backup/restore scripts found in {backup_dir}")
+            # Convert Windows line endings (CRLF) to Unix (LF) to avoid ^M issues
+            dos2unix_cmd = (
+                f"sed -i 's/\\r$//' {backup_dir}/backup_ofs_schemas.sh {backup_dir}/restore_ofs_schemas.sh"
+            )
+            await self.ssh_service.execute_command(host, username, password, dos2unix_cmd)
+            logs.append("[BACKUP] Scripts converted to Unix line endings")
             # Ensure scripts are executable
             chmod_cmd = f"chmod +x {backup_dir}/backup_ofs_schemas.sh {backup_dir}/restore_ofs_schemas.sh"
             await self.ssh_service.execute_command(host, username, password, chmod_cmd)
             logs.append("[BACKUP] Scripts set to executable")
+            # Try to update the local git working copy to the latest remote
+            try:
+                # Use reset --hard to handle diverging branches
+                git_pull_cmd = f"cd {repo_dir} && git fetch origin && git reset --hard origin/main"
+                git_result = await self.ssh_service.execute_command(host, username, password, git_pull_cmd)
+                git_stdout = (git_result.get("stdout") or "").strip()
+                if git_stdout:
+                    logs.append(f"[BACKUP] Git reset output: {git_stdout}")
+                else:
+                    logs.append("[BACKUP] Git reset completed (no output)")
+            except Exception:
+                logs.append("[BACKUP] WARNING: Git reset failed or not configured on repo host")
             return {"success": True, "logs": logs, "backup_dir": backup_dir}
         else:
             logs.append(f"[BACKUP] ERROR: Backup/restore scripts not found in {backup_dir}")
@@ -185,26 +231,176 @@ class RecoveryService:
         *,
         db_sys_password: str,
         db_jdbc_service: str,
+        db_ssh_host: Optional[str] = None,
+        db_ssh_username: Optional[str] = None,
+        db_ssh_password: Optional[str] = None,
     ) -> dict:
         """Run DB schema backup: backup_ofs_schemas.sh system <DB_PASS> <SERVICE>"""
         logs = ["[BACKUP] Starting DB schema backup..."]
         repo_dir = Config.REPO_DIR
         backup_dir = f"{repo_dir}/backup_Restore"
 
-        # Ensure scripts exist first
+        # Ensure scripts exist on the application/repo host first
         scripts_result = await self.ensure_backup_restore_scripts(host, username, password)
         logs.extend(scripts_result.get("logs", []))
         if not scripts_result.get("success"):
-            return {"success": False, "logs": logs, "error": "Backup scripts not available"}
+            return {"success": False, "logs": logs, "error": "Backup scripts not available on repo host"}
 
-        # Run backup script: ./backup_ofs_schemas.sh system <DB_PASS> <SERVICE>
-        backup_cmd = (
-            f"cd {backup_dir} && "
-            f"./backup_ofs_schemas.sh system {shell_escape(db_sys_password)} {shell_escape(db_jdbc_service)}"
-        )
-        logs.append(f"[BACKUP] Running: cd {backup_dir} && ./backup_ofs_schemas.sh system ****** {db_jdbc_service}")
+        # Patch the backup script in the git repo with the provided SYS password and service
+        try:
+            # Read original script
+            read_repo_cmd = f"cat {backup_dir}/backup_ofs_schemas.sh"
+            read_repo_result = await self.ssh_service.execute_command(host, username, password, read_repo_cmd)
+            orig_script = read_repo_result.get("stdout") or ""
+
+            # Check if exports are already present to avoid duplicates
+            if "export DB_USER=" not in orig_script or "export DB_PASS=" not in orig_script:
+                # Prepend exports matching the expected names in backup_ofs_schemas.sh
+                # Script expects: export DB_USER=system, export DB_PASS=, export SERVICE=
+                patched_script = (
+                    f"export DB_USER=system\n"
+                    + f"export DB_PASS={db_sys_password}\n"
+                    + f"export SERVICE={db_jdbc_service}\n"
+                    + orig_script
+                )
+                
+                # Write patched script back into the git repo (overwrite)
+                write_repo_cmd = f"cat > {backup_dir}/backup_ofs_schemas.sh <<'EOFSCRIPT'\n{patched_script}\nEOFSCRIPT"
+                await self.ssh_service.execute_command(host, username, password, write_repo_cmd)
+                await self.ssh_service.execute_command(host, username, password, f"chmod +x {backup_dir}/backup_ofs_schemas.sh")
+                logs.append("[BACKUP] Patched backup_ofs_schemas.sh in git repo with provided DB values (password masked)")
+            else:
+                # Update existing exports in place
+                updated_script = orig_script
+                updated_script = updated_script.replace("export DB_PASS=\n", f"export DB_PASS={db_sys_password}\n")
+                updated_script = updated_script.replace("export DB_PASS=\r\n", f"export DB_PASS={db_sys_password}\n")
+                updated_script = updated_script.replace("export SERVICE=\n", f"export SERVICE={db_jdbc_service}\n")
+                updated_script = updated_script.replace("export SERVICE=\r\n", f"export SERVICE={db_jdbc_service}\n")
+                
+                # Handle existing values
+                import re
+                updated_script = re.sub(r'export DB_PASS=.*', f'export DB_PASS={db_sys_password}', updated_script)
+                updated_script = re.sub(r'export SERVICE=.*', f'export SERVICE={db_jdbc_service}', updated_script)
+                
+                write_repo_cmd = f"cat > {backup_dir}/backup_ofs_schemas.sh <<'EOFSCRIPT'\n{updated_script}\nEOFSCRIPT"
+                await self.ssh_service.execute_command(host, username, password, write_repo_cmd)
+                await self.ssh_service.execute_command(host, username, password, f"chmod +x {backup_dir}/backup_ofs_schemas.sh")
+                logs.append("[BACKUP] Updated existing exports in backup_ofs_schemas.sh (password masked)")
+            # Commit and push the updated script into Git so the repo reflects the change
+            try:
+                git_username = Config.GIT_USERNAME
+                git_password = Config.GIT_PASSWORD
+                git_url = Config.REPO_URL
+                
+                # Build authenticated git URL if credentials are available
+                if git_username and git_password and git_url:
+                    # Extract base URL and add credentials
+                    if "://" in git_url:
+                        protocol, rest = git_url.split("://", 1)
+                        # Properly escape special characters in password
+                        escaped_password = git_password.replace('@', '%40').replace(':', '%3A')
+                        auth_url = f"{protocol}://{git_username}:{escaped_password}@{rest}"
+                    else:
+                        auth_url = git_url
+                    
+                    git_commit_cmds = (
+                        f"cd {repo_dir} && "
+                        f"git add {backup_dir}/backup_ofs_schemas.sh && "
+                        f"git commit -m 'Update backup_ofs_schemas.sh with DB export values for automated backup' || true && "
+                        f"git remote set-url origin '{auth_url}' && "
+                        f"git push origin main || true"
+                    )
+                else:
+                    # Fallback without credentials
+                    git_commit_cmds = (
+                        f"cd {repo_dir} && git add {backup_dir}/backup_ofs_schemas.sh && "
+                        f"git commit -m 'Update backup_ofs_schemas.sh with DB export values for automated backup' || true && "
+                        f"git push || true"
+                    )
+                
+                git_push_result = await self.ssh_service.execute_command(host, username, password, git_commit_cmds, timeout=120)
+                git_out = (git_push_result.get("stdout") or "").strip()
+                git_err = (git_push_result.get("stderr") or "").strip()
+                if git_out:
+                    logs.append(f"[BACKUP] Git push output: {git_out}")
+                if git_err and "fatal: could not read Username" not in git_err:
+                    logs.append(f"[BACKUP] Git push stderr: {git_err}")
+            except Exception as e:
+                logs.append(f"[BACKUP] WARNING: Failed to commit/push patched script to Git: {e}")
+        except Exception as exc:  # pragma: no cover - defensive
+            logs.append(f"[BACKUP] WARNING: Failed to patch script in repo: {exc}")
+
+        # Determine where to execute the backup: prefer explicit db_ssh_host, otherwise use host (app host)
+        target_ssh_host = db_ssh_host or host
+        target_ssh_username = db_ssh_username or username
+        target_ssh_password = db_ssh_password or password
+
+        # Always execute the backup on the target DB host via SSH (repo-local execution removed)
+        target_ssh_host = db_ssh_host or host
+        target_ssh_username = db_ssh_username or username
+        target_ssh_password = db_ssh_password or password
+
+        logs.append(f"[BACKUP] Preparing to run backup on DB host {target_ssh_host}")
+
+        # Read script content from repo host
+        cat_cmd = f"cat {backup_dir}/backup_ofs_schemas.sh"
+        read_result = await self.ssh_service.execute_command(host, username, password, cat_cmd)
+        script_content = read_result.get("stdout") or ""
+        if not script_content:
+            logs.append("[BACKUP] ERROR: Failed to read backup script from repo host")
+            return {"success": False, "logs": logs, "error": "Failed to read backup script from repo host"}
+
+        # Write script to /tmp/backup_Restore on DB host with proper line endings
+        remote_dir = "/tmp/backup_Restore"
+        mkdir_cmd = f"mkdir -p {remote_dir} && chmod 700 {remote_dir}"
+        await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, mkdir_cmd)
+        
+        # Ensure script has proper Unix line endings and fix any shell option issues
+        clean_script = script_content.replace('\r\n', '\n').replace('\r', '\n')
+        # Fix potential pipefail issues by ensuring proper shell options
+        if 'set -euo pipefail' in clean_script:
+            clean_script = clean_script.replace('set -euo pipefail', 'set -eo pipefail')
+        
+        write_cmd = f"cat > {remote_dir}/backup_ofs_schemas.sh <<'EOFSCRIPT'\n{clean_script}\nEOFSCRIPT"
+        await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, write_cmd)
+        await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, f"chmod +x {remote_dir}/backup_ofs_schemas.sh")
+
+        # Before executing, ensure a local SYSDBA connection works on the DB host
+        logs.append("[BACKUP] Verifying DB host local SYSDBA connection: sqlplus / as sysdba")
+        sqlplus_check_remote = f"sqlplus / as sysdba <<'EOSQL'\nEXIT\nEOSQL"
+        await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, sqlplus_check_remote)
+
+        # Execute the script on DB host with proper environment variable handling
+        # Create a wrapper script that explicitly sets and exports the variables
+        wrapper_script = f"""#!/bin/bash
+set -e
+echo "Setting environment variables for backup..."
+export DB_USER="system"
+export DB_PASS="{db_sys_password}"
+export SERVICE="{db_jdbc_service}"
+export ORACLE_SID="{db_jdbc_service}"
+echo "DB_USER=$DB_USER"
+echo "SERVICE=$SERVICE"
+echo "ORACLE_SID=$ORACLE_SID"
+echo "DB_PASS is set: $([ -n "$DB_PASS" ] && echo "yes" || echo "no")"
+cd {remote_dir}
+echo "Executing backup script..."
+# Set Oracle environment for local connections
+export ORACLE_HOME=/u01/app/oracle/product/19.0.0/dbhome_1
+export PATH=$ORACLE_HOME/bin:$PATH
+echo "Oracle environment set: ORACLE_HOME=$ORACLE_HOME"
+bash ./backup_ofs_schemas.sh
+"""
+        
+        # Write wrapper script to DB host
+        wrapper_cmd = f"cat > {remote_dir}/run_backup.sh <<'EOFWRAPPER'\n{wrapper_script}\nEOFWRAPPER"
+        await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, wrapper_cmd)
+        await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, f"chmod +x {remote_dir}/run_backup.sh")
+        
+        backup_cmd = f"cd {remote_dir} && bash ./run_backup.sh"
+        logs.append(f"[BACKUP] Running on DB host: {backup_cmd} (with environment wrapper)")
         backup_result = await self.ssh_service.execute_command(
-            host, username, password, backup_cmd, timeout=3600
+            target_ssh_host, target_ssh_username, target_ssh_password, backup_cmd, timeout=3600
         )
 
         stdout = (backup_result.get("stdout") or "").strip()
@@ -282,26 +478,210 @@ class RecoveryService:
         *,
         db_sys_password: str,
         db_jdbc_service: str,
+        db_ssh_host: Optional[str] = None,
+        db_ssh_username: Optional[str] = None,
+        db_ssh_password: Optional[str] = None,
+        backup_dump_dir: str = "/u01/backup",
     ) -> dict:
-        """Run DB schema restore: restore_ofs_schemas.sh system <DB_PASS> <SERVICE>"""
+        """Run DB schema restore using restore_ofs_schemas.sh from Git.
+
+        Follows the same flow as backup_db_schemas:
+        1. Read restore script from git repo
+        2. Patch env vars (DB_USER, DB_PASS, SERVICE, DUMPFILE) into the script
+        3. Commit/push patched script to git
+        4. Discover .dmp file on DB host from backup_dump_dir
+        5. Copy patched script to DB host
+        6. Run via wrapper script with all env vars
+        """
+        import re as _re
+        import os as _os
+
         logs = ["[RESTORE] Starting DB schema restore..."]
         repo_dir = Config.REPO_DIR
         backup_dir = f"{repo_dir}/backup_Restore"
 
-        # Ensure scripts exist
+        # Ensure scripts exist on the repo/app host first
         scripts_result = await self.ensure_backup_restore_scripts(host, username, password)
         logs.extend(scripts_result.get("logs", []))
         if not scripts_result.get("success"):
-            return {"success": False, "logs": logs, "error": "Restore scripts not available"}
+            return {"success": False, "logs": logs, "error": "Restore scripts not available on repo host"}
 
-        # Run restore script: ./restore_ofs_schemas.sh system <DB_PASS> <SERVICE>
-        restore_cmd = (
-            f"cd {backup_dir} && "
-            f"./restore_ofs_schemas.sh system {shell_escape(db_sys_password)} {shell_escape(db_jdbc_service)}"
+        # Determine where to execute the restore: prefer explicit db_ssh_host
+        target_ssh_host = db_ssh_host or host
+        target_ssh_username = db_ssh_username or username
+        target_ssh_password = db_ssh_password or password
+
+        # ------------------------------------------------------------------
+        # Step 1: Discover the .dmp file on the DB server
+        # ------------------------------------------------------------------
+        logs.append(f"[RESTORE] Looking for .dmp dump file in {backup_dump_dir} on DB host {target_ssh_host} ...")
+        find_dmp_cmd = f"ls -1t {backup_dump_dir}/*.dmp 2>/dev/null | head -1"
+        find_result = await self.ssh_service.execute_command(
+            target_ssh_host, target_ssh_username, target_ssh_password, find_dmp_cmd
         )
-        logs.append(f"[RESTORE] Running: cd {backup_dir} && ./restore_ofs_schemas.sh system ****** {db_jdbc_service}")
+        dmp_path = (find_result.get("stdout") or "").strip()
+
+        if not dmp_path:
+            logs.append(f"[RESTORE] ERROR: No .dmp file found in {backup_dump_dir} on DB host {target_ssh_host}")
+            return {"success": False, "logs": logs, "error": f"No .dmp dump file found in {backup_dump_dir}"}
+
+        dmp_filename = _os.path.basename(dmp_path)
+        logs.append(f"[RESTORE] Found dump file: {dmp_filename} (full path: {dmp_path})")
+
+        # ------------------------------------------------------------------
+        # Step 2: Patch restore script in git repo (same as backup flow)
+        # ------------------------------------------------------------------
+        try:
+            read_repo_cmd = f"cat {backup_dir}/restore_ofs_schemas.sh"
+            read_repo_result = await self.ssh_service.execute_command(host, username, password, read_repo_cmd)
+            orig_script = read_repo_result.get("stdout") or ""
+            if not orig_script:
+                logs.append("[RESTORE] ERROR: Failed to read restore script from repo host")
+                return {"success": False, "logs": logs, "error": "Failed to read restore script from repo host"}
+
+            if "export DB_USER=" not in orig_script or "export DB_PASS=" not in orig_script:
+                # Exports not present yet — prepend them
+                patched_script = (
+                    f"export DB_USER=system\n"
+                    f"export DB_PASS={db_sys_password}\n"
+                    f"export SERVICE={db_jdbc_service}\n"
+                    f"export DUMPFILE={dmp_filename}\n"
+                    + orig_script
+                )
+                write_repo_cmd = f"cat > {backup_dir}/restore_ofs_schemas.sh <<'EOFSCRIPT'\n{patched_script}\nEOFSCRIPT"
+                await self.ssh_service.execute_command(host, username, password, write_repo_cmd)
+                await self.ssh_service.execute_command(host, username, password, f"chmod +x {backup_dir}/restore_ofs_schemas.sh")
+                logs.append("[RESTORE] Patched restore_ofs_schemas.sh in git repo with provided DB values (password masked)")
+            else:
+                # Update existing exports in place
+                updated_script = orig_script
+                updated_script = _re.sub(r'export DB_PASS=.*', f'export DB_PASS={db_sys_password}', updated_script)
+                updated_script = _re.sub(r'export SERVICE=.*', f'export SERVICE={db_jdbc_service}', updated_script)
+                updated_script = _re.sub(r'export DUMPFILE=.*', f'export DUMPFILE={dmp_filename}', updated_script)
+
+                write_repo_cmd = f"cat > {backup_dir}/restore_ofs_schemas.sh <<'EOFSCRIPT'\n{updated_script}\nEOFSCRIPT"
+                await self.ssh_service.execute_command(host, username, password, write_repo_cmd)
+                await self.ssh_service.execute_command(host, username, password, f"chmod +x {backup_dir}/restore_ofs_schemas.sh")
+                logs.append("[RESTORE] Updated existing exports in restore_ofs_schemas.sh (password masked)")
+
+            # Commit and push the updated script into Git
+            try:
+                git_username = Config.GIT_USERNAME
+                git_password = Config.GIT_PASSWORD
+                git_url = Config.REPO_URL
+
+                if git_username and git_password and git_url:
+                    if "://" in git_url:
+                        protocol, rest = git_url.split("://", 1)
+                        escaped_password = git_password.replace('@', '%40').replace(':', '%3A')
+                        auth_url = f"{protocol}://{git_username}:{escaped_password}@{rest}"
+                    else:
+                        auth_url = git_url
+
+                    git_commit_cmds = (
+                        f"cd {repo_dir} && "
+                        f"git add {backup_dir}/restore_ofs_schemas.sh && "
+                        f"git commit -m 'Update restore_ofs_schemas.sh with DB export values for automated restore' || true && "
+                        f"git remote set-url origin '{auth_url}' && "
+                        f"git push origin main || true"
+                    )
+                else:
+                    git_commit_cmds = (
+                        f"cd {repo_dir} && git add {backup_dir}/restore_ofs_schemas.sh && "
+                        f"git commit -m 'Update restore_ofs_schemas.sh with DB export values for automated restore' || true && "
+                        f"git push || true"
+                    )
+
+                git_push_result = await self.ssh_service.execute_command(host, username, password, git_commit_cmds, timeout=120)
+                git_out = (git_push_result.get("stdout") or "").strip()
+                git_err = (git_push_result.get("stderr") or "").strip()
+                if git_out:
+                    logs.append(f"[RESTORE] Git push output: {git_out}")
+                if git_err and "fatal: could not read Username" not in git_err:
+                    logs.append(f"[RESTORE] Git push stderr: {git_err}")
+            except Exception as e:
+                logs.append(f"[RESTORE] WARNING: Failed to commit/push patched script to Git: {e}")
+        except Exception as exc:
+            logs.append(f"[RESTORE] WARNING: Failed to patch script in repo: {exc}")
+
+        # ------------------------------------------------------------------
+        # Step 3: Copy patched script to DB host
+        # ------------------------------------------------------------------
+        logs.append(f"[RESTORE] Preparing to run restore on DB host {target_ssh_host}")
+
+        # Re-read the (now patched) script from repo host
+        cat_cmd = f"cat {backup_dir}/restore_ofs_schemas.sh"
+        read_result = await self.ssh_service.execute_command(host, username, password, cat_cmd)
+        script_content = read_result.get("stdout") or ""
+        if not script_content:
+            logs.append("[RESTORE] ERROR: Failed to read patched restore script from repo host")
+            return {"success": False, "logs": logs, "error": "Failed to read patched restore script from repo host"}
+
+        remote_dir = "/tmp/backup_Restore"
+        mkdir_cmd = f"mkdir -p {remote_dir} && chmod 700 {remote_dir}"
+        await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, mkdir_cmd)
+
+        # Clean line endings
+        clean_script = script_content.replace('\r\n', '\n').replace('\r', '\n')
+        if 'set -euo pipefail' in clean_script:
+            clean_script = clean_script.replace('set -euo pipefail', 'set -eo pipefail')
+
+        write_cmd = f"cat > {remote_dir}/restore_ofs_schemas.sh <<'EOFSCRIPT'\n{clean_script}\nEOFSCRIPT"
+        await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, write_cmd)
+        await self.ssh_service.execute_command(
+            target_ssh_host, target_ssh_username, target_ssh_password,
+            f"chmod +x {remote_dir}/restore_ofs_schemas.sh",
+        )
+
+        # Verify SYSDBA connection on DB host before running restore
+        logs.append("[RESTORE] Verifying DB host local SYSDBA connection: sqlplus / as sysdba")
+        sqlplus_check = f"sqlplus / as sysdba <<'EOSQL'\nEXIT\nEOSQL"
+        await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, sqlplus_check)
+
+        # ------------------------------------------------------------------
+        # Step 4: Create wrapper script (same pattern as backup)
+        # ------------------------------------------------------------------
+        wrapper_script = f"""#!/bin/bash
+set -e
+echo "=== DB Schema Restore ==="
+echo "Setting environment variables for restore..."
+export DB_USER="system"
+export DB_PASS="{db_sys_password}"
+export SERVICE="{db_jdbc_service}"
+export DUMPFILE="{dmp_filename}"
+export ORACLE_SID="{db_jdbc_service}"
+echo "DB_USER=$DB_USER"
+echo "SERVICE=$SERVICE"
+echo "DUMPFILE=$DUMPFILE"
+echo "ORACLE_SID=$ORACLE_SID"
+echo "DB_PASS is set: $([ -n \"$DB_PASS\" ] && echo \"yes\" || echo \"no\")"
+cd {remote_dir}
+echo "Executing restore script..."
+# Set Oracle environment for local connections
+export ORACLE_HOME=/u01/app/oracle/product/19.0.0/dbhome_1
+export PATH=$ORACLE_HOME/bin:$PATH
+echo "Oracle environment set: ORACLE_HOME=$ORACLE_HOME"
+bash ./restore_ofs_schemas.sh
+"""
+
+        wrapper_cmd = f"cat > {remote_dir}/run_restore.sh <<'EOFWRAPPER'\n{wrapper_script}\nEOFWRAPPER"
+        await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, wrapper_cmd)
+        await self.ssh_service.execute_command(
+            target_ssh_host, target_ssh_username, target_ssh_password,
+            f"chmod +x {remote_dir}/run_restore.sh",
+        )
+
+        # ------------------------------------------------------------------
+        # Step 5: Execute via wrapper
+        # ------------------------------------------------------------------
+        restore_cmd = f"cd {remote_dir} && bash ./run_restore.sh"
+        logs.append(
+            f"[RESTORE] Running on DB host {target_ssh_host}: {restore_cmd} "
+            f"(DB_USER=system, SERVICE={db_jdbc_service}, DUMPFILE={dmp_filename})"
+        )
         restore_result = await self.ssh_service.execute_command(
-            host, username, password, restore_cmd, timeout=3600
+            target_ssh_host, target_ssh_username, target_ssh_password,
+            restore_cmd, timeout=3600,
         )
 
         stdout = (restore_result.get("stdout") or "").strip()
@@ -312,7 +692,9 @@ class RecoveryService:
                 logs.append(f"[RESTORE] {line}")
 
         if not restore_result.get("success"):
-            logs.append(f"[RESTORE] ERROR: DB schema restore failed: {stderr}")
+            if stderr:
+                logs.append(f"[RESTORE] STDERR: {stderr}")
+            logs.append("[RESTORE] ERROR: DB schema restore failed")
             return {"success": False, "logs": logs, "error": f"DB schema restore failed: {stderr}"}
 
         logs.append("[RESTORE] DB schema restore completed successfully")
@@ -326,6 +708,9 @@ class RecoveryService:
         *,
         db_sys_password: str,
         db_jdbc_service: str,
+        db_ssh_host: Optional[str] = None,
+        db_ssh_username: Optional[str] = None,
+        db_ssh_password: Optional[str] = None,
         ofsaa_dir: str = "/u01",
         backup_filename: str = "OFSAA_BKP.tar.gz",
     ) -> dict:
@@ -350,6 +735,9 @@ class RecoveryService:
             host, username, password,
             db_sys_password=db_sys_password,
             db_jdbc_service=db_jdbc_service,
+            db_ssh_host=db_ssh_host,
+            db_ssh_username=db_ssh_username,
+            db_ssh_password=db_ssh_password,
         )
         logs.extend(db_result.get("logs", []))
         if not db_result.get("success"):
@@ -362,45 +750,61 @@ class RecoveryService:
         logs.append("[RESTORE] ===== FULL RESTORE TO BD STATE COMPLETED SUCCESSFULLY =====")
         return {"success": True, "logs": logs, "failed_steps": []}
 
-    async def _kill_java_processes(self, host: str, username: str, password: str) -> dict:
-        """Kill all Java processes running under oracle user."""
+    async def _remove_ofsaa_directory(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        ofsaa_dir: str = "/u01",
+    ) -> dict:
+        """Remove the OFSAA directory during BD osc.sh failure cleanup."""
         logs = []
 
-        # First, check if any Java processes exist
-        check_cmd = "pgrep -u oracle java | wc -l"
+        # Check if OFSAA directory exists
+        check_cmd = f"test -d {ofsaa_dir}/OFSAA && echo 'EXISTS' || echo 'MISSING'"
         check_result = await self.ssh_service.execute_command(host, username, password, check_cmd)
-        out = (check_result.get("stdout") or "").strip()
-        count = int(out) if out.isdigit() else 0
+        stdout = (check_result.get("stdout") or "").strip()
 
-        if count == 0:
-            logs.append("[RECOVERY] No Java processes found for oracle user")
+        if "MISSING" in stdout:
+            logs.append(f"[RECOVERY] {ofsaa_dir}/OFSAA directory does not exist, skipping removal")
             return {"success": True, "logs": logs}
 
-        logs.append(f"[RECOVERY] Found {count} Java process(es) for oracle user. Killing...")
+        # Remove OFSAA directory
+        rm_cmd = f"rm -rf {ofsaa_dir}/OFSAA"
+        logs.append(f"[RECOVERY] Removing {ofsaa_dir}/OFSAA ...")
+        rm_result = await self.ssh_service.execute_command(host, username, password, rm_cmd, timeout=600)
 
-        # Get process list before killing
-        list_cmd = "pgrep -u oracle java | tr '\\n' ' '"
-        list_result = await self.ssh_service.execute_command(host, username, password, list_cmd)
-        pids = (list_result.get("stdout") or "").strip()
-        if pids:
-            logs.append(f"[RECOVERY] Processes to kill: {pids}")
+        if not rm_result.get("success"):
+            stderr = rm_result.get("stderr", "")
+            logs.append(f"[RECOVERY] ERROR: Failed to remove OFSAA directory: {stderr}")
+            return {"success": False, "logs": logs}
 
-        # Kill all Java processes for oracle user
-        kill_cmd = "pkill -9 -u oracle java"
-        kill_result = await self.ssh_service.execute_command(host, username, password, kill_cmd)
-
-        # Verify they're killed
-        verify_cmd = "pgrep -u oracle java | wc -l"
-        verify_result = await self.ssh_service.execute_command(host, username, password, verify_cmd)
-        verify_out = (verify_result.get("stdout") or "").strip()
-        remaining = int(verify_out) if verify_out.isdigit() else 0
-
-        if remaining == 0:
-            logs.append(f"[RECOVERY] Successfully killed {count} Java process(es)")
+        # Verify removal
+        verify_result = await self.ssh_service.execute_command(host, username, password, check_cmd)
+        if "MISSING" in (verify_result.get("stdout") or ""):
+            logs.append(f"[RECOVERY] {ofsaa_dir}/OFSAA directory removed successfully")
             return {"success": True, "logs": logs}
         else:
-            logs.append(f"[RECOVERY] ERROR: {remaining} Java process(es) still running after kill attempt")
+            logs.append(f"[RECOVERY] WARNING: {ofsaa_dir}/OFSAA may still exist after removal attempt")
             return {"success": False, "logs": logs}
+
+    async def _kill_java_processes(self, host: str, username: str, password: str) -> dict:
+        """Kill ALL Java processes on the server unconditionally."""
+        logs = []
+        import asyncio
+
+        logs.append("[RECOVERY] Killing ALL Java processes on the server...")
+
+        # Force kill all Java processes (any user) - no checks, just kill
+        kill_cmd = "pkill -9 -f java; killall -9 java 2>/dev/null; true"
+        await self.ssh_service.execute_command(host, username, password, kill_cmd)
+        await asyncio.sleep(2)
+
+        # Second round to catch stragglers
+        await self.ssh_service.execute_command(host, username, password, kill_cmd)
+
+        logs.append("[RECOVERY] All Java processes killed")
+        return {"success": True, "logs": logs}
 
     async def _drop_database_schema(
         self,
@@ -413,22 +817,31 @@ class RecoveryService:
         db_jdbc_port: int = 1521,
         db_jdbc_service: Optional[str] = None,
     ) -> dict:
-        """Drop all OFSAA users and tablespaces from Oracle database."""
+        """Drop all OFSAA users and tablespaces from Oracle database.
+
+        Connects via: sqlplus "sys/<db_sys_password>@<host>:<port>/<service> as sysdba"
+        Then runs DROP USER ... CASCADE and DROP TABLESPACE ... for all OFSAA objects.
+        """
         logs = []
 
-        # Build sqlplus connection string
-        if db_sys_password and db_jdbc_host and db_jdbc_service:
-            sqlplus_conn = self._sqlplus_conn_str(db_sys_password, db_jdbc_host, db_jdbc_port, db_jdbc_service)
-            logs.append(f"[RECOVERY] Using sqlplus connection: sys/******@{db_jdbc_host}:{db_jdbc_port}/{db_jdbc_service}")
-        else:
-            # Fallback to OS authentication
-            sqlplus_conn = '"/ as sysdba"'
-            logs.append("[RECOVERY] WARNING: No DB credentials provided, using OS authentication (/ as sysdba)")
+        # Validate required DB credentials
+        if not db_sys_password or not db_jdbc_service:
+            logs.append("[RECOVERY] ERROR: db_sys_password and db_jdbc_service are required for schema drop")
+            logs.append("[RECOVERY] Please provide these values in the UI form")
+            return {"success": False, "logs": logs}
 
-        # List of users to drop
+        jdbc_host = db_jdbc_host or host
+        conn_display = f"sys/******@{jdbc_host}:{db_jdbc_port}/{db_jdbc_service}"
+        logs.append(f"[RECOVERY] Connecting to sqlplus: {conn_display} as sysdba")
+
+        # Build the sqlplus connection command
+        # Format: sqlplus "sys/Welcome#123@192.168.0.165:1521/FLEXPDB1 as sysdba"
+        sqlplus_login = f"sys/{db_sys_password}@{jdbc_host}:{db_jdbc_port}/{db_jdbc_service} as sysdba"
+
+        # Users to drop
         users = ["OFSATOMIC", "OFSCONFIG"]
 
-        # List of tablespaces to drop
+        # Tablespaces to drop
         tablespaces = [
             "DATA_FATCA_TBSP", "COMM_DATA_TBSP", "IDX_KDD_TBSP", "DATA_MANTAS_TBSP",
             "DATA_MINER_TBSP", "IDX_MKT1_TBSP", "IDX_MKT2_TBSP", "DATA_CONF_TBSP",
@@ -444,17 +857,26 @@ class RecoveryService:
             "DATA_BUS3_TBSP", "IDX_FSDF1_TBSP",
         ]
 
-        # Build a single SQL script for all drops (more efficient than individual commands)
+        # Build SQL statements
         sql_lines = []
         for user in users:
             sql_lines.append(f"drop user {user} CASCADE;")
         for tbsp in tablespaces:
             sql_lines.append(f"DROP TABLESPACE {tbsp} INCLUDING CONTENTS AND DATAFILES CASCADE CONSTRAINTS;")
         sql_lines.append("EXIT;")
-        full_sql = "\\n".join(sql_lines)
+
+        # Use heredoc to avoid shell special character issues with password
+        # This runs: sqlplus "sys/pass@host:port/service as sysdba" <<'EOF'
+        # drop user OFSATOMIC CASCADE;
+        # ...
+        # EOF
+        sql_body = "\n".join(sql_lines)
+        cmd = f"sqlplus {shell_escape(sqlplus_login)} <<'EOSQL'\n{sql_body}\nEOSQL"
 
         logs.append("[RECOVERY] Dropping OFSAA users and tablespaces...")
-        cmd = f'echo -e "{full_sql}" | sqlplus -s {sqlplus_conn}'
+        logs.append(f"[RECOVERY] Users to drop: {', '.join(users)}")
+        logs.append(f"[RECOVERY] Tablespaces to drop: {len(tablespaces)} tablespaces")
+
         result = await self.ssh_service.execute_command(host, username, password, cmd, timeout=600)
 
         stdout = (result.get("stdout") or "").strip()

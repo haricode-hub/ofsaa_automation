@@ -100,8 +100,14 @@ interface InstallationData {
   installation_mode: 'fresh' | 'addon'
   install_bdpack: boolean
   install_ecm: boolean
+  // If true for ECM-only runs, take BD application + DB schema backup before ECM
+  ecm_take_bd_backup: boolean
   // Database SYS password for backup/restore/cleanup
   db_sys_password: string
+  // Optional SSH credentials to run DB-side scripts on the DB server
+  db_ssh_host: string
+  db_ssh_username: string
+  db_ssh_password: string
 }
 
 const APP_PACK_APPS: Array<{ id: string; name: string }> = [
@@ -223,7 +229,11 @@ export function InstallationForm() {
     installation_mode: 'fresh',
     install_bdpack: false,
     install_ecm: false,
-    db_sys_password: ''
+    ecm_take_bd_backup: false,
+    db_sys_password: '',
+    db_ssh_host: '',
+    db_ssh_username: '',
+    db_ssh_password: ''
   })
   const [isLoading, setIsLoading] = useState(false)
   const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle')
@@ -279,6 +289,14 @@ export function InstallationForm() {
     if (formData.install_ecm && (!ecmConfig || !isEcmValid)) {
       setStatus('error')
       setEcmSubmitError('ECM review is blocked by validation errors. Fix ECM fields before deployment.')
+      return
+    }
+
+    // Validate DB credentials when backup/restore is requested
+    const dbBackupRequested = formData.install_bdpack || (formData.install_ecm && formData.ecm_take_bd_backup)
+    if (dbBackupRequested && (!formData.db_sys_password || !formData.schema_jdbc_service)) {
+      setStatus('error')
+      setEcmSubmitError('DB SYS password and JDBC service are required for DB schema backup/restore. Please provide them.')
       return
     }
     setIsLoading(true)
@@ -370,7 +388,11 @@ export function InstallationForm() {
           installation_mode: formData.installation_mode,
           install_bdpack: formData.install_bdpack,
           install_ecm: formData.install_ecm,
+          ecm_take_bd_backup: formData.ecm_take_bd_backup,
           db_sys_password: formData.db_sys_password || null,
+          db_ssh_host: formData.db_ssh_host || null,
+          db_ssh_username: formData.db_ssh_username || null,
+          db_ssh_password: formData.db_ssh_password || null,
           // Flatten ECM config fields for backend
           ...(formData.install_ecm && ecmConfig ? {
             // Schema configuration fields
@@ -562,6 +584,16 @@ export function InstallationForm() {
                   <input type="checkbox" checked={formData.install_ecm} onChange={() => toggleModuleSelection('install_ecm')} />
                   ECM
                 </label>
+                {formData.install_ecm && !formData.install_bdpack && (
+                  <label className="inline-flex items-center gap-2 text-sm text-text-primary cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={formData.ecm_take_bd_backup}
+                      onChange={() => setFormData(prev => ({ ...prev, ecm_take_bd_backup: !prev.ecm_take_bd_backup }))}
+                    />
+                    Take BD app + DB backup before ECM
+                  </label>
+                )}
               </div>
             </div>
           </div>
@@ -646,6 +678,59 @@ export function InstallationForm() {
                   className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
                 />
                 <p className="text-[10px] text-text-muted">Used for sqlplus connections during backup, restore, and schema cleanup operations.</p>
+              </div>
+
+              {/* Show JDBC Service input when a DB backup is required (BD pack or ECM taking BD backup) */}
+              {((formData.install_bdpack) || (formData.install_ecm && formData.ecm_take_bd_backup)) && (
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">JDBC Service/SID</label>
+                  <input
+                    type="text"
+                    value={formData.schema_jdbc_service}
+                    onChange={handleInputChange('schema_jdbc_service')}
+                    placeholder="OFSAAPDB"
+                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  />
+                  <p className="text-[10px] text-text-muted">Provide the JDBC Service/SID used for DB schema backup/restore.</p>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-xs font-bold text-text-primary uppercase tracking-wider">
+                  <ServerIcon className="w-4 h-4" />
+                  DB SSH Host (optional)
+                </label>
+                <input
+                  type="text"
+                  value={formData.db_ssh_host}
+                  onChange={handleInputChange('db_ssh_host')}
+                  placeholder="192.168.3.50 (leave empty to run from app host)"
+                  className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                />
+                <p className="text-[10px] text-text-muted">If set, backup/restore scripts will be executed via SSH on this host.</p>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">DB SSH Username</label>
+                  <input
+                    type="text"
+                    value={formData.db_ssh_username}
+                    onChange={handleInputChange('db_ssh_username')}
+                    placeholder="oracle"
+                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">DB SSH Password</label>
+                  <input
+                    type="password"
+                    value={formData.db_ssh_password}
+                    onChange={handleInputChange('db_ssh_password')}
+                    placeholder="********"
+                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  />
+                </div>
               </div>
 
               <div className="border-t border-border pt-6 space-y-4">

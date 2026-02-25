@@ -306,7 +306,24 @@ class InstallerService:
                 logs.append(repo_result["stdout"])
             if repo_result.get("stderr"):
                 logs.append(repo_result["stderr"])
-            return {"success": False, "logs": logs, "error": repo_result.get("stderr") or "Failed to prepare repo"}
+            # Attempt a conservative fallback: fetch + hard reset to origin/<branch>
+            try:
+                fallback_cmd = (
+                    f"cd {repo_dir} && git fetch origin && "
+                    "BRANCH=$(git rev-parse --abbrev-ref HEAD) && "
+                    "git reset --hard origin/$BRANCH"
+                )
+                fallback_result = await self.ssh_service.execute_command(host, username, password, fallback_cmd, timeout=120)
+                if fallback_result.get("success"):
+                    logs.append("[INFO] Repo fallback reset to origin/<branch> succeeded")
+                else:
+                    if fallback_result.get("stdout"):
+                        logs.append(fallback_result.get("stdout"))
+                    if fallback_result.get("stderr"):
+                        logs.append(fallback_result.get("stderr"))
+                    return {"success": False, "logs": logs, "error": repo_result.get("stderr") or "Failed to prepare repo"}
+            except Exception:
+                return {"success": False, "logs": logs, "error": repo_result.get("stderr") or "Failed to prepare repo"}
         logs.append("[OK] Repo prepared for config file fetch")
         if fast_config_apply:
             logs.append("[INFO] Fast config apply mode enabled: skipped git pull")

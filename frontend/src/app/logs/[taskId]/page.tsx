@@ -29,7 +29,7 @@ export default function LogsPage() {
   const params = useParams()
   const router = useRouter()
   const taskId = String(params?.taskId || '')
-  const redirectDelaySec = 15
+  const redirectDelaySec = 120
   const [status, setStatus] = useState<StatusType>('connecting')
   const [currentStep, setCurrentStep] = useState<string>('Initializing connection')
   const [progress, setProgress] = useState<number>(0)

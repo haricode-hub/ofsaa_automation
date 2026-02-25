@@ -117,6 +117,15 @@ class SSHService:
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
+    async def command_exists(self, host: str, username: str, password: str, command: str) -> bool:
+        """Return True if `command` is available on the remote host's PATH."""
+        try:
+            check_cmd = f"command -v {command} >/dev/null 2>&1 && echo FOUND"
+            result = await self.execute_command(host, username, password, check_cmd)
+            return bool(result.get("success") and (result.get("stdout") or "").strip())
+        except Exception:
+            return False
+
     async def execute_interactive_command(
         self,
         host: str,
