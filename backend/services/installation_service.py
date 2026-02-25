@@ -249,10 +249,67 @@ class InstallationService:
         db_host: str,
         db_username: str,
         db_password: str,
+        *,
+        db_sys_password: Optional[str] = None,
+        db_jdbc_host: Optional[str] = None,
+        db_jdbc_port: int = 1521,
+        db_jdbc_service: Optional[str] = None,
     ) -> dict:
         """Execute cleanup after osc.sh failure: kill Java, drop schema, clear cache."""
         return await self.recovery.cleanup_after_osc_failure(
-            app_host, db_host, app_username, app_password, db_username, db_password
+            app_host, app_username, app_password,
+            db_host, db_username, db_password,
+            db_sys_password=db_sys_password,
+            db_jdbc_host=db_jdbc_host,
+            db_jdbc_port=db_jdbc_port,
+            db_jdbc_service=db_jdbc_service,
+        )
+
+    # ============== BACKUP / RESTORE METHODS ==============
+
+    async def ensure_backup_restore_scripts(self, host: str, username: str, password: str) -> dict:
+        """Ensure Git-controlled backup/restore scripts exist on target."""
+        return await self.recovery.ensure_backup_restore_scripts(host, username, password)
+
+    async def backup_application(self, host: str, username: str, password: str) -> dict:
+        """Create application tar backup."""
+        return await self.recovery.backup_application(host, username, password)
+
+    async def backup_db_schemas(
+        self, host: str, username: str, password: str,
+        *, db_sys_password: str, db_jdbc_service: str,
+    ) -> dict:
+        """Run DB schema backup using Git-controlled script."""
+        return await self.recovery.backup_db_schemas(
+            host, username, password,
+            db_sys_password=db_sys_password,
+            db_jdbc_service=db_jdbc_service,
+        )
+
+    async def restore_application(self, host: str, username: str, password: str) -> dict:
+        """Restore application from tar backup."""
+        return await self.recovery.restore_application(host, username, password)
+
+    async def restore_db_schemas(
+        self, host: str, username: str, password: str,
+        *, db_sys_password: str, db_jdbc_service: str,
+    ) -> dict:
+        """Restore DB schemas using Git-controlled script."""
+        return await self.recovery.restore_db_schemas(
+            host, username, password,
+            db_sys_password=db_sys_password,
+            db_jdbc_service=db_jdbc_service,
+        )
+
+    async def full_restore_to_bd_state(
+        self, host: str, username: str, password: str,
+        *, db_sys_password: str, db_jdbc_service: str,
+    ) -> dict:
+        """Full restore to BD state: rm OFSAA -> restore tar -> restore DB schemas."""
+        return await self.recovery.full_restore_to_bd_state(
+            host, username, password,
+            db_sys_password=db_sys_password,
+            db_jdbc_service=db_jdbc_service,
         )
 
     # ============== ECM MODULE METHODS ==============

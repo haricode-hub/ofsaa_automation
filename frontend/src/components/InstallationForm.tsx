@@ -100,6 +100,8 @@ interface InstallationData {
   installation_mode: 'fresh' | 'addon'
   install_bdpack: boolean
   install_ecm: boolean
+  // Database SYS password for backup/restore/cleanup
+  db_sys_password: string
 }
 
 const APP_PACK_APPS: Array<{ id: string; name: string }> = [
@@ -220,7 +222,8 @@ export function InstallationForm() {
     aai_sftp_user_id: 'oracle',
     installation_mode: 'fresh',
     install_bdpack: false,
-    install_ecm: false
+    install_ecm: false,
+    db_sys_password: ''
   })
   const [isLoading, setIsLoading] = useState(false)
   const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle')
@@ -367,6 +370,7 @@ export function InstallationForm() {
           installation_mode: formData.installation_mode,
           install_bdpack: formData.install_bdpack,
           install_ecm: formData.install_ecm,
+          db_sys_password: formData.db_sys_password || null,
           // Flatten ECM config fields for backend
           ...(formData.install_ecm && ecmConfig ? {
             // Schema configuration fields
@@ -627,6 +631,21 @@ export function InstallationForm() {
                   className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
                   required
                 />
+              </div>
+
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-xs font-bold text-text-primary uppercase tracking-wider">
+                  <KeyIcon className="w-4 h-4" />
+                  DB SYS Password
+                </label>
+                <input
+                  type="password"
+                  value={formData.db_sys_password}
+                  onChange={handleInputChange('db_sys_password')}
+                  placeholder="Oracle SYS password for backup/restore"
+                  className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                />
+                <p className="text-[10px] text-text-muted">Used for sqlplus connections during backup, restore, and schema cleanup operations.</p>
               </div>
 
               <div className="border-t border-border pt-6 space-y-4">

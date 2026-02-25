@@ -8,7 +8,7 @@ This repository implements **OFSAA Installation Automation** with a stable **BD 
 ## Architecture Overview
 
 ### Technology Stack
-- **Backend**: FastAPI (Python 3.x) with async support
+- **Backend**: FastAPI (Python 3.x) with async support, managed by **uv** (sync/run)
 - **Frontend**: Next.js 14 + React + TypeScript + Tailwind CSS
 - **Communication**: WebSocket for real-time logs and SSH via Paramiko
 - **State Management**: In-memory task tracking with WebSocket broadcast
@@ -129,18 +129,34 @@ frontend/
 | DELETE | `/api/installation/checkpoint` | Clear BD Pack checkpoint |
 | WS | `/ws/{task_id}` | Real-time logs/status/prompts |
 
-### Checkpoint/Resume System
-The system supports checkpointing after BD Pack completion for ECM resume capability:
+### Checkpoint / Backup-Restore System
+The system uses a **backup/restore** approach (not simple checkpointing):
 
-**Workflow:**
-1. If both BD Pack and ECM selected → BD Pack runs first, checkpoint saved after completion
-2. ECM runs after BD Pack completes
-3. If ECM fails → User can resume from checkpoint (BD Pack skipped, ECM restarts)
-4. After successful ECM completion → Checkpoint auto-cleared
+**Workflow (BD + ECM):**
+1. BD Pack installs (steps 1–10)
+2. After BD success → **automatic backup**: app tar + DB schema backup
+3. ECM installs (steps 1–4)
+4. If ECM fails → **automatic restore to BD state**: rm OFSAA → tar extract → DB restore
+5. User retries ECM only with `resume_from_checkpoint: true`
+6. After successful ECM → checkpoint/backup auto-cleared
+
+**BD osc.sh Failure:**
+- Kill Java processes
+- Drop schemas/tablespaces via `sqlplus "sys/<db_sys_password>@<host>:<port>/<service> as sysdba"`
+- Clear system cache
+- Full BD reinstall required
+
+**Backup Scripts (Git-Controlled):**
+- Located in `<REPO_DIR>/backup_Restore/`
+- `backup_ofs_schemas.sh system <DB_PASS> <SERVICE>` — DB backup
+- `restore_ofs_schemas.sh system <DB_PASS> <SERVICE>` — DB restore
+- Scripts are never created/edited locally — always pulled from Git
+- DB password and service come from UI fields
 
 **Request Fields:**
 ```python
-resume_from_checkpoint: bool = False  # Set to True to skip BD Pack and resume ECM
+resume_from_checkpoint: bool = False  # Skip BD Pack, retry ECM from BD backup
+db_sys_password: Optional[str]        # Oracle SYS password for sqlplus connections
 ```
 
 **Example - Resume ECM after failure:**
@@ -152,6 +168,8 @@ resume_from_checkpoint: bool = False  # Set to True to skip BD Pack and resume E
   "install_bdpack": true,
   "install_ecm": true,
   "resume_from_checkpoint": true,
+  "db_sys_password": "Welcome#123",
+  "schema_jdbc_service": "FLEXPDB1",
   "ecm_schema_jdbc_host": "db.example.com"
 }
 ```
@@ -162,6 +180,9 @@ resume_from_checkpoint: bool = False  # Set to True to skip BD Pack and resume E
 host: str                       # Target server IP
 username: str                   # SSH username (typically root)
 password: str                   # SSH password
+
+# Database SYS password (for backup/restore/cleanup sqlplus operations)
+db_sys_password: Optional[str]  # Oracle SYS password from UI
 
 # Profile variables
 fic_home: Optional[str]         # FIC_HOME path
@@ -333,7 +354,7 @@ if request.install_sanc:
 
 ---
 
-## Safety Checklist (ECM Implementation Complete)
+## Safety Checklist (BD + ECM + Backup/Restore)
 
 - [x] BD Pack-only installation works with existing payload
 - [x] `install_ecm: false` does not trigger any ECM code (guarded by `if request.install_ecm:`)
@@ -343,6 +364,12 @@ if request.install_sanc:
 - [x] WebSocket logs properly show ECM steps when enabled
 - [x] Rollback endpoint still works for both modules
 - [x] No changes to core infrastructure (SSH, WebSocket)
+- [x] Automatic backup after BD success (app tar + DB schema backup)
+- [x] ECM failure triggers automatic restore to BD state
+- [x] sqlplus uses `sys/<db_sys_password>@host:port/service as sysdba` (not OS auth)
+- [x] Backup scripts pulled from Git (backup_Restore folder)
+- [x] `db_sys_password` field added to UI and schema
+- [x] Backend uses `uv sync` + `uv run python -m uvicorn` for setup/start
 
 ---
 
@@ -415,6 +442,11 @@ async def run_module_script(self, host, username, password, on_output_callback, 
 - Test ECM changes with `install_bdpack=True, install_ecm=True` (ECM runs after BD Pack)
 - ECM module is fully implemented in backend
 - Installation mode (fresh/addon) may affect ECM flow differently
+- Backend starts via `uv sync && uv run python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload`
+- All deps are in `pyproject.toml` — `requirements.txt` is kept for reference only
+- Backup/restore scripts come from Git repo `backup_Restore/` folder — never create locally
+- `db_sys_password` drives all sqlplus connections (backup, restore, schema drop)
+- ECM failure handling: auto-restore BD state, then user retries ECM with `resume_from_checkpoint: true`
 
 ---
 

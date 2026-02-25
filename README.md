@@ -7,16 +7,14 @@ Complete automation system for Oracle Financial Services products (OFSAA, Flexcu
 ### 1. Start Backend (Terminal 1)
 ```bash
 cd backend
-uv venv                          # Create virtual environment
-.venv\Scripts\activate          # Activate (Windows)
-uv pip install -r requirements.txt
-python main.py                  # Starts on http://localhost:8000
+uv sync                          # Install dependencies from pyproject.toml
+uv run python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 **Or use the start script:**
 ```bash
 cd backend
-start.bat
+start.bat                       # Runs uv sync + uv run uvicorn automatically
 ```
 
 ### 2. Start Frontend (Terminal 2)  
@@ -102,29 +100,91 @@ The installation form includes fields for customizing environment variables:
 - **JAVA_BIN**: Java binaries path (auto-detected if left empty)
 - **ORACLE_SID**: Oracle System Identifier (default: `ORCL`)
 
+## 🛡️ Backup, Restore & Failure Handling
+
+### Backup/Restore Scripts (Git-Controlled)
+The `backup_Restore` folder is maintained in Git (same repository as Installer Kit):
+- `backup_ofs_schemas.sh` — DB schema backup
+- `restore_ofs_schemas.sh` — DB schema restore
+- Scripts are **never created/edited locally** — always pulled from Git
+- DB password and SERVICE come from the UI (`db_sys_password`, `schema_jdbc_service`)
+
+### Installation Scenarios
+
+| Scenario | What Happens |
+|----------|--------------|
+| **BD Only** | BD installs → auto app backup + DB backup |
+| **BD + ECM** | BD installs → auto backup → ECM installs |
+| **ECM fails** | Auto-restore to BD state → retry ECM only |
+| **BD osc.sh fails** | Kill Java → drop schemas/tablespaces → clear cache → retry BD |
+
+### Automatic Backup (After BD Success)
+After BD Pack completes, the system automatically:
+1. Verifies backup/restore scripts exist in Git repo
+2. Creates application backup: `tar -cvf OFSAA_BKP.tar.gz OFSAA`
+3. Creates DB schema backup: `./backup_ofs_schemas.sh system <DB_PASS> <SERVICE>`
+
+### ECM Failure → Restore to BD State
+If ECM osc.sh or setup.sh fails, the system automatically:
+1. Removes existing OFSAA: `rm -rf OFSAA`
+2. Restores application: `tar -xvf OFSAA_BKP.tar.gz`
+3. Restores DB schemas: `./restore_ofs_schemas.sh system <DB_PASS> <SERVICE>`
+4. User retries ECM only with `resume_from_checkpoint: true`
+
+### BD osc.sh Failure → Cleanup
+When BD osc.sh fails, automatic cleanup:
+- Kills Java processes
+- Drops OFSAA users/tablespaces via `sqlplus "sys/<DB_PASS>@<host>:<port>/<service> as sysdba"`
+- Clears system cache
+- Full BD reinstall required
+
+### Key Rules
+- BD backup = restore point for ECM
+- ECM failure → restore BD → retry ECM only (BD reinstall NOT required)
+- DB SYS password from UI (`db_sys_password` field) — never hardcoded
+- Git is the single source of truth for backup/restore scripts
+
+---
+
 ## 🏗️ Project Structure
 
 ```
 installation_workspace/
 ├── backend/                    # FastAPI Python backend
 │   ├── main.py                    # Application entry point
-│   ├── routers/                   # API route handlers
-│   │   └── installation.py           # Installation endpoints
-│   ├── services/                  # Business logic
-│   │   ├── ssh_service.py             # SSH connection management
-│   │   └── installation_service.py   # Installation automation
-│   ├── requirements.txt           # Python dependencies
-│   ├── pyproject.toml            # UV project configuration
-│   └── start.bat                 # Windows start script
+│   ├── pyproject.toml            # UV project config (deps, scripts)
+│   ├── start.bat                 # Windows start: uv sync + uv run uvicorn
+│   ├── .env                      # Environment variables
+│   ├── routers/
+│   │   └── installation.py           # API routes, backup/restore orchestration
+│   ├── schemas/
+│   │   └── installation.py           # Pydantic models (InstallationRequest)
+│   └── services/
+│       ├── installation_service.py   # Service composition
+│       ├── installer.py              # Git ops, XML patching, scripts
+│       ├── recovery_service.py       # Backup, restore, cleanup
+│       ├── ssh_service.py            # SSH connection management
+│       ├── validation.py             # Directory/file checks
+│       ├── java.py                   # Java installation
+│       ├── packages.py               # Package installation (ksh, git)
+│       ├── profile.py                # .profile creation/updates
+│       ├── mount_point.py            # /u01 mount point setup
+│       ├── oracle_client.py          # Oracle client detection
+│       ├── oracle_user_setup.py      # Oracle user/group creation
+│       └── utils.py                  # Shell escape, helpers
 │
 ├── frontend/                   # Next.js React frontend  
 │   ├── src/
 │   │   ├── app/                       # Next.js App Router
 │   │   │   ├── page.tsx                   # Main page
 │   │   │   ├── layout.tsx                 # Root layout
-│   │   │   └── globals.css                # Global styles
-│   │   └── components/                # React components
-│   │       ├── InstallationForm.tsx      # Main form
+│   │   │   ├── globals.css                # Global styles
+│   │   │   └── logs/[taskId]/page.tsx     # Real-time log viewer
+│   │   └── components/
+│   │       ├── InstallationForm.tsx      # Main form (BD + ECM)
+│   │       ├── EcmPackForm.tsx           # ECM config fields
+│   │       ├── EcmPackPage.tsx           # ECM section wrapper
+│   │       ├── EcmPackPreview.tsx        # ECM review component
 │   │       └── BackgroundMatrix.tsx      # Animated background
 │   ├── package.json              # Node.js dependencies
 │   ├── tailwind.config.js        # Tailwind CSS config
@@ -137,7 +197,7 @@ installation_workspace/
 
 ### Backend
 - Python 3.8+
-- UV package manager (`pip install uv`)
+- UV package manager (see https://docs.astral.sh/uv/)
 - SSH client (OpenSSH for Windows, or sshpass for Linux)
 
 ### Frontend  
@@ -154,10 +214,8 @@ installation_workspace/
 ### Backend Development
 ```bash
 cd backend
-uv venv
-.venv\Scripts\activate
-uv pip install -r requirements.txt
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+uv sync                          # Install/sync all deps from pyproject.toml
+uv run python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ### Frontend Development  

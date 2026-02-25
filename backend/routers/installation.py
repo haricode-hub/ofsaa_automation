@@ -31,8 +31,10 @@ latest_request_cache: dict = {
 }
 
 # Checkpoint cache for BD Pack completion (used to resume ECM without re-running BD Pack)
+# Now repurposed: tracks BD backup state for backup/restore approach
 bd_pack_checkpoint: dict = {
     "completed": False,
+    "backup_taken": False,
     "request": None,
     "task_id": None,
     "host": None,
@@ -118,7 +120,7 @@ async def rollback():
 
 @router.get("/checkpoint")
 async def get_checkpoint():
-    """Get BD Pack checkpoint status. If BD Pack completed, ECM can resume from here."""
+    """Get BD Pack backup status. If BD Pack completed and backup taken, ECM can resume from here."""
     if not bd_pack_checkpoint.get("completed"):
         raise HTTPException(
             status_code=404,
@@ -128,11 +130,12 @@ async def get_checkpoint():
     return {
         "success": True,
         "bd_pack_completed": True,
+        "backup_taken": bd_pack_checkpoint.get("backup_taken", False),
         "host": bd_pack_checkpoint.get("host"),
         "task_id": bd_pack_checkpoint.get("task_id"),
         "timestamp": bd_pack_checkpoint.get("timestamp"),
         "cached_request": bd_pack_checkpoint.get("request"),
-        "message": "BD Pack completed. You can resume ECM installation using resume_from_checkpoint=true."
+        "message": "BD Pack completed with backup. You can resume ECM installation using resume_from_checkpoint=true."
     }
 
 
@@ -140,6 +143,7 @@ async def get_checkpoint():
 async def clear_checkpoint():
     """Clear the BD Pack checkpoint (use after full installation completes or to start fresh)."""
     bd_pack_checkpoint["completed"] = False
+    bd_pack_checkpoint["backup_taken"] = False
     bd_pack_checkpoint["request"] = None
     bd_pack_checkpoint["task_id"] = None
     bd_pack_checkpoint["host"] = None
@@ -168,6 +172,45 @@ async def update_status(task_id: str, status: Optional[str] = None, step: Option
     if progress is not None:
         task.progress = progress
     await websocket_manager.send_status(task_id, task.status, task.current_step, task.progress)
+
+
+async def _restore_bd_on_ecm_failure(
+    task_id: str,
+    request: InstallationRequest,
+    installation_service: InstallationService,
+    trace,
+) -> None:
+    """Restore to BD state after ECM failure: rm OFSAA -> restore tar -> restore DB schemas.
+    This is called when ECM osc.sh or setup.sh fails.
+    BD backup acts as the restore point. BD reinstall is NOT required."""
+    await append_output(task_id, "\n[RECOVERY] ==================== ECM FAILURE - RESTORING BD STATE ====================")
+    await update_status(task_id, "running", "Restoring to BD state after ECM failure", 0)
+
+    db_sys_pass = request.db_sys_password
+    db_service = request.schema_jdbc_service
+
+    if not db_sys_pass or not db_service:
+        await append_output(task_id, "[RECOVERY] WARNING: db_sys_password or schema_jdbc_service not provided.")
+        await append_output(task_id, "[RECOVERY] Cannot auto-restore DB schemas. Manual restore required:")
+        await append_output(task_id, "[RECOVERY]   cd backup_Restore && ./restore_ofs_schemas.sh system <DB_PASS> <SERVICE>")
+
+    # Full restore: rm -rf OFSAA -> tar extract -> restore DB schemas
+    restore_result = await installation_service.full_restore_to_bd_state(
+        request.host, request.username, request.password,
+        db_sys_password=db_sys_pass or "",
+        db_jdbc_service=db_service or "",
+    )
+    await append_output(task_id, "\n".join(restore_result.get("logs", [])))
+
+    if restore_result.get("success"):
+        await append_output(task_id, "[RECOVERY] BD state restored successfully. You can retry ECM installation.")
+        await append_output(task_id, "[RECOVERY] Use resume_from_checkpoint=true to skip BD Pack and retry ECM only.")
+    else:
+        failed = restore_result.get("failed_steps", [])
+        await append_output(task_id, f"[RECOVERY] WARNING: Some restore steps failed: {', '.join(failed)}")
+        await append_output(task_id, "[RECOVERY] Please manually complete the failed steps before retrying ECM.")
+
+    await trace("BD state restore process completed")
 
 
 async def run_installation_process(task_id: str, request: InstallationRequest):
@@ -225,13 +268,15 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
         await append_output(task_id, "[OK] SSH connection established")
         await trace("SSH connection established; starting installation workflow")
 
-        # Validate resume_from_checkpoint
+        # Validate resume_from_checkpoint (resume ECM from BD backup)
         if request.resume_from_checkpoint:
             if not bd_pack_checkpoint.get("completed"):
-                await handle_failure("Cannot resume: No BD Pack checkpoint found. Run BD Pack first or disable resume_from_checkpoint.")
+                await handle_failure("Cannot resume: No BD Pack backup found. Run BD Pack first or disable resume_from_checkpoint.")
                 return
+            if not bd_pack_checkpoint.get("backup_taken"):
+                await append_output(task_id, "[WARN] BD Pack completed but backup was not taken. ECM restore capability may be limited.")
             if bd_pack_checkpoint.get("host") != request.host:
-                await append_output(task_id, f"[WARN] Checkpoint was for host {bd_pack_checkpoint.get('host')}, current host is {request.host}")
+                await append_output(task_id, f"[WARN] BD backup was for host {bd_pack_checkpoint.get('host')}, current host is {request.host}")
 
         # Define callbacks for interactive commands (available for both BD Pack and ECM)
         async def output_callback(text: str):
@@ -481,6 +526,10 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                     db_host=request.schema_jdbc_host or request.host,
                     db_username=request.username,
                     db_password=request.password,
+                    db_sys_password=request.db_sys_password,
+                    db_jdbc_host=request.schema_jdbc_host or request.host,
+                    db_jdbc_port=request.schema_jdbc_port or 1521,
+                    db_jdbc_service=request.schema_jdbc_service,
                 )
                 await append_output(task_id, "\n".join(cleanup_result.get("logs", [])))
                 if cleanup_result.get("failed_steps"):
@@ -511,19 +560,67 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await trace("setup.sh SILENT step completed")
             await append_output(task_id, "[OK] BD Pack installation completed")
             
-            # Save BD Pack checkpoint for ECM resume capability
-            if request.install_ecm:
-                bd_pack_checkpoint["completed"] = True
-                bd_pack_checkpoint["request"] = request.dict()
-                bd_pack_checkpoint["task_id"] = task_id
-                bd_pack_checkpoint["host"] = request.host
-                bd_pack_checkpoint["timestamp"] = datetime.now().isoformat()
-                await append_output(task_id, "[CHECKPOINT] BD Pack checkpoint saved. ECM can resume from here if interrupted.")
+            # Save BD Pack checkpoint
+            bd_pack_checkpoint["completed"] = True
+            bd_pack_checkpoint["request"] = request.dict()
+            bd_pack_checkpoint["task_id"] = task_id
+            bd_pack_checkpoint["host"] = request.host
+            bd_pack_checkpoint["timestamp"] = datetime.now().isoformat()
+
+            # ===== AUTOMATIC BACKUP AFTER BD PACK SUCCESS =====
+            # Always take backup after BD success (required for ECM restore capability)
+            await append_output(task_id, "\n[INFO] ==================== BD PACK BACKUP ====================")
+            
+            # Ensure backup/restore scripts from Git repo are available
+            await update_status(task_id, "running", "Verifying backup/restore scripts", 76)
+            scripts_result = await installation_service.ensure_backup_restore_scripts(
+                request.host, request.username, request.password
+            )
+            await append_output(task_id, "\n".join(scripts_result.get("logs", [])))
+            if not scripts_result.get("success"):
+                await append_output(task_id, "[WARN] Backup scripts not found in Git repo. Backup may fail for DB schemas.")
+
+            # Application Backup: tar -cvf OFSAA_BKP.tar.gz OFSAA
+            await update_status(task_id, "running", "Taking application backup (tar)", 77)
+            await trace("Starting application backup after BD Pack success")
+            app_backup_result = await installation_service.backup_application(
+                request.host, request.username, request.password
+            )
+            await append_output(task_id, "\n".join(app_backup_result.get("logs", [])))
+            if not app_backup_result.get("success"):
+                await append_output(task_id, "[WARN] Application backup failed. ECM restore capability may be limited.")
+            else:
+                await trace("Application backup completed")
+
+            # DB Schema Backup: backup_ofs_schemas.sh system <DB_PASS> <SERVICE>
+            db_sys_pass = request.db_sys_password
+            db_service = request.schema_jdbc_service
+            if db_sys_pass and db_service:
+                await update_status(task_id, "running", "Taking DB schema backup", 79)
+                await trace("Starting DB schema backup after BD Pack success")
+                db_backup_result = await installation_service.backup_db_schemas(
+                    request.host, request.username, request.password,
+                    db_sys_password=db_sys_pass,
+                    db_jdbc_service=db_service,
+                )
+                await append_output(task_id, "\n".join(db_backup_result.get("logs", [])))
+                if not db_backup_result.get("success"):
+                    await append_output(task_id, "[WARN] DB schema backup failed. ECM restore capability may be limited.")
+                else:
+                    bd_pack_checkpoint["backup_taken"] = True
+                    await trace("DB schema backup completed")
+            else:
+                await append_output(task_id, "[WARN] db_sys_password or schema_jdbc_service not provided. Skipping DB schema backup.")
+
+            await append_output(task_id, "[INFO] BD Pack backup phase complete")
+            if bd_pack_checkpoint.get("backup_taken"):
+                await append_output(task_id, "[CHECKPOINT] BD Pack backup saved. ECM can be restored to this point if it fails.")
         else:
-            # Check if we're resuming from checkpoint or just skipping BD Pack
+            # Check if we're resuming from BD backup or just skipping BD Pack
             if request.resume_from_checkpoint and bd_pack_checkpoint.get("completed"):
-                await append_output(task_id, "[INFO] Resuming from BD Pack checkpoint - skipping BD Pack installation")
-                await trace("Resuming from BD Pack checkpoint")
+                await append_output(task_id, "[INFO] Resuming from BD Pack backup - skipping BD Pack installation")
+                await append_output(task_id, "[INFO] BD Pack will NOT be reinstalled. Starting ECM from BD backup restore point.")
+                await trace("Resuming from BD Pack backup - BD reinstall skipped")
             else:
                 await append_output(task_id, "[INFO] Skipping BD Pack installation as per request")
                 await trace("Skipping BD Pack installation")
@@ -645,7 +742,10 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             )
             await append_output(task_id, "\n".join(ecm_osc_result.get("logs", [])))
             if not ecm_osc_result.get("success"):
-                await handle_failure("ECM osc.sh execution failed", ecm_osc_result.get("error"))
+                # ECM osc.sh failed → Restore to BD state
+                await append_output(task_id, "\n[RECOVERY] ECM osc.sh failed. Initiating restore to BD state...")
+                await _restore_bd_on_ecm_failure(task_id, request, installation_service, trace)
+                await handle_failure("ECM osc.sh execution failed - restored to BD state", ecm_osc_result.get("error"))
                 return
             await trace("ECM osc.sh step completed")
 
@@ -661,7 +761,10 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             )
             await append_output(task_id, "\n".join(ecm_setup_result.get("logs", [])))
             if not ecm_setup_result.get("success"):
-                await handle_failure("ECM setup.sh SILENT execution failed", ecm_setup_result.get("error"))
+                # ECM setup.sh failed → Restore to BD state
+                await append_output(task_id, "\n[RECOVERY] ECM setup.sh failed. Initiating restore to BD state...")
+                await _restore_bd_on_ecm_failure(task_id, request, installation_service, trace)
+                await handle_failure("ECM setup.sh SILENT execution failed - restored to BD state", ecm_setup_result.get("error"))
                 return
             await trace("ECM setup.sh SILENT step completed")
             await append_output(task_id, "[OK] ECM Module installation completed")
@@ -669,6 +772,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             # Clear BD Pack checkpoint after successful ECM completion
             if bd_pack_checkpoint.get("completed"):
                 bd_pack_checkpoint["completed"] = False
+                bd_pack_checkpoint["backup_taken"] = False
                 bd_pack_checkpoint["request"] = None
                 bd_pack_checkpoint["task_id"] = None
                 bd_pack_checkpoint["host"] = None
