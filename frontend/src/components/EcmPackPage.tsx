@@ -8,6 +8,7 @@ interface EcmPackPageProps {
   host: string
   configSchemaName: string
   atomicSchemaName: string
+  schemaDatafileDir?: string
   onChange: (data: EcmFormData, isValid: boolean) => void
   aaiConfig?: {
     aai_webappservertype: string
@@ -38,12 +39,40 @@ interface EcmPackPageProps {
   }
 }
 
-export function EcmPackPage({ enabled, host, configSchemaName, atomicSchemaName, onChange, aaiConfig }: EcmPackPageProps) {
+export function EcmPackPage({ enabled, host, configSchemaName, atomicSchemaName, schemaDatafileDir, onChange, aaiConfig }: EcmPackPageProps) {
   const [data, setData] = useState<EcmFormData>(() => createDefaultEcmData(configSchemaName, atomicSchemaName, host, aaiConfig))
 
+  // Sync key fields from BD Pack → ECM whenever they change
   useEffect(() => {
-    setData((prev) => ({ ...prev, hostname: host || prev.hostname, configSchemaName, atomicSchemaName }))
-  }, [host, configSchemaName, atomicSchemaName])
+    setData((prev) => {
+      const next = { ...prev, hostname: host || prev.hostname, configSchemaName, atomicSchemaName }
+
+      // DB IP
+      if (aaiConfig?.aai_dbserver_ip) {
+        next.aai_dbserver_ip = aaiConfig.aai_dbserver_ip
+        next.jdbc_host = aaiConfig.aai_dbserver_ip
+      }
+      // Oracle Service
+      if (aaiConfig?.aai_oracle_service_name) {
+        next.aai_oracle_service_name = aaiConfig.aai_oracle_service_name
+        next.jdbc_service = aaiConfig.aai_oracle_service_name
+      }
+      // App / Web server IP
+      if (aaiConfig?.aai_web_server_ip) {
+        next.aai_web_server_ip = aaiConfig.aai_web_server_ip
+      }
+      // SMTP host mirrors the app host
+      if (host) {
+        next.prop_smtp_host = host
+      }
+      // Datafile dir
+      if (schemaDatafileDir) {
+        next.datafileDir = schemaDatafileDir
+      }
+
+      return next
+    })
+  }, [host, configSchemaName, atomicSchemaName, aaiConfig?.aai_dbserver_ip, aaiConfig?.aai_oracle_service_name, aaiConfig?.aai_web_server_ip, schemaDatafileDir])
 
   const validation = useMemo(() => validateEcmData(data), [data])
 

@@ -279,10 +279,31 @@ function fieldClass(hasError: boolean): string {
 export function EcmPackForm({ data, errors, onChange }: EcmPackFormProps) {
   const update = <K extends keyof EcmFormData>(field: K, value: EcmFormData[K]) => {
     const updated = { ...data, [field]: value }
-    // Auto-populate jdbc_host when aai_dbserver_ip is changed
-    if (field === 'aai_dbserver_ip' && value) {
-      updated.jdbc_host = value as string
+
+    // ── Group 1: DB IP (bidirectional) ──
+    const dbIpFields: Array<keyof EcmFormData> = ['aai_dbserver_ip', 'jdbc_host']
+    if ((dbIpFields as string[]).includes(field) && value) {
+      for (const f of dbIpFields) {
+        if (f !== field) (updated as Record<string, unknown>)[f] = value
+      }
     }
+
+    // ── Group 2: Oracle Service (bidirectional) ──
+    const serviceFields: Array<keyof EcmFormData> = ['aai_oracle_service_name', 'jdbc_service']
+    if ((serviceFields as string[]).includes(field) && value) {
+      for (const f of serviceFields) {
+        if (f !== field) (updated as Record<string, unknown>)[f] = value
+      }
+    }
+
+    // ── Group 3: App Host (bidirectional) ──
+    const hostFields: Array<keyof EcmFormData> = ['hostname', 'prop_smtp_host', 'aai_web_server_ip']
+    if ((hostFields as string[]).includes(field) && value) {
+      for (const f of hostFields) {
+        if (f !== field) (updated as Record<string, unknown>)[f] = value
+      }
+    }
+
     onChange(updated)
   }
 

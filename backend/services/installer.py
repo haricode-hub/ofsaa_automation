@@ -132,6 +132,16 @@ class InstallerService:
     async def cleanup_failed_fresh_installation(self, host: str, username: str, password: str) -> dict:
         logs: list[str] = []
         updated_repo_pathspecs: set[str] = set()
+
+        # Kill all Java processes first to release file locks and ports
+        logs.append("[CLEANUP] Killing all Java processes before cleanup...")
+        kill_cmd = "pkill -9 -f java; killall -9 java 2>/dev/null; true"
+        await self.ssh_service.execute_command(host, username, password, kill_cmd)
+        import asyncio
+        await asyncio.sleep(2)
+        await self.ssh_service.execute_command(host, username, password, kill_cmd)
+        logs.append("[CLEANUP] All Java processes killed")
+
         dirs = [
             "/u01/installer_kit",
             "/u01/INSTALLER_KIT",
@@ -1213,15 +1223,71 @@ class InstallerService:
                 "fi"
             )
 
+        # Capture output lines for failure-pattern detection
+        captured_lines: list[str] = []
+        pending_buf = ""
+
+        async def _setup_output_collector(text: str) -> None:
+            nonlocal pending_buf
+            if not text:
+                return
+            pending_buf += text.replace("\r", "\n")
+            parts = pending_buf.split("\n")
+            for line in parts[:-1]:
+                cleaned = line.strip()
+                if cleaned:
+                    captured_lines.append(cleaned)
+            pending_buf = parts[-1]
+            if on_output_callback is not None:
+                forwarded = on_output_callback(text)
+                if inspect.isawaitable(forwarded):
+                    await forwarded
+
         result = await self.ssh_service.execute_interactive_command(
             host,
             username,
             password,
             command,
-            on_output_callback=on_output_callback,
+            on_output_callback=_setup_output_collector,
             on_prompt_callback=on_prompt_callback,
             timeout=36000,
         )
+        tail = pending_buf.strip()
+        if tail:
+            captured_lines.append(tail)
+
+        # ── RAM retry: detect RAM validation failure → drop caches → retry once ──
+        ram_patterns = [
+            re.compile(r"Validation for category RAM.*STATUS\s*:\s*FAILED", re.IGNORECASE),
+            re.compile(r"Insufficient RAM", re.IGNORECASE),
+        ]
+        has_ram_failure = any(p.search(line) for line in captured_lines for p in ram_patterns)
+        if has_ram_failure:
+            if on_output_callback is not None:
+                msg = "\n[RECOVERY] RAM validation failed. Dropping filesystem caches and retrying setup.sh...\n"
+                fwd = on_output_callback(msg)
+                if inspect.isawaitable(fwd):
+                    await fwd
+
+            drop_cmd = "echo 2 | sudo tee /proc/sys/vm/drop_caches"
+            await self.ssh_service.execute_command(host, username, password, drop_cmd)
+
+            # Re-run setup.sh SILENT (osc.sh already succeeded, skip it)
+            captured_lines.clear()
+            pending_buf = ""
+            result = await self.ssh_service.execute_interactive_command(
+                host,
+                username,
+                password,
+                command,
+                on_output_callback=_setup_output_collector,
+                on_prompt_callback=on_prompt_callback,
+                timeout=36000,
+            )
+            tail = pending_buf.strip()
+            if tail:
+                captured_lines.append(tail)
+
         summary = await self._collect_installation_summary_after_setup(
             host,
             username,
@@ -1233,8 +1299,31 @@ class InstallerService:
         )
         summary_logs = summary.get("logs", [])
 
-        if not result.get("success"):
-            return {"success": False, "logs": summary_logs, "error": "setup.sh SILENT failed"}
+        # Detect application-level failures (setup.sh may exit 0 even on failure)
+        setup_fatal_patterns = [
+            re.compile(r"Installation terminated", re.IGNORECASE),
+            re.compile(r"Pre-?Check failed", re.IGNORECASE),
+            re.compile(r"APP Pre-?Check failed", re.IGNORECASE),
+            re.compile(r"Installation\s+failed", re.IGNORECASE),
+            re.compile(r"INSTALLATION.*FAIL", re.IGNORECASE),
+            re.compile(r"Exception in thread", re.IGNORECASE),
+            re.compile(r"NoClassDefFoundError", re.IGNORECASE),
+            re.compile(r"ClassNotFoundException", re.IGNORECASE),
+        ]
+        fatal_output_lines = [
+            line for line in captured_lines if any(p.search(line) for p in setup_fatal_patterns)
+        ]
+
+        if not result.get("success") or fatal_output_lines:
+            error_detail = "setup.sh SILENT failed"
+            if fatal_output_lines:
+                error_detail = f"setup.sh SILENT application failure detected: {fatal_output_lines[0][:120]}"
+            error_logs = []
+            if fatal_output_lines:
+                error_logs = ["[ERROR] setup.sh output contains fatal errors:"] + [
+                    f"[SETUP] {line}" for line in fatal_output_lines[:10]
+                ]
+            return {"success": False, "logs": error_logs + summary_logs, "error": error_detail}
 
         logs = [f"[OK] setup.sh SILENT completed from {setup_path}"] + summary_logs
         return {"success": True, "logs": logs}
@@ -2232,12 +2321,64 @@ class InstallerService:
         else:
             command = f"su - oracle -c {shell_escape('bash -lc ' + shell_escape(inner_cmd))}"
 
+        # Capture output lines for failure-pattern detection
+        captured_lines: list[str] = []
+        pending_buf = ""
+
+        async def _ecm_setup_output_collector(text: str) -> None:
+            nonlocal pending_buf
+            if not text:
+                return
+            pending_buf += text.replace("\r", "\n")
+            parts = pending_buf.split("\n")
+            for line in parts[:-1]:
+                cleaned = line.strip()
+                if cleaned:
+                    captured_lines.append(cleaned)
+            pending_buf = parts[-1]
+            if on_output_callback is not None:
+                forwarded = on_output_callback(text)
+                if inspect.isawaitable(forwarded):
+                    await forwarded
+
         result = await self.ssh_service.execute_interactive_command(
             host, username, password, command,
-            on_output_callback=on_output_callback,
+            on_output_callback=_ecm_setup_output_collector,
             on_prompt_callback=on_prompt_callback,
             timeout=36000,
         )
+        tail = pending_buf.strip()
+        if tail:
+            captured_lines.append(tail)
+
+        # ── RAM retry: detect RAM validation failure → drop caches → retry once ──
+        ram_patterns = [
+            re.compile(r"Validation for category RAM.*STATUS\s*:\s*FAILED", re.IGNORECASE),
+            re.compile(r"Insufficient RAM", re.IGNORECASE),
+        ]
+        has_ram_failure = any(p.search(line) for line in captured_lines for p in ram_patterns)
+        if has_ram_failure:
+            if on_output_callback is not None:
+                msg = "\n[RECOVERY] RAM validation failed. Dropping filesystem caches and retrying ECM setup.sh...\n"
+                fwd = on_output_callback(msg)
+                if inspect.isawaitable(fwd):
+                    await fwd
+
+            drop_cmd = "echo 2 | sudo tee /proc/sys/vm/drop_caches"
+            await self.ssh_service.execute_command(host, username, password, drop_cmd)
+
+            # Re-run setup.sh SILENT only (osc.sh already succeeded, skip it)
+            captured_lines.clear()
+            pending_buf = ""
+            result = await self.ssh_service.execute_interactive_command(
+                host, username, password, command,
+                on_output_callback=_ecm_setup_output_collector,
+                on_prompt_callback=on_prompt_callback,
+                timeout=36000,
+            )
+            tail = pending_buf.strip()
+            if tail:
+                captured_lines.append(tail)
 
         # Collect installation summary
         pack_log_path = "/u01/INSTALLER_KIT/OFS_ECM_PACK/logs/Pack_Install.log"
@@ -2258,8 +2399,31 @@ class InstallerService:
         else:
             summary_logs = ["", f"--- ECM Pack_Install.log ({pack_log_path}) ---"] + summary_out.splitlines()
 
-        if not result.get("success"):
-            return {"success": False, "logs": summary_logs, "error": "ECM setup.sh SILENT failed"}
+        # Detect application-level failures (setup.sh may exit 0 even on failure)
+        setup_fatal_patterns = [
+            re.compile(r"Installation terminated", re.IGNORECASE),
+            re.compile(r"Pre-?Check failed", re.IGNORECASE),
+            re.compile(r"APP Pre-?Check failed", re.IGNORECASE),
+            re.compile(r"Installation\s+failed", re.IGNORECASE),
+            re.compile(r"INSTALLATION.*FAIL", re.IGNORECASE),
+            re.compile(r"Exception in thread", re.IGNORECASE),
+            re.compile(r"NoClassDefFoundError", re.IGNORECASE),
+            re.compile(r"ClassNotFoundException", re.IGNORECASE),
+        ]
+        fatal_output_lines = [
+            line for line in captured_lines if any(p.search(line) for p in setup_fatal_patterns)
+        ]
+
+        if not result.get("success") or fatal_output_lines:
+            error_detail = "ECM setup.sh SILENT failed"
+            if fatal_output_lines:
+                error_detail = f"ECM setup.sh SILENT application failure detected: {fatal_output_lines[0][:120]}"
+            error_logs = []
+            if fatal_output_lines:
+                error_logs = ["[ERROR] ECM setup.sh output contains fatal errors:"] + [
+                    f"[SETUP] {line}" for line in fatal_output_lines[:10]
+                ]
+            return {"success": False, "logs": error_logs + summary_logs, "error": error_detail}
 
         logs = [f"[OK] ECM setup.sh SILENT completed from {setup_path}"] + summary_logs
         return {"success": True, "logs": logs}

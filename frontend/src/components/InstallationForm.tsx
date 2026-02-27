@@ -491,10 +491,31 @@ export function InstallationForm() {
     const value = e.target.value
     setFormData(prev => {
       const updated = { ...prev, [field]: value }
-      // Auto-populate schema_jdbc_host when aai_dbserver_ip is changed
-      if (field === 'aai_dbserver_ip' && value) {
-        updated.schema_jdbc_host = value
+
+      // ── Group 1: DB IP  (bidirectional: any DB-IP field fills the rest) ──
+      const dbIpFields: Array<keyof InstallationData> = ['aai_dbserver_ip', 'schema_jdbc_host', 'db_ssh_host']
+      if (dbIpFields.includes(field) && value) {
+        for (const f of dbIpFields) {
+          if (f !== field) updated[f] = value as never
+        }
       }
+
+      // ── Group 2: Oracle Service  (bidirectional) ──
+      const serviceFields: Array<keyof InstallationData> = ['aai_oracle_service_name', 'schema_jdbc_service']
+      if (serviceFields.includes(field) && value) {
+        for (const f of serviceFields) {
+          if (f !== field) updated[f] = value as never
+        }
+      }
+
+      // ── Group 3: Target / App Host  (bidirectional) ──
+      const hostFields: Array<keyof InstallationData> = ['host', 'schema_host', 'prop_smtp_host', 'aai_web_server_ip']
+      if (hostFields.includes(field) && value) {
+        for (const f of hostFields) {
+          if (f !== field) updated[f] = value as never
+        }
+      }
+
       return updated
     })
   }
@@ -698,7 +719,7 @@ export function InstallationForm() {
               <div className="space-y-2">
                 <label className="flex items-center gap-2 text-xs font-bold text-text-primary uppercase tracking-wider">
                   <ServerIcon className="w-4 h-4" />
-                  DB SSH Host (optional)
+                  DB SSH Host
                 </label>
                 <input
                   type="text"
@@ -1369,6 +1390,7 @@ export function InstallationForm() {
           host={formData.host}
           configSchemaName={formData.schema_config_schema_name}
           atomicSchemaName={formData.schema_atomic_schema_name}
+          schemaDatafileDir={formData.schema_datafile_dir}
           aaiConfig={{
             aai_webappservertype: formData.aai_webappservertype,
             aai_dbserver_ip: formData.aai_dbserver_ip,

@@ -56,7 +56,7 @@ class RecoveryService:
 
         # Step 1: Kill all Java processes for oracle user on app server
         logs.append("[RECOVERY] Step 1: Killing all Java processes for oracle user...")
-        kill_result = await self._kill_java_processes(app_host, app_username, app_password)
+        kill_result = await self.kill_java_processes(app_host, app_username, app_password)
         logs.extend(kill_result.get("logs", []))
         if not kill_result.get("success"):
             failed_steps.append("Kill Java processes")
@@ -182,10 +182,18 @@ class RecoveryService:
         password: str,
         *,
         ofsaa_dir: str = "/u01",
-        backup_filename: str = "OFSAA_BKP.tar.gz",
+        backup_tag: str = "BD",
     ) -> dict:
-        """Create application backup: tar -cvf OFSAA_BKP.tar.gz OFSAA"""
-        logs = ["[BACKUP] Starting application backup..."]
+        """Create application backup with dated filename.
+
+        Filename format: OFSAA_BKP_<tag>_<YYYYMMDD_HHMMSS>.tar.gz
+        e.g. OFSAA_BKP_BD_20260226_143000.tar.gz
+             OFSAA_BKP_ECM_20260226_160500.tar.gz
+        """
+        from datetime import datetime as _dt
+        timestamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+        backup_filename = f"OFSAA_BKP_{backup_tag}_{timestamp}.tar.gz"
+        logs = [f"[BACKUP] Starting application backup (tag={backup_tag})..."]
 
         # Verify OFSAA directory exists
         check_cmd = f"test -d {ofsaa_dir}/OFSAA && echo 'EXISTS' || echo 'MISSING'"
@@ -350,8 +358,8 @@ class RecoveryService:
             logs.append("[BACKUP] ERROR: Failed to read backup script from repo host")
             return {"success": False, "logs": logs, "error": "Failed to read backup script from repo host"}
 
-        # Write script to /tmp/backup_Restore on DB host with proper line endings
-        remote_dir = "/tmp/backup_Restore"
+        # Write script to /u01/backup on DB host with proper line endings
+        remote_dir = "/u01/backup"
         mkdir_cmd = f"mkdir -p {remote_dir} && chmod 700 {remote_dir}"
         await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, mkdir_cmd)
         
@@ -364,11 +372,6 @@ class RecoveryService:
         write_cmd = f"cat > {remote_dir}/backup_ofs_schemas.sh <<'EOFSCRIPT'\n{clean_script}\nEOFSCRIPT"
         await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, write_cmd)
         await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, f"chmod +x {remote_dir}/backup_ofs_schemas.sh")
-
-        # Before executing, ensure a local SYSDBA connection works on the DB host
-        logs.append("[BACKUP] Verifying DB host local SYSDBA connection: sqlplus / as sysdba")
-        sqlplus_check_remote = f"sqlplus / as sysdba <<'EOSQL'\nEXIT\nEOSQL"
-        await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, sqlplus_check_remote)
 
         # Execute the script on DB host with proper environment variable handling
         # Create a wrapper script that explicitly sets and exports the variables
@@ -419,6 +422,87 @@ bash ./backup_ofs_schemas.sh
         return {"success": True, "logs": logs}
 
     # ------------------------------------------------------------------
+    # Verify backup availability
+    # ------------------------------------------------------------------
+    async def verify_backups_exist(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        ofsaa_dir: str = "/u01",
+        backup_tag: str = "BD",
+        backup_dump_dir: str = "/u01/backup",
+        db_ssh_host: Optional[str] = None,
+        db_ssh_username: Optional[str] = None,
+        db_ssh_password: Optional[str] = None,
+    ) -> dict:
+        """Check whether application tar and DB dump file exist on the target servers.
+
+        Searches for the most recent OFSAA_BKP_<tag>_*.tar.gz file.
+        Falls back to legacy OFSAA_BKP.tar.gz if no tagged backup found.
+
+        Returns:
+            {
+                "app_backup_exists": bool,
+                "db_backup_exists": bool,
+                "both_exist": bool,
+                "app_backup_path": str | None,
+                "db_dump_path": str | None,
+                "logs": list[str],
+            }
+        """
+        logs: list[str] = []
+        app_exists = False
+        db_exists = False
+        app_path: Optional[str] = None
+        db_path: Optional[str] = None
+
+        # Check application tar on app host — search for tagged backup, fallback to legacy
+        find_app_cmd = (
+            f"ls -1t {ofsaa_dir}/OFSAA_BKP_{backup_tag}_*.tar.gz 2>/dev/null | head -1"
+        )
+        app_result = await self.ssh_service.execute_command(host, username, password, find_app_cmd)
+        found_path = (app_result.get("stdout") or "").strip()
+        if not found_path:
+            # Fallback: check legacy filename
+            legacy_cmd = f"test -f {ofsaa_dir}/OFSAA_BKP.tar.gz && echo '{ofsaa_dir}/OFSAA_BKP.tar.gz' || echo ''"
+            legacy_result = await self.ssh_service.execute_command(host, username, password, legacy_cmd)
+            found_path = (legacy_result.get("stdout") or "").strip()
+        if found_path:
+            app_exists = True
+            app_path = found_path
+            logs.append(f"[VERIFY] Application backup found: {app_path}")
+        else:
+            logs.append(f"[VERIFY] Application backup NOT found (pattern: OFSAA_BKP_{backup_tag}_*.tar.gz)")
+
+        # Check DB dump on DB host
+        target_ssh_host = db_ssh_host or host
+        target_ssh_username = db_ssh_username or username
+        target_ssh_password = db_ssh_password or password
+
+        find_dmp_cmd = f"ls -1t {backup_dump_dir}/*.dmp 2>/dev/null | head -1"
+        dmp_result = await self.ssh_service.execute_command(
+            target_ssh_host, target_ssh_username, target_ssh_password, find_dmp_cmd
+        )
+        dmp_path = (dmp_result.get("stdout") or "").strip()
+        if dmp_path:
+            db_exists = True
+            db_path = dmp_path
+            logs.append(f"[VERIFY] DB dump file found: {db_path}")
+        else:
+            logs.append(f"[VERIFY] DB dump file NOT found in {backup_dump_dir} on {target_ssh_host}")
+
+        return {
+            "app_backup_exists": app_exists,
+            "db_backup_exists": db_exists,
+            "both_exist": app_exists and db_exists,
+            "app_backup_path": app_path,
+            "db_dump_path": db_path,
+            "logs": logs,
+        }
+
+    # ------------------------------------------------------------------
     # Restore methods
     # ------------------------------------------------------------------
     async def restore_application(
@@ -428,17 +512,33 @@ bash ./backup_ofs_schemas.sh
         password: str,
         *,
         ofsaa_dir: str = "/u01",
-        backup_filename: str = "OFSAA_BKP.tar.gz",
+        backup_tag: str = "BD",
     ) -> dict:
-        """Restore application: rm -rf OFSAA then tar -xvf OFSAA_BKP.tar.gz"""
+        """Restore application from the most recent OFSAA_BKP_<tag>_*.tar.gz backup.
+
+        Falls back to legacy OFSAA_BKP.tar.gz if no tagged backup found.
+        """
         logs = ["[RESTORE] Starting application restore..."]
 
-        # Verify backup file exists
-        check_cmd = f"test -f {ofsaa_dir}/{backup_filename} && echo 'EXISTS' || echo 'MISSING'"
-        check_result = await self.ssh_service.execute_command(host, username, password, check_cmd)
-        if "MISSING" in (check_result.get("stdout") or ""):
-            logs.append(f"[RESTORE] ERROR: Backup file {ofsaa_dir}/{backup_filename} not found")
-            return {"success": False, "logs": logs, "error": "Application backup file not found"}
+        # Find the most recent tagged backup file
+        find_cmd = f"ls -1t {ofsaa_dir}/OFSAA_BKP_{backup_tag}_*.tar.gz 2>/dev/null | head -1"
+        find_result = await self.ssh_service.execute_command(host, username, password, find_cmd)
+        backup_filename = (find_result.get("stdout") or "").strip()
+        if backup_filename:
+            # Extract just the filename from full path
+            import os as _os
+            backup_filename = _os.path.basename(backup_filename)
+            logs.append(f"[RESTORE] Found tagged backup: {backup_filename}")
+        else:
+            # Fallback to legacy filename
+            legacy_cmd = f"test -f {ofsaa_dir}/OFSAA_BKP.tar.gz && echo 'EXISTS' || echo 'MISSING'"
+            legacy_result = await self.ssh_service.execute_command(host, username, password, legacy_cmd)
+            if "EXISTS" in (legacy_result.get("stdout") or ""):
+                backup_filename = "OFSAA_BKP.tar.gz"
+                logs.append(f"[RESTORE] Using legacy backup: {backup_filename}")
+            else:
+                logs.append(f"[RESTORE] ERROR: No backup found (pattern: OFSAA_BKP_{backup_tag}_*.tar.gz or OFSAA_BKP.tar.gz)")
+                return {"success": False, "logs": logs, "error": "Application backup file not found"}
 
         # Step 1: Remove existing OFSAA directory (mandatory per guide)
         logs.append("[RESTORE] Step 1: Removing existing OFSAA directory...")
@@ -617,7 +717,7 @@ bash ./backup_ofs_schemas.sh
             logs.append("[RESTORE] ERROR: Failed to read patched restore script from repo host")
             return {"success": False, "logs": logs, "error": "Failed to read patched restore script from repo host"}
 
-        remote_dir = "/tmp/backup_Restore"
+        remote_dir = "/u01/backup"
         mkdir_cmd = f"mkdir -p {remote_dir} && chmod 700 {remote_dir}"
         await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, mkdir_cmd)
 
@@ -632,11 +732,6 @@ bash ./backup_ofs_schemas.sh
             target_ssh_host, target_ssh_username, target_ssh_password,
             f"chmod +x {remote_dir}/restore_ofs_schemas.sh",
         )
-
-        # Verify SYSDBA connection on DB host before running restore
-        logs.append("[RESTORE] Verifying DB host local SYSDBA connection: sqlplus / as sysdba")
-        sqlplus_check = f"sqlplus / as sysdba <<'EOSQL'\nEXIT\nEOSQL"
-        await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, sqlplus_check)
 
         # ------------------------------------------------------------------
         # Step 4: Create wrapper script (same pattern as backup)
@@ -712,18 +807,24 @@ bash ./restore_ofs_schemas.sh
         db_ssh_username: Optional[str] = None,
         db_ssh_password: Optional[str] = None,
         ofsaa_dir: str = "/u01",
-        backup_filename: str = "OFSAA_BKP.tar.gz",
     ) -> dict:
-        """Full restore to BD state: rm OFSAA -> restore app tar -> restore DB schemas."""
+        """Full restore to BD state: kill Java -> rm OFSAA -> restore app tar -> restore DB schemas."""
         logs = ["[RESTORE] ===== FULL RESTORE TO BD STATE ====="]
         failed_steps = []
 
-        # Step 1: Restore application (rm -rf + tar extract)
+        # Step 0: Kill all Java processes to release file locks and ports
+        logs.append("[RESTORE] --- Step 0: Killing all Java processes ---")
+        kill_result = await self.kill_java_processes(host, username, password)
+        logs.extend(kill_result.get("logs", []))
+        if not kill_result.get("success"):
+            failed_steps.append("Kill Java processes")
+
+        # Step 1: Restore application (rm -rf + tar extract from most recent BD backup)
         logs.append("[RESTORE] --- Step 1: Restoring application backup ---")
         app_result = await self.restore_application(
             host, username, password,
             ofsaa_dir=ofsaa_dir,
-            backup_filename=backup_filename,
+            backup_tag="BD",
         )
         logs.extend(app_result.get("logs", []))
         if not app_result.get("success"):
@@ -788,7 +889,7 @@ bash ./restore_ofs_schemas.sh
             logs.append(f"[RECOVERY] WARNING: {ofsaa_dir}/OFSAA may still exist after removal attempt")
             return {"success": False, "logs": logs}
 
-    async def _kill_java_processes(self, host: str, username: str, password: str) -> dict:
+    async def kill_java_processes(self, host: str, username: str, password: str) -> dict:
         """Kill ALL Java processes on the server unconditionally."""
         logs = []
         import asyncio

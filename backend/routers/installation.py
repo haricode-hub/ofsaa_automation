@@ -564,6 +564,12 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             )
             await append_output(task_id, "\n".join(setup_result.get("logs", [])))
             if not setup_result.get("success"):
+                # Kill Java processes to release ports/locks before marking failure
+                await append_output(task_id, "[RECOVERY] Killing Java processes after setup.sh failure...")
+                kill_result = await installation_service.kill_java_processes(
+                    request.host, request.username, request.password
+                )
+                await append_output(task_id, "\n".join(kill_result.get("logs", [])))
                 await handle_failure("setup.sh SILENT execution failed", setup_result.get("error"))
                 return
             await trace("setup.sh SILENT step completed")
@@ -589,11 +595,11 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             if not scripts_result.get("success"):
                 await append_output(task_id, "[WARN] Backup scripts not found in Git repo. Backup may fail for DB schemas.")
 
-            # Application Backup: tar -cvf OFSAA_BKP.tar.gz OFSAA
+            # Application Backup: tar with BD tag and date
             await update_status(task_id, "running", "Taking application backup (tar)", 77)
             await trace("Starting application backup after BD Pack success")
             app_backup_result = await installation_service.backup_application(
-                request.host, request.username, request.password
+                request.host, request.username, request.password, backup_tag="BD"
             )
             await append_output(task_id, "\n".join(app_backup_result.get("logs", [])))
             if not app_backup_result.get("success"):
@@ -653,7 +659,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
 
                 await update_status(task_id, "running", "Taking application backup (tar)", 81)
                 app_backup_result = await installation_service.backup_application(
-                    request.host, request.username, request.password
+                    request.host, request.username, request.password, backup_tag="BD"
                 )
                 await append_output(task_id, "\n".join(app_backup_result.get("logs", [])))
                 if not app_backup_result.get("success"):
@@ -691,6 +697,69 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
         # ============== ECM MODULE INSTALLATION ==============
         if request.install_ecm:
             await append_output(task_id, "\n[INFO] ==================== ECM MODULE INSTALLATION ====================")
+
+            # ---- Verify backup availability before ECM starts ----
+            await append_output(task_id, "[INFO] Verifying BD backup availability before ECM installation...")
+            await update_status(task_id, "running", "Verifying BD backups for ECM safety", 81)
+            verify_result = await installation_service.verify_backups_exist(
+                request.host, request.username, request.password,
+                db_ssh_host=getattr(request, "db_ssh_host", None),
+                db_ssh_username=getattr(request, "db_ssh_username", None),
+                db_ssh_password=getattr(request, "db_ssh_password", None),
+            )
+            await append_output(task_id, "\n".join(verify_result.get("logs", [])))
+
+            if not verify_result.get("both_exist"):
+                # Backups missing — take a fresh backup now
+                await append_output(task_id, "[INFO] BD backups not fully available. Taking fresh backup before ECM starts...")
+                await update_status(task_id, "running", "Taking BD backup before ECM", 81)
+
+                scripts_result = await installation_service.ensure_backup_restore_scripts(
+                    request.host, request.username, request.password
+                )
+                await append_output(task_id, "\n".join(scripts_result.get("logs", [])))
+                if not scripts_result.get("success"):
+                    await append_output(task_id, "[WARN] Backup scripts not found in Git repo. Backup may fail for DB schemas.")
+
+                if not verify_result.get("app_backup_exists"):
+                    await update_status(task_id, "running", "Taking application backup (tar)", 81)
+                    app_bkp = await installation_service.backup_application(
+                        request.host, request.username, request.password, backup_tag="BD"
+                    )
+                    await append_output(task_id, "\n".join(app_bkp.get("logs", [])))
+                    if not app_bkp.get("success"):
+                        await append_output(task_id, "[WARN] Application backup failed. ECM restore capability may be limited.")
+                    else:
+                        await trace("Application backup completed (pre-ECM auto)")
+
+                if not verify_result.get("db_backup_exists"):
+                    db_sys_pass = request.db_sys_password
+                    db_service = request.schema_jdbc_service
+                    if db_sys_pass and db_service:
+                        await update_status(task_id, "running", "Taking DB schema backup", 82)
+                        db_bkp = await installation_service.backup_db_schemas(
+                            request.host, request.username, request.password,
+                            db_sys_password=db_sys_pass,
+                            db_jdbc_service=db_service,
+                            db_ssh_host=getattr(request, "db_ssh_host", None),
+                            db_ssh_username=getattr(request, "db_ssh_username", None),
+                            db_ssh_password=getattr(request, "db_ssh_password", None),
+                        )
+                        await append_output(task_id, "\n".join(db_bkp.get("logs", [])))
+                        if not db_bkp.get("success"):
+                            await append_output(task_id, "[WARN] DB schema backup failed. ECM restore capability may be limited.")
+                        else:
+                            bd_pack_checkpoint["completed"] = True
+                            bd_pack_checkpoint["backup_taken"] = True
+                            bd_pack_checkpoint["request"] = request.dict()
+                            bd_pack_checkpoint["task_id"] = task_id
+                            bd_pack_checkpoint["host"] = request.host
+                            bd_pack_checkpoint["timestamp"] = datetime.now().isoformat()
+                            await trace("DB schema backup completed (pre-ECM auto) and checkpoint saved")
+                    else:
+                        await append_output(task_id, "[WARN] db_sys_password or schema_jdbc_service not provided. Cannot take DB backup.")
+            else:
+                await append_output(task_id, "[OK] BD backups verified — both application tar and DB dump exist. Safe to proceed with ECM.")
             
             # ECM Step 1: Download and extract ECM installer kit
             await update_status(task_id, "running", "Downloading and extracting ECM installer kit", 82)
@@ -831,6 +900,18 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 return
             await trace("ECM setup.sh SILENT step completed")
             await append_output(task_id, "[OK] ECM Module installation completed")
+
+            # Take ECM success backup with ECM tag
+            await append_output(task_id, "\n[INFO] ==================== ECM SUCCESS BACKUP ====================")
+            await update_status(task_id, "running", "Taking ECM success backup", 98)
+            ecm_app_bkp = await installation_service.backup_application(
+                request.host, request.username, request.password, backup_tag="ECM"
+            )
+            await append_output(task_id, "\n".join(ecm_app_bkp.get("logs", [])))
+            if ecm_app_bkp.get("success"):
+                await trace("ECM success application backup completed")
+            else:
+                await append_output(task_id, "[WARN] ECM success application backup failed.")
             
             # Clear BD Pack checkpoint after successful ECM completion
             if bd_pack_checkpoint.get("completed"):

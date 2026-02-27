@@ -241,6 +241,10 @@ class InstallationService:
     async def verify_profile_setup(self, host: str, username: str, password: str) -> dict:
         return await self.profile.verify_profile_setup(host, username, password)
 
+    async def kill_java_processes(self, host: str, username: str, password: str) -> dict:
+        """Kill all Java processes on target server."""
+        return await self.recovery.kill_java_processes(host, username, password)
+
     async def cleanup_after_osc_failure(
         self,
         app_host: str,
@@ -277,9 +281,9 @@ class InstallationService:
         """Ensure Git-controlled backup/restore scripts exist on target."""
         return await self.recovery.ensure_backup_restore_scripts(host, username, password)
 
-    async def backup_application(self, host: str, username: str, password: str) -> dict:
-        """Create application tar backup."""
-        return await self.recovery.backup_application(host, username, password)
+    async def backup_application(self, host: str, username: str, password: str, *, backup_tag: str = "BD") -> dict:
+        """Create application tar backup with dated filename."""
+        return await self.recovery.backup_application(host, username, password, backup_tag=backup_tag)
 
     async def backup_db_schemas(
         self, host: str, username: str, password: str,
@@ -296,9 +300,21 @@ class InstallationService:
             db_ssh_password=db_ssh_password,
         )
 
-    async def restore_application(self, host: str, username: str, password: str) -> dict:
-        """Restore application from tar backup."""
-        return await self.recovery.restore_application(host, username, password)
+    async def restore_application(self, host: str, username: str, password: str, *, backup_tag: str = "BD") -> dict:
+        """Restore application from most recent tagged tar backup."""
+        return await self.recovery.restore_application(host, username, password, backup_tag=backup_tag)
+
+    async def verify_backups_exist(
+        self, host: str, username: str, password: str,
+        *, db_ssh_host: Optional[str] = None, db_ssh_username: Optional[str] = None, db_ssh_password: Optional[str] = None,
+    ) -> dict:
+        """Check whether app tar and DB dump backups exist on the target servers."""
+        return await self.recovery.verify_backups_exist(
+            host, username, password,
+            db_ssh_host=db_ssh_host,
+            db_ssh_username=db_ssh_username,
+            db_ssh_password=db_ssh_password,
+        )
 
     async def restore_db_schemas(
         self, host: str, username: str, password: str,
