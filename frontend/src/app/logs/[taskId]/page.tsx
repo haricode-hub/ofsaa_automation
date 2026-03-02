@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { BackgroundMatrix } from '@/components/BackgroundMatrix'
+import { getWebSocketUrl } from '@/lib/api'
 
 type StatusType = 'connecting' | 'running' | 'waiting_input' | 'failed' | 'completed'
 
@@ -52,7 +53,7 @@ export default function LogsPage() {
   useEffect(() => {
     if (!taskId) return
 
-    const ws = new WebSocket(`ws://localhost:8000/ws/${taskId}`)
+    const ws = new WebSocket(`${getWebSocketUrl()}/ws/${taskId}`)
     socketRef.current = ws
 
     ws.onopen = () => {

@@ -1,0 +1,41 @@
+module.exports = {
+  apps: [
+    {
+      name: 'frontend',
+      script: 'bun',
+      args: 'run start -- -H 0.0.0.0 -p 3000',
+      cwd: './frontend',
+      env: {
+        NODE_ENV: 'production',
+        NEXT_PUBLIC_API_URL: 'http://192.168.0.166:8000',
+      },
+      instances: 1,
+      exec_mode: 'fork',
+      watch: false,
+      max_memory_restart: '1G',
+      merge_logs: true,
+      autorestart: true,
+      max_restarts: 10,
+      min_uptime: '10s',
+    },
+    {
+      name: 'backend',
+      script: 'uv',
+      args: 'run python -m uvicorn main:app --host 0.0.0.0 --port 8000',
+      cwd: './backend',
+      interpreter: 'none',
+      env: {
+        PYTHONUNBUFFERED: '1',
+        ALLOWED_ORIGIN: 'http://192.168.0.166',
+      },
+      instances: 1,
+      exec_mode: 'fork',
+      watch: false,
+      max_memory_restart: '1G',
+      merge_logs: true,
+      autorestart: true,
+      max_restarts: 10,
+      min_uptime: '10s',
+    },
+  ],
+};

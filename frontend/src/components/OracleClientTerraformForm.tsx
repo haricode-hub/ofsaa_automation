@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
 import { clsx } from 'clsx'
+import { getApiUrl } from '@/lib/api'
 import {
   ServerIcon,
   UserIcon,
@@ -39,7 +40,7 @@ export function OracleClientTerraformForm() {
     
     try {
       // Call backend API to start Oracle client terraform installation
-      const response = await fetch('http://localhost:8000/api/installation/oracle-client-terraform', {
+      const response = await fetch(`${getApiUrl()}/api/installation/oracle-client-terraform`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

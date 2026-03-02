@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 
 from dotenv import load_dotenv
 load_dotenv()  # MUST run before any project imports so Config picks up .env values
@@ -19,9 +20,26 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# Base origins always allowed (local dev)
+_base_origins = [
+    "http://localhost:3000",
+    "http://localhost",
+    "http://127.0.0.1:3000",
+]
+
+# Add server origin from env if set (e.g. ALLOWED_ORIGIN=http://192.168.0.166)
+_server_origin = os.getenv("ALLOWED_ORIGIN", "").strip()
+if _server_origin:
+    _allowed_origins = _base_origins + [
+        _server_origin,
+        f"{_server_origin}:3000",
+    ]
+else:
+    _allowed_origins = _base_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
+import { getApiUrl } from '@/lib/api'
 import {
   ServerIcon,
   UserIcon,
@@ -134,7 +135,7 @@ export function InstallationForm() {
   const router = useRouter()
   const [formData, setFormData] = useState<InstallationData>({
     host: '',
-    username: '',
+    username: 'root',
     password: '',
     // Profile variables with defaults
     fic_home: '/u01/OFSAA/FICHOME',
@@ -303,7 +304,7 @@ export function InstallationForm() {
     
     try {
       // Call backend API to start installation
-      const response = await fetch('http://localhost:8000/api/installation/start', {
+      const response = await fetch(`${getApiUrl()}/api/installation/start`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -665,10 +666,11 @@ export function InstallationForm() {
                   type="text"
                   value={formData.username}
                   onChange={handleInputChange('username')}
-                  placeholder="oracle"
+                  placeholder="root"
                   className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
                   required
                 />
+                <p className="text-xs text-text-muted">(root recommended — scripts will automatically switch to oracle user internally)</p>
               </div>
 
               <div className="space-y-2">
