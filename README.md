@@ -60,7 +60,7 @@ The system executes these SSH commands automatically in sequence:
 
 2. **Mount Point Creation**:
    ```bash
-   mkdir -p /u01/OFSAA/FICHOME /u01/OFSAA/FTPSHARE /u01/installer_kit && chown -R oracle:oinstall /u01 && chmod -R 755 /u01
+   mkdir -p /u01/OFSAA/FICHOME /u01/OFSAA/FTPSHARE /u01/BD_Installer_Kit && chown -R oracle:oinstall /u01 && chmod -R 755 /u01
    ```
 
 3. **Package Installation**:

@@ -1305,6 +1305,7 @@ export function InstallationForm() {
                 
               </div>
 
+              {/* Commented out - SQOOP, SSH, ECM, CS, CRR, FSDF fields
               <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
@@ -1379,6 +1380,7 @@ export function InstallationForm() {
                   <input type="text" value={formData.prop_fsdf_upload_model} onChange={handleInputChange('prop_fsdf_upload_model')} placeholder="1" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
                 </div>
               </div>
+              */}
 
             </div>
           </details>

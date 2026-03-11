@@ -225,7 +225,7 @@ install_sanc: Optional[bool]      # SANC module flag (placeholder)
 ### Module Identity
 - **Module name**: `ECM Pack`
 - **Module flag field**: `install_ecm: bool`
-- **Kit Location**: `/u01/INSTALLER_KIT/OFS_ECM_PACK`
+- **Kit Location**: `/u01/ECM_Installer_Kit/OFS_ECM_PACK`
 - **Repo Folder**: `ECM_PACK`
 
 ### ECM Installation Flow (4 Steps - Runs After BD Pack)
@@ -250,7 +250,7 @@ ECM_STEP_4b: "Running ECM setup (setup.sh SILENT)"           # Progress: 96%
 ### ECM Backend Methods (installer.py)
 ```python
 # Download/Extract
-download_and_extract_ecm_installer()     # Extract to /u01/INSTALLER_KIT/OFS_ECM_PACK
+download_and_extract_ecm_installer()     # Extract to /u01/ECM_Installer_Kit/OFS_ECM_PACK
 set_ecm_permissions()                     # Set kit permissions
 
 # Config Patching
@@ -454,6 +454,6 @@ async def run_module_script(self, host, username, password, on_output_callback, 
 
 | Module | Status | Flag Field | Kit Location |
 |--------|--------|------------|-------------|
-| BD Pack | ✅ Implemented | `install_bdpack` | `/u01/installer_kit/OFS_BD_PACK` |
-| ECM | ✅ Implemented | `install_ecm` | `/u01/INSTALLER_KIT/OFS_ECM_PACK` |
+| BD Pack | ✅ Implemented | `install_bdpack` | `/u01/BD_Installer_Kit/OFS_BD_PACK` |
+| ECM | ✅ Implemented | `install_ecm` | `/u01/ECM_Installer_Kit/OFS_ECM_PACK` |
 | SANC | ❌ Placeholder | `install_sanc` | TBD |

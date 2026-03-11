@@ -13,7 +13,7 @@ type StatusPayload = {
   progress?: number
 }
 
-const STEPS = [
+const BD_PACK_STEPS = [
   'Creating oracle user and oinstall group',
   'Creating mount point /u01',
   'Installing KSH and git',
@@ -24,6 +24,14 @@ const STEPS = [
   'Setting up OFSAA installer and running environment check',
   'Applying config XMLs/properties and running osc.sh',
   'Installing BD PACK with /setup.sh SILENT'
+]
+
+const ECM_PACK_STEPS = [
+  'Downloading and extracting ECM installer kit',
+  'Setting ECM kit permissions',
+  'Applying ECM configuration files',
+  'Running ECM schema creator (osc.sh)',
+  'Running ECM setup (setup.sh SILENT)'
 ]
 
 export default function LogsPage() {
@@ -40,9 +48,19 @@ export default function LogsPage() {
   const [outputLines, setOutputLines] = useState<string[]>([])
   const [autoFollowOutput, setAutoFollowOutput] = useState(true)
   const [redirectCountdown, setRedirectCountdown] = useState<number>(redirectDelaySec)
+  const [currentModule, setCurrentModule] = useState<'BD_PACK' | 'ECM_PACK'>('BD_PACK')
   const socketRef = useRef<WebSocket | null>(null)
   const outputEndRef = useRef<HTMLDivElement>(null)
   const outputContainerRef = useRef<HTMLDivElement>(null)
+
+  // Determine which module is active based on current step
+  const activeSteps = useMemo(() => {
+    return currentModule === 'ECM_PACK' ? ECM_PACK_STEPS : BD_PACK_STEPS
+  }, [currentModule])
+
+  const moduleLabel = useMemo(() => {
+    return currentModule === 'ECM_PACK' ? 'ECM Pack' : 'BD Pack'
+  }, [currentModule])
 
   const statusLabel = useMemo(() => {
     if (status === 'waiting_input') return 'waiting for input'
@@ -86,7 +104,17 @@ export default function LogsPage() {
         if (message.type === 'status') {
           const data = message.data as StatusPayload
           if (data?.status) setStatus(data.status)
-          if (data?.step) setCurrentStep(data.step)
+          if (data?.step) {
+            setCurrentStep(data.step)
+            // Detect module change based on step name
+            if (data.step.toLowerCase().includes('ecm')) {
+              setCurrentModule('ECM_PACK')
+            } else if (ECM_PACK_STEPS.some(s => s === data.step)) {
+              setCurrentModule('ECM_PACK')
+            } else if (BD_PACK_STEPS.some(s => s === data.step)) {
+              setCurrentModule('BD_PACK')
+            }
+          }
           if (typeof data?.progress === 'number') setProgress(data.progress)
         }
       } catch {
@@ -186,15 +214,18 @@ export default function LogsPage() {
         <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[280px_1fr] gap-4 p-4 lg:p-8">
           {/* Left Panel - Steps */}
           <div className="glass-panel rounded-xl p-4 lg:p-6 shadow-panel h-[72vh] max-h-[72vh] min-h-[72vh] overflow-y-auto lg:h-[calc(100vh-10rem)] lg:max-h-[calc(100vh-10rem)] lg:min-h-[calc(100vh-10rem)]">
-            <div className="text-xs font-bold uppercase tracking-widest text-text-secondary mb-4">
+            <div className="text-xs font-bold uppercase tracking-widest text-text-secondary mb-2">
+              {moduleLabel}
+            </div>
+            <div className="text-xs text-text-muted mb-4">
               Step Tracker
             </div>
             <div className="space-y-3 text-sm">
-              {STEPS.map(step => {
+              {activeSteps.map((step, idx) => {
                 const isActive = currentStep === step
                 const isCompleted =
                   progress >= 100 ||
-                  (progress > 0 && STEPS.indexOf(step) < STEPS.indexOf(currentStep))
+                  (progress > 0 && idx < activeSteps.indexOf(currentStep))
                 return (
                   <div
                     key={step}

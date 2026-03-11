@@ -137,9 +137,7 @@ echo "NEXT_PUBLIC_API_URL=http://<NEW_IP>:8000" > frontend/.env.production
 
 # 2. Update backend/.env  → ALLOWED_ORIGIN=http://<NEW_IP>
 
-# 3. Update ecosystem.config.js → NEXT_PUBLIC_API_URL and ALLOWED_ORIGIN
-
-# 4. Rebuild and restart
+# 3. Rebuild and restart
 cd frontend && bun run build && cd ..
 pm2 restart all
 ```

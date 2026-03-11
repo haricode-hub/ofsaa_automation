@@ -25,7 +25,7 @@ class JavaService:
         repo_dir = Config.REPO_DIR
         safe_dir_cfg = f"-c safe.directory={repo_dir}"
         clone_cmd = (
-            f"mkdir -p /u01/installer_kit && "
+            f"mkdir -p /u01/BD_Installer_Kit && "
             f"if [ -d {repo_dir}/.git ]; then "
             f"cd {repo_dir} && "
             f"(git -c http.sslVerify=false -c protocol.version=2 {safe_dir_cfg} pull --ff-only --no-tags || "
@@ -139,7 +139,7 @@ class JavaService:
 
     async def create_ofsaa_directories(self, host: str, username: str, password: str) -> dict:
         logs: list[str] = []
-        dirs = ["/u01/OFSAA/FICHOME", "/u01/OFSAA/FTPSHARE", "/u01/installer_kit"]
+        dirs = ["/u01/OFSAA/FICHOME", "/u01/OFSAA/FTPSHARE", "/u01/BD_Installer_Kit"]
         for path in dirs:
             check = await self.validation.check_directory_exists(host, username, password, path)
             if check.get("exists"):
@@ -157,7 +157,7 @@ class JavaService:
             logs.append(f"[OK] Created {path}")
 
         result = await self.ssh_service.execute_command(
-            host, username, password, "chown -R oracle:oinstall /u01/OFSAA /u01/installer_kit", get_pty=True
+            host, username, password, "chown -R oracle:oinstall /u01/OFSAA /u01/BD_Installer_Kit", get_pty=True
         )
         if not result["success"]:
             return {

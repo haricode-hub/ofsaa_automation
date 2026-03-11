@@ -15,7 +15,7 @@ The backend executes these SSH commands in sequence:
 
 1. **Oracle User Setup**:
    ```bash
-   groupadd -f oinstall; id -u oracle &>/dev/null || useradd -g oinstall oracle; mkdir -p /u01/OFSAA/FICHOME /u01/OFSAA/FTPSHARE /u01/installer_kit; chown -R oracle:oinstall /u01
+   groupadd -f oinstall; id -u oracle &>/dev/null || useradd -g oinstall oracle; mkdir -p /u01/OFSAA/FICHOME /u01/OFSAA/FTPSHARE /u01/BD_Installer_Kit; chown -R oracle:oinstall /u01
    ```
 
 2. **Package Installation**:
@@ -25,7 +25,7 @@ The backend executes these SSH commands in sequence:
 
 3. **Installer Extraction**:
    ```bash
-   sudo -u oracle bash -c 'cd /u01/installer_kit && unzip -o *.zip'
+   sudo -u oracle bash -c 'cd /u01/BD_Installer_Kit && unzip -o *.zip'
    ```
 
 ## Quick Start

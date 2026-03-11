@@ -24,7 +24,7 @@ class InstallerService:
         password: str,
     ) -> dict:
         logs: list[str] = []
-        target_dir = "/u01/installer_kit"
+        target_dir = "/u01/BD_Installer_Kit"
         repo_dir = Config.REPO_DIR
         safe_dir_cfg = f"-c safe.directory={repo_dir}"
 
@@ -123,7 +123,7 @@ class InstallerService:
         return {"success": True, "logs": logs}
 
     async def set_permissions(self, host: str, username: str, password: str) -> dict:
-        cmd = "chmod -R 775 /u01/installer_kit/OFS_BD_PACK"
+        cmd = "chmod -R 775 /u01/BD_Installer_Kit/OFS_BD_PACK"
         result = await self.ssh_service.execute_command(host, username, password, cmd, get_pty=True)
         if not result["success"]:
             return {"success": False, "logs": [], "error": result.get("stderr") or "Failed to set permissions"}
@@ -143,6 +143,8 @@ class InstallerService:
         logs.append("[CLEANUP] All Java processes killed")
 
         dirs = [
+            "/u01/BD_Installer_Kit",
+            "/u01/ECM_Installer_Kit",
             "/u01/installer_kit",
             "/u01/INSTALLER_KIT",
             "/u01/INSTALLER_KIT_AUTOMATION",
@@ -283,7 +285,7 @@ class InstallerService:
         logs: list[str] = []
         updated_repo_pathspecs: set[str] = set()
         repo_dir = Config.REPO_DIR
-        kit_dir = "/u01/installer_kit/OFS_BD_PACK"
+        kit_dir = "/u01/BD_Installer_Kit/OFS_BD_PACK"
         safe_dir_cfg = f"-c safe.directory={repo_dir}"
         fast_config_apply = str(Config.FAST_CONFIG_APPLY).strip().lower() in {"1", "true", "yes", "y"}
         enable_config_push = str(Config.ENABLE_CONFIG_PUSH).strip().lower() in {"1", "true", "yes", "y"}
@@ -292,7 +294,7 @@ class InstallerService:
         git_auth_setup = self._git_auth_setup_cmd()
         if fast_config_apply:
             cmd_prepare_repo = (
-                "mkdir -p /u01/installer_kit && "
+                "mkdir -p /u01/BD_Installer_Kit && "
                 f"{git_auth_setup}"
                 f"if [ -d {repo_dir}/.git ]; then "
                 "echo 'REPO_READY_FAST'; "
@@ -300,7 +302,7 @@ class InstallerService:
             )
         else:
             cmd_prepare_repo = (
-                "mkdir -p /u01/installer_kit && "
+                "mkdir -p /u01/BD_Installer_Kit && "
                 f"{git_auth_setup}"
                 f"if [ -d {repo_dir}/.git ]; then "
                 f"cd {repo_dir} && "
@@ -1029,7 +1031,7 @@ class InstallerService:
         on_prompt_callback: Optional[Callable[[str], Any]] = None,
     ) -> dict:
         osc_candidates = [
-            "/u01/installer_kit/OFS_BD_PACK/schema_creator/bin/osc.sh",
+            "/u01/BD_Installer_Kit/OFS_BD_PACK/schema_creator/bin/osc.sh",
         ]
         osc_path = None
         for candidate in osc_candidates:
@@ -1194,8 +1196,7 @@ class InstallerService:
         install_sanc: Optional[bool] = None,
     ) -> dict:
         setup_candidates = [
-            "/u01/installer_kit/OFS_BD_PACK/bin/setup.sh",
-            "/u01/INSTALLER_KIT/OFS_BD_PACK/bin/setup.sh",
+            "/u01/BD_Installer_Kit/OFS_BD_PACK/bin/setup.sh",
         ]
 
         setup_path = None
@@ -1335,7 +1336,7 @@ class InstallerService:
         password: str,
         **_kwargs,
     ) -> dict:
-        pack_log_path = "/u01/installer_kit/OFS_BD_PACK/logs/Pack_Install.log"
+        pack_log_path = "/u01/BD_Installer_Kit/OFS_BD_PACK/logs/Pack_Install.log"
         cmd = (
             f'log={shell_escape(pack_log_path)}; '
             'if [ -f "$log" ]; then '
@@ -1363,7 +1364,7 @@ class InstallerService:
         on_output_callback: Optional[Callable[[str], Any]] = None,
         on_prompt_callback: Optional[Callable[[str], Any]] = None,
     ) -> dict:
-        bin_dir = "/u01/installer_kit/OFS_BD_PACK/OFS_AAI/bin"
+        bin_dir = "/u01/BD_Installer_Kit/OFS_BD_PACK/OFS_AAI/bin"
         envcheck_path = f"{bin_dir}/envCheck.sh"
         verinfo_path = f"{bin_dir}/VerInfo.txt"
 
@@ -1463,7 +1464,7 @@ class InstallerService:
     ) -> dict:
         """Download and extract ECM installer kit from ECM_PACK folder in repo."""
         logs: list[str] = []
-        target_dir = "/u01/INSTALLER_KIT"
+        target_dir = "/u01/ECM_Installer_Kit"
         repo_dir = Config.REPO_DIR
         safe_dir_cfg = f"-c safe.directory={repo_dir}"
 
@@ -1566,7 +1567,7 @@ class InstallerService:
 
     async def set_ecm_permissions(self, host: str, username: str, password: str) -> dict:
         """Set permissions and ownership on ECM kit directory."""
-        cmd = "chown -R oracle:oinstall /u01/INSTALLER_KIT/OFS_ECM_PACK && chmod -R 775 /u01/INSTALLER_KIT/OFS_ECM_PACK"
+        cmd = "chown -R oracle:oinstall /u01/ECM_Installer_Kit/OFS_ECM_PACK && chmod -R 775 /u01/ECM_Installer_Kit/OFS_ECM_PACK"
         result = await self.ssh_service.execute_command(host, username, password, cmd, get_pty=True)
         if not result["success"]:
             return {"success": False, "logs": [], "error": result.get("stderr") or "Failed to set ECM permissions"}
@@ -1939,7 +1940,7 @@ class InstallerService:
         logs: list[str] = []
         updated_repo_pathspecs: set[str] = set()
         repo_dir = Config.REPO_DIR
-        kit_dir = "/u01/INSTALLER_KIT/OFS_ECM_PACK"
+        kit_dir = "/u01/ECM_Installer_Kit/OFS_ECM_PACK"
         safe_dir_cfg = f"-c safe.directory={repo_dir}"
         fast_config_apply = str(Config.FAST_CONFIG_APPLY).strip().lower() in {"1", "true", "yes", "y"}
         enable_config_push = str(Config.ENABLE_CONFIG_PUSH).strip().lower() in {"1", "true", "yes", "y"}
@@ -1948,7 +1949,7 @@ class InstallerService:
         git_auth_setup = self._git_auth_setup_cmd()
         if fast_config_apply:
             cmd_prepare_repo = (
-                "mkdir -p /u01/INSTALLER_KIT && "
+                "mkdir -p /u01/ECM_Installer_Kit && "
                 f"{git_auth_setup}"
                 f"if [ -d {repo_dir}/.git ]; then "
                 "echo 'REPO_READY_FAST'; "
@@ -1956,7 +1957,7 @@ class InstallerService:
             )
         else:
             cmd_prepare_repo = (
-                "mkdir -p /u01/INSTALLER_KIT && "
+                "mkdir -p /u01/ECM_Installer_Kit && "
                 f"{git_auth_setup}"
                 f"if [ -d {repo_dir}/.git ]; then "
                 f"cd {repo_dir} && "
@@ -2132,7 +2133,7 @@ class InstallerService:
             logs.append(f"[OK] Updated ECM kit file: {dest_path}")
 
         # Fix ownership of entire ECM kit directory to oracle
-        fix_ownership_cmd = "chown -R oracle:oinstall /u01/INSTALLER_KIT/OFS_ECM_PACK && chmod -R 775 /u01/INSTALLER_KIT/OFS_ECM_PACK"
+        fix_ownership_cmd = "chown -R oracle:oinstall /u01/ECM_Installer_Kit/OFS_ECM_PACK && chmod -R 775 /u01/ECM_Installer_Kit/OFS_ECM_PACK"
         await self.ssh_service.execute_command(host, username, password, fix_ownership_cmd, get_pty=True)
         logs.append("[OK] Fixed ECM kit ownership to oracle:oinstall")
 
@@ -2159,7 +2160,7 @@ class InstallerService:
         on_prompt_callback: Optional[Callable[[str], Any]] = None,
     ) -> dict:
         """Run ECM schema creator osc.sh."""
-        osc_path = "/u01/INSTALLER_KIT/OFS_ECM_PACK/schema_creator/bin/osc.sh"
+        osc_path = "/u01/ECM_Installer_Kit/OFS_ECM_PACK/schema_creator/bin/osc.sh"
         
         check = await self.ssh_service.execute_command(host, username, password, f"test -x {osc_path}")
         if not check["success"]:
@@ -2305,7 +2306,7 @@ class InstallerService:
         on_prompt_callback: Optional[Callable[[str], Any]] = None,
     ) -> dict:
         """Run ECM setup.sh SILENT."""
-        setup_path = "/u01/INSTALLER_KIT/OFS_ECM_PACK/bin/setup.sh"
+        setup_path = "/u01/ECM_Installer_Kit/OFS_ECM_PACK/bin/setup.sh"
 
         check = await self.ssh_service.execute_command(host, username, password, f"test -x {setup_path}")
         if not check["success"]:
@@ -2381,7 +2382,7 @@ class InstallerService:
                 captured_lines.append(tail)
 
         # Collect installation summary
-        pack_log_path = "/u01/INSTALLER_KIT/OFS_ECM_PACK/logs/Pack_Install.log"
+        pack_log_path = "/u01/ECM_Installer_Kit/OFS_ECM_PACK/logs/Pack_Install.log"
         summary_cmd = (
             f'log={shell_escape(pack_log_path)}; '
             'if [ -f "$log" ]; then '

@@ -193,7 +193,7 @@ class RecoveryService:
         from datetime import datetime as _dt
         timestamp = _dt.now().strftime("%Y%m%d_%H%M%S")
         backup_filename = f"OFSAA_BKP_{backup_tag}_{timestamp}.tar.gz"
-        logs = [f"[BACKUP] Starting application backup (tag={backup_tag})..."]
+        logs = [f"[BACKUP] Starting application backup as oracle user (tag={backup_tag})..."]
 
         # Verify OFSAA directory exists
         check_cmd = f"test -d {ofsaa_dir}/OFSAA && echo 'EXISTS' || echo 'MISSING'"
@@ -202,13 +202,33 @@ class RecoveryService:
             logs.append(f"[BACKUP] ERROR: {ofsaa_dir}/OFSAA directory not found")
             return {"success": False, "logs": logs, "error": "OFSAA directory not found"}
 
-        # Remove old backup if exists
-        rm_cmd = f"rm -f {ofsaa_dir}/{backup_filename}"
+        # Remove old backup if exists (as oracle)
+        rm_inner = f"rm -f {ofsaa_dir}/{backup_filename}"
+        if username == "oracle":
+            rm_cmd = rm_inner
+        else:
+            rm_cmd = (
+                "if command -v sudo >/dev/null 2>&1; then "
+                f"sudo -u oracle bash -c {shell_escape(rm_inner)}; "
+                "else "
+                f"su - oracle -c {shell_escape(rm_inner)}; "
+                "fi"
+            )
         await self.ssh_service.execute_command(host, username, password, rm_cmd)
 
-        # Create tar backup
-        tar_cmd = f"cd {ofsaa_dir} && tar -cvf {backup_filename} OFSAA"
-        logs.append(f"[BACKUP] Running: cd {ofsaa_dir} && tar -cvf {backup_filename} OFSAA")
+        # Create tar backup as oracle user
+        tar_inner = f"cd {ofsaa_dir} && tar -cvf {backup_filename} OFSAA"
+        if username == "oracle":
+            tar_cmd = tar_inner
+        else:
+            tar_cmd = (
+                "if command -v sudo >/dev/null 2>&1; then "
+                f"sudo -u oracle bash -c {shell_escape(tar_inner)}; "
+                "else "
+                f"su - oracle -c {shell_escape(tar_inner)}; "
+                "fi"
+            )
+        logs.append(f"[BACKUP] Running as oracle: cd {ofsaa_dir} && tar -cvf {backup_filename} OFSAA")
         tar_result = await self.ssh_service.execute_command(
             host, username, password, tar_cmd, timeout=3600
         )
@@ -518,7 +538,7 @@ bash ./backup_ofs_schemas.sh
 
         Falls back to legacy OFSAA_BKP.tar.gz if no tagged backup found.
         """
-        logs = ["[RESTORE] Starting application restore..."]
+        logs = ["[RESTORE] Starting application restore as oracle user..."]
 
         # Find the most recent tagged backup file
         find_cmd = f"ls -1t {ofsaa_dir}/OFSAA_BKP_{backup_tag}_*.tar.gz 2>/dev/null | head -1"
@@ -540,18 +560,38 @@ bash ./backup_ofs_schemas.sh
                 logs.append(f"[RESTORE] ERROR: No backup found (pattern: OFSAA_BKP_{backup_tag}_*.tar.gz or OFSAA_BKP.tar.gz)")
                 return {"success": False, "logs": logs, "error": "Application backup file not found"}
 
-        # Step 1: Remove existing OFSAA directory (mandatory per guide)
-        logs.append("[RESTORE] Step 1: Removing existing OFSAA directory...")
-        rm_cmd = f"rm -rf {ofsaa_dir}/OFSAA"
+        # Step 1: Remove existing OFSAA directory as oracle (mandatory per guide)
+        logs.append("[RESTORE] Step 1: Removing existing OFSAA directory as oracle...")
+        rm_inner = f"rm -rf {ofsaa_dir}/OFSAA"
+        if username == "oracle":
+            rm_cmd = rm_inner
+        else:
+            rm_cmd = (
+                "if command -v sudo >/dev/null 2>&1; then "
+                f"sudo -u oracle bash -c {shell_escape(rm_inner)}; "
+                "else "
+                f"su - oracle -c {shell_escape(rm_inner)}; "
+                "fi"
+            )
         rm_result = await self.ssh_service.execute_command(host, username, password, rm_cmd, timeout=600)
         if not rm_result.get("success"):
             logs.append(f"[RESTORE] ERROR: Failed to remove OFSAA directory: {rm_result.get('stderr', '')}")
             return {"success": False, "logs": logs, "error": "Failed to remove OFSAA directory"}
         logs.append("[RESTORE] Existing OFSAA directory removed")
 
-        # Step 2: Extract backup
-        logs.append("[RESTORE] Step 2: Restoring application from backup...")
-        tar_cmd = f"cd {ofsaa_dir} && tar -xvf {backup_filename}"
+        # Step 2: Extract backup as oracle user
+        logs.append("[RESTORE] Step 2: Restoring application from backup as oracle...")
+        tar_inner = f"cd {ofsaa_dir} && tar -xvf {backup_filename}"
+        if username == "oracle":
+            tar_cmd = tar_inner
+        else:
+            tar_cmd = (
+                "if command -v sudo >/dev/null 2>&1; then "
+                f"sudo -u oracle bash -c {shell_escape(tar_inner)}; "
+                "else "
+                f"su - oracle -c {shell_escape(tar_inner)}; "
+                "fi"
+            )
         tar_result = await self.ssh_service.execute_command(
             host, username, password, tar_cmd, timeout=3600
         )
@@ -870,9 +910,19 @@ bash ./restore_ofs_schemas.sh
             logs.append(f"[RECOVERY] {ofsaa_dir}/OFSAA directory does not exist, skipping removal")
             return {"success": True, "logs": logs}
 
-        # Remove OFSAA directory
-        rm_cmd = f"rm -rf {ofsaa_dir}/OFSAA"
-        logs.append(f"[RECOVERY] Removing {ofsaa_dir}/OFSAA ...")
+        # Remove OFSAA directory as oracle user
+        rm_inner = f"rm -rf {ofsaa_dir}/OFSAA"
+        if username == "oracle":
+            rm_cmd = rm_inner
+        else:
+            rm_cmd = (
+                "if command -v sudo >/dev/null 2>&1; then "
+                f"sudo -u oracle bash -c {shell_escape(rm_inner)}; "
+                "else "
+                f"su - oracle -c {shell_escape(rm_inner)}; "
+                "fi"
+            )
+        logs.append(f"[RECOVERY] Removing {ofsaa_dir}/OFSAA as oracle user...")
         rm_result = await self.ssh_service.execute_command(host, username, password, rm_cmd, timeout=600)
 
         if not rm_result.get("success"):
