@@ -505,3 +505,116 @@ class InstallationService:
         """Run ECM setup.sh SILENT."""
         return await self.installer.run_ecm_setup_silent(host, username, password, **kwargs)
 
+    # ============== SANC MODULE METHODS ==============
+
+    async def download_and_extract_sanc_installer(self, host: str, username: str, password: str) -> dict:
+        """Download and extract SANC installer kit."""
+        return await self.installer.download_and_extract_sanc_installer(host, username, password)
+
+    async def set_sanc_permissions(self, host: str, username: str, password: str) -> dict:
+        """Set permissions on SANC kit directory."""
+        return await self.installer.set_sanc_permissions(host, username, password)
+
+    async def apply_sanc_config_files(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        # OFS_SANC_SCHEMA_IN.xml params
+        sanc_schema_jdbc_host: Optional[str] = None,
+        sanc_schema_jdbc_port: Optional[int] = None,
+        sanc_schema_jdbc_service: Optional[str] = None,
+        sanc_schema_host: Optional[str] = None,
+        sanc_schema_setup_env: Optional[str] = None,
+        sanc_schema_apply_same_for_all: Optional[str] = None,
+        sanc_schema_default_password: Optional[str] = None,
+        sanc_schema_datafile_dir: Optional[str] = None,
+        sanc_schema_tablespace_autoextend: Optional[str] = None,
+        sanc_schema_external_directory_value: Optional[str] = None,
+        sanc_schema_config_schema_name: Optional[str] = None,
+        sanc_schema_atomic_schema_name: Optional[str] = None,
+        # SANC default.properties SWIFTINFO values
+        sanc_cs_swiftinfo: Optional[str] = None,
+        sanc_tflt_swiftinfo: Optional[str] = None,
+        # OFSAAI_InstallConfig.xml params
+        aai_webappservertype: Optional[str] = None,
+        aai_dbserver_ip: Optional[str] = None,
+        aai_oracle_service_name: Optional[str] = None,
+        aai_abs_driver_path: Optional[str] = None,
+        aai_olap_server_implementation: Optional[str] = None,
+        aai_sftp_enable: Optional[str] = None,
+        aai_file_transfer_port: Optional[str] = None,
+        aai_javaport: Optional[str] = None,
+        aai_nativeport: Optional[str] = None,
+        aai_agentport: Optional[str] = None,
+        aai_iccport: Optional[str] = None,
+        aai_iccnativeport: Optional[str] = None,
+        aai_olapport: Optional[str] = None,
+        aai_msgport: Optional[str] = None,
+        aai_routerport: Optional[str] = None,
+        aai_amport: Optional[str] = None,
+        aai_https_enable: Optional[str] = None,
+        aai_web_server_ip: Optional[str] = None,
+        aai_web_server_port: Optional[str] = None,
+        aai_context_name: Optional[str] = None,
+        aai_webapp_context_path: Optional[str] = None,
+        aai_web_local_path: Optional[str] = None,
+        aai_weblogic_domain_home: Optional[str] = None,
+        aai_ftspshare_path: Optional[str] = None,
+        aai_sftp_user_id: Optional[str] = None,
+    ) -> dict:
+        """Apply SANC config files from repo."""
+        return await self.installer.apply_sanc_config_files_from_repo(
+            host,
+            username,
+            password,
+            sanc_schema_jdbc_host=sanc_schema_jdbc_host,
+            sanc_schema_jdbc_port=sanc_schema_jdbc_port,
+            sanc_schema_jdbc_service=sanc_schema_jdbc_service,
+            sanc_schema_host=sanc_schema_host,
+            sanc_schema_setup_env=sanc_schema_setup_env,
+            sanc_schema_apply_same_for_all=sanc_schema_apply_same_for_all,
+            sanc_schema_default_password=sanc_schema_default_password,
+            sanc_schema_datafile_dir=sanc_schema_datafile_dir,
+            sanc_schema_tablespace_autoextend=sanc_schema_tablespace_autoextend,
+            sanc_schema_external_directory_value=sanc_schema_external_directory_value,
+            sanc_schema_config_schema_name=sanc_schema_config_schema_name,
+            sanc_schema_atomic_schema_name=sanc_schema_atomic_schema_name,
+            sanc_cs_swiftinfo=sanc_cs_swiftinfo,
+            sanc_tflt_swiftinfo=sanc_tflt_swiftinfo,
+            aai_webappservertype=aai_webappservertype,
+            aai_dbserver_ip=aai_dbserver_ip,
+            aai_oracle_service_name=aai_oracle_service_name,
+            aai_abs_driver_path=aai_abs_driver_path,
+            aai_olap_server_implementation=aai_olap_server_implementation,
+            aai_sftp_enable=aai_sftp_enable,
+            aai_file_transfer_port=aai_file_transfer_port,
+            aai_javaport=aai_javaport,
+            aai_nativeport=aai_nativeport,
+            aai_agentport=aai_agentport,
+            aai_iccport=aai_iccport,
+            aai_iccnativeport=aai_iccnativeport,
+            aai_olapport=aai_olapport,
+            aai_msgport=aai_msgport,
+            aai_routerport=aai_routerport,
+            aai_amport=aai_amport,
+            aai_https_enable=aai_https_enable,
+            aai_web_server_ip=aai_web_server_ip,
+            aai_web_server_port=aai_web_server_port,
+            aai_context_name=aai_context_name,
+            aai_webapp_context_path=aai_webapp_context_path,
+            aai_web_local_path=aai_web_local_path,
+            aai_weblogic_domain_home=aai_weblogic_domain_home,
+            aai_ftspshare_path=aai_ftspshare_path,
+            aai_sftp_user_id=aai_sftp_user_id,
+        )
+
+    async def run_sanc_osc_schema_creator(self, host: str, username: str, password: str, **kwargs) -> dict:
+        """Run SANC schema creator osc.sh."""
+        return await self.installer.run_sanc_osc_schema_creator(host, username, password, **kwargs)
+
+    async def run_sanc_setup_silent(self, host: str, username: str, password: str, **kwargs) -> dict:
+        """Run SANC setup.sh SILENT."""
+        return await self.installer.run_sanc_setup_silent(host, username, password, **kwargs)
+

@@ -175,6 +175,25 @@ class InstallationRequest(BaseModel):
     ecm_aai_ftspshare_path: Optional[str] = Field(default="/u01/OFSAA/FTPSHARE", description="ECM OFSAAI_FTPSHARE_PATH")
     ecm_aai_sftp_user_id: Optional[str] = Field(default="oracle", description="ECM OFSAAI_SFTP_USER_ID")
 
+    # ============== SANC MODULE FIELDS ==============
+    # OFS_SANC_SCHEMA_IN.xml fields (mirrors BD Pack schema inputs)
+    sanc_schema_jdbc_host: Optional[str] = Field(default=None, description="SANC DB host for JDBC_URL")
+    sanc_schema_jdbc_port: Optional[int] = Field(default=1521, description="SANC DB port for JDBC_URL")
+    sanc_schema_jdbc_service: Optional[str] = Field(default=None, description="SANC DB service/SID for JDBC_URL")
+    sanc_schema_host: Optional[str] = Field(default=None, description="SANC application hostname")
+    sanc_schema_setup_env: Optional[str] = Field(default="DEV", description="SANC SETUPINFO NAME (DEV/UAT/PROD etc.)")
+    sanc_schema_apply_same_for_all: Optional[str] = Field(default="Y", description="SANC PASSWORD APPLYSAMEFORALL (Y/N)")
+    sanc_schema_default_password: Optional[str] = Field(default=None, description="SANC schema password")
+    sanc_schema_datafile_dir: Optional[str] = Field(default=None, description="SANC datafile directory base path")
+    sanc_schema_tablespace_autoextend: Optional[str] = Field(default="OFF", description="SANC TABLESPACE AUTOEXTEND (ON/OFF)")
+    sanc_schema_external_directory_value: Optional[str] = Field(default=None, description="SANC external DIRECTORY VALUE path")
+    sanc_schema_config_schema_name: Optional[str] = Field(default=None, description="SANC CONFIG schema name")
+    sanc_schema_atomic_schema_name: Optional[str] = Field(default=None, description="SANC ATOMIC schema name (applies to all ATOMIC schemas)")
+
+    # SANC default.properties fields (CS/TFLT SWIFTINFO only)
+    sanc_cs_swiftinfo: Optional[str] = Field(default=None, description="SWIFTINFO value for OFS_CS default.properties")
+    sanc_tflt_swiftinfo: Optional[str] = Field(default=None, description="SWIFTINFO value for OFS_TFLT default.properties")
+
 class InstallationResponse(BaseModel):
     """Schema for installation response"""
     task_id: str

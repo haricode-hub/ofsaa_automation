@@ -1604,6 +1604,51 @@ class InstallerService:
             return None
         return first
 
+    async def _resolve_repo_sanc_pack_file_path(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        repo_dir: str,
+        filename: str,
+    ) -> Optional[str]:
+        """Resolve file path for SANC files in the repo.
+
+        Prefer SANC-specific folders if they exist, but fall back to a generic
+        search so layout changes in the Git repo don't break automation.
+        """
+        # First try a SANC-specific subfolder (SANC_PACK or SANC_INSTALLER_KIT_AUTOMATION)
+        candidate_dirs = [
+            f"{repo_dir}/SANC_PACK",
+            f"{repo_dir}/SANC_INSTALLER_KIT_AUTOMATION",
+        ]
+        for base in candidate_dirs:
+            preferred_path = f"{base}/{filename}"
+            preferred_check = await self.ssh_service.execute_command(
+                host,
+                username,
+                password,
+                f"test -f {shell_escape(preferred_path)} && echo FOUND",
+            )
+            if preferred_check.get("success") and "FOUND" in (preferred_check.get("stdout") or ""):
+                return preferred_path
+
+        # Fallback: search anywhere under repo for the given filename, but avoid *_BEFORE copies.
+        fallback_cmd = (
+            f"src=$(find {repo_dir} -type f -name '{filename}' ! -name '*_BEFORE*' -print | head -n 1); "
+            "if [ -z \"$src\" ]; then echo 'NOT_FOUND'; exit 0; fi; "
+            "echo $src"
+        )
+        fallback_result = await self.ssh_service.execute_command(host, username, password, fallback_cmd)
+        src_lines = (fallback_result.get("stdout") or "").splitlines()
+        if not src_lines:
+            return None
+        first = src_lines[0].strip()
+        if not first or first == "NOT_FOUND":
+            return None
+        return first
+
     def _patch_ofs_ecm_schema_in_content(
         self,
         content: str,
@@ -1754,6 +1799,200 @@ class InstallerService:
 
         logs.append("[OK] Updated OFS_ECM_SCHEMA_IN.xml in repo")
         return {"success": True, "logs": logs, "changed": True, "source_path": src_path}
+
+    # ============== SANC MODULE HELPERS ==============
+
+    def _patch_ofs_sanc_schema_in_content(
+        self,
+        content: str,
+        *,
+        sanc_schema_jdbc_host: Optional[str],
+        sanc_schema_jdbc_port: Optional[int],
+        sanc_schema_jdbc_service: Optional[str],
+        sanc_schema_host: Optional[str],
+        sanc_schema_setup_env: Optional[str],
+        sanc_schema_apply_same_for_all: Optional[str],
+        sanc_schema_default_password: Optional[str],
+        sanc_schema_datafile_dir: Optional[str],
+        sanc_schema_tablespace_autoextend: Optional[str],
+        sanc_schema_external_directory_value: Optional[str],
+        sanc_schema_config_schema_name: Optional[str],
+        sanc_schema_atomic_schema_name: Optional[str],
+    ) -> str:
+        """Patch OFS_SANC_SCHEMA_IN.xml content with UI-provided values.
+
+        This mirrors the BD/ECM schema behaviour but targets the SANC schema file.
+        """
+        updated = content
+
+        # JDBC URL
+        if (
+            sanc_schema_jdbc_host is not None
+            and sanc_schema_jdbc_port is not None
+            and sanc_schema_jdbc_service is not None
+        ):
+            jdbc_url = f"jdbc:oracle:thin:@//{sanc_schema_jdbc_host}:{sanc_schema_jdbc_port}/{sanc_schema_jdbc_service}"
+            updated = re.sub(
+                r"<JDBC_URL>.*?</JDBC_URL>",
+                f"<JDBC_URL>{jdbc_url}</JDBC_URL>",
+                updated,
+                flags=re.DOTALL,
+            )
+
+        # HOST
+        if sanc_schema_host is not None and str(sanc_schema_host).strip():
+            updated = re.sub(r"<HOST>.*?</HOST>", f"<HOST>{sanc_schema_host}</HOST>", updated, flags=re.DOTALL)
+
+        # SETUPINFO NAME
+        if sanc_schema_setup_env is not None:
+            updated = re.sub(
+                r'(<SETUPINFO\b[^>]*\bNAME=")[^"]*(")',
+                rf"\g<1>{sanc_schema_setup_env}\g<2>",
+                updated,
+            )
+
+        # PASSWORD attributes
+        if sanc_schema_apply_same_for_all is not None:
+            updated = re.sub(
+                r'(<PASSWORD\b[^>]*\bAPPLYSAMEFORALL=")[^"]*(")',
+                rf"\g<1>{sanc_schema_apply_same_for_all}\g<2>",
+                updated,
+            )
+
+        if sanc_schema_default_password is not None:
+            updated = re.sub(
+                r'(<PASSWORD\b[^>]*\bDEFAULT=")[^"]*(")',
+                rf"\g<1>{sanc_schema_default_password}\g<2>",
+                updated,
+            )
+
+        # TABLESPACE AUTOEXTEND
+        if sanc_schema_tablespace_autoextend is not None:
+            updated = re.sub(
+                r'(\bAUTOEXTEND=")[^"]*(")',
+                rf"\g<1>{sanc_schema_tablespace_autoextend}\g<2>",
+                updated,
+            )
+
+        # DATAFILE directory
+        if sanc_schema_datafile_dir:
+            base_dir = sanc_schema_datafile_dir.rstrip("/")
+
+            def _repl_datafile(m: re.Match) -> str:
+                prefix, path, suffix = m.group(1), m.group(2), m.group(3)
+                filename = os.path.basename(path)
+                return f"{prefix}{base_dir}/{filename}{suffix}"
+
+            updated = re.sub(r'(\bDATAFILE=")([^"]+)(")', _repl_datafile, updated)
+
+        # DIRECTORY VALUE (no strict ID match – SANC XML may use its own IDs)
+        if sanc_schema_external_directory_value is not None:
+            updated = re.sub(
+                r'(<DIRECTORY\b[^>]*\bVALUE=")[^"]*(")',
+                rf"\g<1>{sanc_schema_external_directory_value}\g<2>",
+                updated,
+            )
+
+        # CONFIG schema name
+        if sanc_schema_config_schema_name is not None:
+            updated = re.sub(
+                r'(<SCHEMA\b[^>]*\bTYPE="CONFIG"[^>]*\bNAME=")[^"]*(")',
+                rf"\g<1>{sanc_schema_config_schema_name}\g<2>",
+                updated,
+            )
+
+        # ATOMIC schema name
+        if sanc_schema_atomic_schema_name is not None:
+            updated = re.sub(
+                r'(<SCHEMA\b[^>]*\bTYPE="ATOMIC"[^>]*\bNAME=")[^"]*(")',
+                rf"\g<1>{sanc_schema_atomic_schema_name}\g<2>",
+                updated,
+            )
+
+        return updated
+
+    async def _patch_ofs_sanc_schema_in_repo(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        repo_dir: str,
+        sanc_schema_jdbc_host: Optional[str],
+        sanc_schema_jdbc_port: Optional[int],
+        sanc_schema_jdbc_service: Optional[str],
+        sanc_schema_host: Optional[str],
+        sanc_schema_setup_env: Optional[str],
+        sanc_schema_apply_same_for_all: Optional[str],
+        sanc_schema_default_password: Optional[str],
+        sanc_schema_datafile_dir: Optional[str],
+        sanc_schema_tablespace_autoextend: Optional[str],
+        sanc_schema_external_directory_value: Optional[str],
+        sanc_schema_config_schema_name: Optional[str],
+        sanc_schema_atomic_schema_name: Optional[str],
+    ) -> dict:
+        """Patch OFS_SANC_SCHEMA_IN.xml in the repo."""
+        logs: list[str] = []
+
+        src_path = await self._resolve_repo_sanc_pack_file_path(
+            host, username, password, repo_dir=repo_dir, filename="OFS_SANC_SCHEMA_IN.xml"
+        )
+        if not src_path:
+            return {"success": False, "logs": logs, "error": "OFS_SANC_SCHEMA_IN.xml not found in repo"}
+        logs.append(f"[INFO] Patching SANC schema XML: {src_path}")
+
+        read = await self._read_remote_file(host, username, password, src_path)
+        if not read.get("success"):
+            return {"success": False, "logs": logs, "error": read.get("error")}
+
+        original = read.get("content", "")
+        patched = self._patch_ofs_sanc_schema_in_content(
+            original,
+            sanc_schema_jdbc_host=sanc_schema_jdbc_host,
+            sanc_schema_jdbc_port=sanc_schema_jdbc_port,
+            sanc_schema_jdbc_service=sanc_schema_jdbc_service,
+            sanc_schema_host=sanc_schema_host,
+            sanc_schema_setup_env=sanc_schema_setup_env,
+            sanc_schema_apply_same_for_all=sanc_schema_apply_same_for_all,
+            sanc_schema_default_password=sanc_schema_default_password,
+            sanc_schema_datafile_dir=sanc_schema_datafile_dir,
+            sanc_schema_tablespace_autoextend=sanc_schema_tablespace_autoextend,
+            sanc_schema_external_directory_value=sanc_schema_external_directory_value,
+            sanc_schema_config_schema_name=sanc_schema_config_schema_name,
+            sanc_schema_atomic_schema_name=sanc_schema_atomic_schema_name,
+        )
+
+        if patched == original:
+            logs.append("[INFO] No changes needed for OFS_SANC_SCHEMA_IN.xml")
+            return {"success": True, "logs": logs, "changed": False, "source_path": src_path}
+
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        backup_cmd = f"cp -f {src_path} {src_path}.backup.{ts}"
+        await self.ssh_service.execute_command(host, username, password, backup_cmd, get_pty=True)
+        write = await self._write_remote_file(host, username, password, src_path, patched)
+        if not write.get("success"):
+            return {"success": False, "logs": logs, "error": write.get("error")}
+
+        logs.append("[OK] Updated OFS_SANC_SCHEMA_IN.xml in repo")
+        return {"success": True, "logs": logs, "changed": True, "source_path": src_path}
+
+    def _patch_sanc_properties_swiftinfo(self, content: str, swiftinfo: Optional[str]) -> str:
+        """Patch or inject SWIFTINFO property in a default.properties-style file."""
+        if swiftinfo is None:
+            return content
+
+        lines = content.splitlines()
+        updated_lines: list[str] = []
+        found = False
+        for line in lines:
+            if re.match(r"^\s*SWIFTINFO\s*=", line):
+                updated_lines.append(f"SWIFTINFO={swiftinfo}")
+                found = True
+            else:
+                updated_lines.append(line)
+        if not found:
+            updated_lines.append(f"SWIFTINFO={swiftinfo}")
+        return "\n".join(updated_lines) + "\n"
 
     def _patch_ecm_default_properties_content(self, content: str, *, updates: dict[str, Optional[str]]) -> str:
         """Patch ECM default.properties content with provided values."""
@@ -2151,6 +2390,253 @@ class InstallerService:
 
         return {"success": True, "logs": logs}
 
+    async def apply_sanc_config_files_from_repo(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        # OFS_SANC_SCHEMA_IN.xml params
+        sanc_schema_jdbc_host: Optional[str] = None,
+        sanc_schema_jdbc_port: Optional[int] = None,
+        sanc_schema_jdbc_service: Optional[str] = None,
+        sanc_schema_host: Optional[str] = None,
+        sanc_schema_setup_env: Optional[str] = None,
+        sanc_schema_apply_same_for_all: Optional[str] = None,
+        sanc_schema_default_password: Optional[str] = None,
+        sanc_schema_datafile_dir: Optional[str] = None,
+        sanc_schema_tablespace_autoextend: Optional[str] = None,
+        sanc_schema_external_directory_value: Optional[str] = None,
+        sanc_schema_config_schema_name: Optional[str] = None,
+        sanc_schema_atomic_schema_name: Optional[str] = None,
+        # SANC default.properties SWIFTINFO values
+        sanc_cs_swiftinfo: Optional[str] = None,
+        sanc_tflt_swiftinfo: Optional[str] = None,
+        # OFSAAI_InstallConfig.xml params (reuse BD Pack structure)
+        aai_webappservertype: Optional[str] = None,
+        aai_dbserver_ip: Optional[str] = None,
+        aai_oracle_service_name: Optional[str] = None,
+        aai_abs_driver_path: Optional[str] = None,
+        aai_olap_server_implementation: Optional[str] = None,
+        aai_sftp_enable: Optional[str] = None,
+        aai_file_transfer_port: Optional[str] = None,
+        aai_javaport: Optional[str] = None,
+        aai_nativeport: Optional[str] = None,
+        aai_agentport: Optional[str] = None,
+        aai_iccport: Optional[str] = None,
+        aai_iccnativeport: Optional[str] = None,
+        aai_olapport: Optional[str] = None,
+        aai_msgport: Optional[str] = None,
+        aai_routerport: Optional[str] = None,
+        aai_amport: Optional[str] = None,
+        aai_https_enable: Optional[str] = None,
+        aai_web_server_ip: Optional[str] = None,
+        aai_web_server_port: Optional[str] = None,
+        aai_context_name: Optional[str] = None,
+        aai_webapp_context_path: Optional[str] = None,
+        aai_web_local_path: Optional[str] = None,
+        aai_weblogic_domain_home: Optional[str] = None,
+        aai_ftspshare_path: Optional[str] = None,
+        aai_sftp_user_id: Optional[str] = None,
+    ) -> dict:
+        """Fetch SANC config files from git repo, patch with UI values, and copy to SANC kit locations."""
+        logs: list[str] = []
+        updated_repo_pathspecs: set[str] = set()
+        repo_dir = Config.REPO_DIR
+        kit_dir = "/u01/SANC_INSTALLER_KIT_AUTOMATION/OFS_SANC_PACK"
+        safe_dir_cfg = f"-c safe.directory={repo_dir}"
+        fast_config_apply = str(Config.FAST_CONFIG_APPLY).strip().lower() in {"1", "true", "yes", "y"}
+        enable_config_push = str(Config.ENABLE_CONFIG_PUSH).strip().lower() in {"1", "true", "yes", "y"}
+
+        # Ensure repo is present
+        git_auth_setup = self._git_auth_setup_cmd()
+        if fast_config_apply:
+            cmd_prepare_repo = (
+                "mkdir -p /u01/SANC_INSTALLER_KIT_AUTOMATION && "
+                f"{git_auth_setup}"
+                f"if [ -d {repo_dir}/.git ]; then "
+                "echo 'REPO_READY_FAST'; "
+                f"else git -c http.sslVerify=false -c protocol.version=2 clone --depth 1 --single-branch --no-tags {Config.REPO_URL} {repo_dir}; fi"
+            )
+        else:
+            cmd_prepare_repo = (
+                "mkdir -p /u01/SANC_INSTALLER_KIT_AUTOMATION && "
+                f"{git_auth_setup}"
+                f"if [ -d {repo_dir}/.git ]; then "
+                f"cd {repo_dir} && "
+                f"(git -c http.sslVerify=false -c protocol.version=2 {safe_dir_cfg} pull --ff-only --no-tags || "
+                f"(git config --global --add safe.directory {repo_dir} && git -c http.sslVerify=false -c protocol.version=2 {safe_dir_cfg} pull --ff-only --no-tags)); "
+                f"else git -c http.sslVerify=false -c protocol.version=2 clone --depth 1 --single-branch --no-tags {Config.REPO_URL} {repo_dir}; fi"
+            )
+
+        result = await self.ssh_service.execute_command(host, username, password, cmd_prepare_repo, timeout=1800, get_pty=True)
+        if not result.get("success"):
+            if result.get("stdout"):
+                logs.append(result["stdout"])
+            if result.get("stderr"):
+                logs.append(result["stderr"])
+            return {"success": False, "logs": logs, "error": result.get("stderr") or "Failed to prepare SANC installer repo"}
+        logs.append("[OK] Repository ready for SANC configs")
+
+        # 1) Patch SANC schema XML in repo and copy to kit
+        sanc_schema_patch = await self._patch_ofs_sanc_schema_in_repo(
+            host,
+            username,
+            password,
+            repo_dir=repo_dir,
+            sanc_schema_jdbc_host=sanc_schema_jdbc_host,
+            sanc_schema_jdbc_port=sanc_schema_jdbc_port,
+            sanc_schema_jdbc_service=sanc_schema_jdbc_service,
+            sanc_schema_host=sanc_schema_host,
+            sanc_schema_setup_env=sanc_schema_setup_env,
+            sanc_schema_apply_same_for_all=sanc_schema_apply_same_for_all,
+            sanc_schema_default_password=sanc_schema_default_password,
+            sanc_schema_datafile_dir=sanc_schema_datafile_dir,
+            sanc_schema_tablespace_autoextend=sanc_schema_tablespace_autoextend,
+            sanc_schema_external_directory_value=sanc_schema_external_directory_value,
+            sanc_schema_config_schema_name=sanc_schema_config_schema_name,
+            sanc_schema_atomic_schema_name=sanc_schema_atomic_schema_name,
+        )
+        logs.extend(sanc_schema_patch.get("logs", []))
+        if not sanc_schema_patch.get("success"):
+            return {"success": False, "logs": logs, "error": sanc_schema_patch.get("error")}
+        if sanc_schema_patch.get("changed") and sanc_schema_patch.get("source_path"):
+            updated_repo_pathspecs.add("SANC")
+            src_path = sanc_schema_patch["source_path"]
+            dest_path = f"{kit_dir}/schema_creator/conf/OFS_SANC_SCHEMA_IN.xml"
+            copy_cmd = f"mkdir -p {os.path.dirname(dest_path)} && cp -f {shell_escape(src_path)} {shell_escape(dest_path)}"
+            copy_result = await self.ssh_service.execute_command(host, username, password, copy_cmd, get_pty=True)
+            if not copy_result.get("success"):
+                return {
+                    "success": False,
+                    "logs": logs,
+                    "error": copy_result.get("stderr") or "Failed to copy OFS_SANC_SCHEMA_IN.xml to kit",
+                }
+            logs.append(f"[OK] Updated SANC kit schema: {dest_path}")
+
+        # 2) Patch default.properties_CS (SWIFTINFO only)
+        cs_src = await self._resolve_repo_sanc_pack_file_path(
+            host, username, password, repo_dir=repo_dir, filename="default.properties_CS"
+        )
+        if cs_src:
+            read_cs = await self._read_remote_file(host, username, password, cs_src)
+            if not read_cs.get("success"):
+                return {"success": False, "logs": logs, "error": read_cs.get("error")}
+            original_cs = read_cs.get("content", "")
+            patched_cs = self._patch_sanc_properties_swiftinfo(original_cs, sanc_cs_swiftinfo)
+            if patched_cs != original_cs:
+                ts = time.strftime("%Y%m%d_%H%M%S")
+                await self.ssh_service.execute_command(host, username, password, f"cp -f {cs_src} {cs_src}.backup.{ts}", get_pty=True)
+                write_cs = await self._write_remote_file(host, username, password, cs_src, patched_cs)
+                if not write_cs.get("success"):
+                    return {"success": False, "logs": logs, "error": write_cs.get("error")}
+                logs.append("[OK] Updated default.properties_CS in repo")
+                updated_repo_pathspecs.add("SANC")
+            dest_cs = f"{kit_dir}/OFS_CS/conf/default.properties"
+            copy_cs_cmd = f"mkdir -p {os.path.dirname(dest_cs)} && cp -f {shell_escape(cs_src)} {shell_escape(dest_cs)}"
+            copy_cs = await self.ssh_service.execute_command(host, username, password, copy_cs_cmd, get_pty=True)
+            if not copy_cs.get("success"):
+                return {"success": False, "logs": logs, "error": copy_cs.get("stderr") or "Failed to copy CS default.properties to kit"}
+            logs.append(f"[OK] Updated SANC kit CS default.properties: {dest_cs}")
+        else:
+            logs.append("[WARN] default.properties_CS not found in repo - CS SWIFTINFO will not be patched")
+
+        # 3) Patch default.properties_TFLT (SWIFTINFO only)
+        tflt_src = await self._resolve_repo_sanc_pack_file_path(
+            host, username, password, repo_dir=repo_dir, filename="default.properties_TFLT"
+        )
+        if tflt_src:
+            read_tflt = await self._read_remote_file(host, username, password, tflt_src)
+            if not read_tflt.get("success"):
+                return {"success": False, "logs": logs, "error": read_tflt.get("error")}
+            original_tflt = read_tflt.get("content", "")
+            patched_tflt = self._patch_sanc_properties_swiftinfo(original_tflt, sanc_tflt_swiftinfo)
+            if patched_tflt != original_tflt:
+                ts = time.strftime("%Y%m%d_%H%M%S")
+                await self.ssh_service.execute_command(host, username, password, f"cp -f {tflt_src} {tflt_src}.backup.{ts}", get_pty=True)
+                write_tflt = await self._write_remote_file(host, username, password, tflt_src, patched_tflt)
+                if not write_tflt.get("success"):
+                    return {"success": False, "logs": logs, "error": write_tflt.get("error")}
+                logs.append("[OK] Updated default.properties_TFLT in repo")
+                updated_repo_pathspecs.add("SANC")
+            dest_tflt = f"{kit_dir}/OFS_TFLT/conf/default.properties"
+            copy_tflt_cmd = f"mkdir -p {os.path.dirname(dest_tflt)} && cp -f {shell_escape(tflt_src)} {shell_escape(dest_tflt)}"
+            copy_tflt = await self.ssh_service.execute_command(host, username, password, copy_tflt_cmd, get_pty=True)
+            if not copy_tflt.get("success"):
+                return {"success": False, "logs": logs, "error": copy_tflt.get("stderr") or "Failed to copy TFLT default.properties to kit"}
+            logs.append(f"[OK] Updated SANC kit TFLT default.properties: {dest_tflt}")
+        else:
+            logs.append("[WARN] default.properties_TFLT not found in repo - TFLT SWIFTINFO will not be patched")
+
+        # 4) OFSAAI_InstallConfig.xml – reuse BD Pack structure and copy into SANC kit
+        aai_updates = {
+            "WEBAPPSERVERTYPE": aai_webappservertype,
+            "DBSERVER_IP": aai_dbserver_ip,
+            "ORACLE_SID": aai_oracle_service_name,
+            "ABS_DRIVER_PATH": aai_abs_driver_path,
+            "OLAP_SERVER_IMPLEMENTATION": aai_olap_server_implementation,
+            "SFTP_ENABLE": aai_sftp_enable,
+            "FILE_TRANSFER_PORT": aai_file_transfer_port,
+            "JAVAPORT": aai_javaport,
+            "NATIVEPORT": aai_nativeport,
+            "AGENTPORT": aai_agentport,
+            "ICCPORT": aai_iccport,
+            "ICCNATIVEPORT": aai_iccnativeport,
+            "OLAPPORT": aai_olapport,
+            "MSGPORT": aai_msgport,
+            "ROUTERPORT": aai_routerport,
+            "AMPORT": aai_amport,
+            "HTTPS_ENABLE": aai_https_enable,
+            "WEB_SERVER_IP": aai_web_server_ip,
+            "WEB_SERVER_PORT": aai_web_server_port,
+            "CONTEXT_NAME": aai_context_name,
+            "WEBAPP_CONTEXT_PATH": aai_webapp_context_path,
+            "WEB_LOCAL_PATH": aai_web_local_path,
+            "WEBLOGIC_DOMAIN_HOME": aai_weblogic_domain_home,
+            "OFSAAI_FTPSHARE_PATH": aai_ftspshare_path,
+            "OFSAAI_SFTP_USER_ID": aai_sftp_user_id,
+        }
+        aai_patch = await self._patch_ofsaai_install_config_repo(
+            host,
+            username,
+            password,
+            repo_dir=repo_dir,
+            updates=aai_updates,
+        )
+        logs.extend(aai_patch.get("logs", []))
+        if not aai_patch.get("success"):
+            return {"success": False, "logs": logs, "error": aai_patch.get("error")}
+        if aai_patch.get("changed") and aai_patch.get("source_path"):
+            updated_repo_pathspecs.add("OFS_AAI")
+            aai_src = aai_patch["source_path"]
+            dest_aai = f"{kit_dir}/OFS_AAI/conf/OFSAAI_InstallConfig.xml"
+            copy_aai_cmd = f"mkdir -p {os.path.dirname(dest_aai)} && cp -f {shell_escape(aai_src)} {shell_escape(dest_aai)}"
+            copy_aai = await self.ssh_service.execute_command(host, username, password, copy_aai_cmd, get_pty=True)
+            if not copy_aai.get("success"):
+                return {"success": False, "logs": logs, "error": copy_aai.get("stderr") or "Failed to copy OFSAAI_InstallConfig.xml to SANC kit"}
+            logs.append(f"[OK] Updated SANC kit OFSAAI_InstallConfig.xml: {dest_aai}")
+
+        # Fix ownership of SANC kit directory
+        fix_ownership_cmd = "chown -R oracle:oinstall /u01/SANC_INSTALLER_KIT_AUTOMATION/OFS_SANC_PACK && chmod -R 775 /u01/SANC_INSTALLER_KIT_AUTOMATION/OFS_SANC_PACK"
+        await self.ssh_service.execute_command(host, username, password, fix_ownership_cmd, get_pty=True)
+        logs.append("[OK] Fixed SANC kit ownership to oracle:oinstall")
+
+        # Optional: push repo changes
+        if enable_config_push and updated_repo_pathspecs:
+            push_result = await self._commit_and_push_repo_changes(
+                host,
+                username,
+                password,
+                repo_dir=repo_dir,
+                commit_message="Update SANC installer configs from UI inputs",
+                pathspecs=sorted(updated_repo_pathspecs),
+            )
+            logs.extend(push_result.get("logs", []))
+        elif not enable_config_push:
+            logs.append("[INFO] SANC config push skipped (OFSAA_ENABLE_CONFIG_PUSH is disabled)")
+
+        return {"success": True, "logs": logs}
+
     async def run_ecm_osc_schema_creator(
         self,
         host: str,
@@ -2427,4 +2913,412 @@ class InstallerService:
             return {"success": False, "logs": error_logs + summary_logs, "error": error_detail}
 
         logs = [f"[OK] ECM setup.sh SILENT completed from {setup_path}"] + summary_logs
+        return {"success": True, "logs": logs}
+
+    # ============== SANC MODULE METHODS ==============
+
+    async def download_and_extract_sanc_installer(
+        self,
+        host: str,
+        username: str,
+        password: str,
+    ) -> dict:
+        """Download and extract SANC installer kit from SANC folder in repo."""
+        logs: list[str] = []
+        target_dir = "/u01/SANC_INSTALLER_KIT_AUTOMATION"
+        repo_dir = Config.REPO_DIR
+        safe_dir_cfg = f"-c safe.directory={repo_dir}"
+
+        # Check if already extracted
+        await self.ssh_service.execute_command(host, username, password, f"mkdir -p {target_dir}", get_pty=True)
+        check_existing = await self.validation.check_directory_exists(
+            host, username, password, f"{target_dir}/OFS_SANC_PACK"
+        )
+        if check_existing.get("exists"):
+            logs.append("[OK] SANC installer kit already extracted")
+            return {"success": True, "logs": logs}
+
+        git_auth_setup = self._git_auth_setup_cmd()
+        cmd_prepare = (
+            f"{git_auth_setup}"
+            f"if [ -d {repo_dir}/.git ]; then "
+            f"cd {repo_dir} && "
+            f"(git -c http.sslVerify=false -c protocol.version=2 {safe_dir_cfg} pull --ff-only --no-tags || "
+            f"(git config --global --add safe.directory {repo_dir} && git -c http.sslVerify=false -c protocol.version=2 {safe_dir_cfg} pull --ff-only --no-tags)); "
+            f"else git -c http.sslVerify=false -c protocol.version=2 clone --depth 1 --single-branch --no-tags {Config.REPO_URL} {repo_dir}; fi"
+        )
+        result = await self.ssh_service.execute_command(host, username, password, cmd_prepare, timeout=1800, get_pty=True)
+        if not result.get("success"):
+            if result.get("stdout"):
+                logs.append(result["stdout"])
+            if result.get("stderr"):
+                logs.append(result["stderr"])
+            return {"success": False, "logs": logs, "error": result.get("stderr") or "Failed to prepare SANC installer repo"}
+        logs.append("[OK] Repository ready for SANC installer kit")
+
+        # Prefer zip inside SANC_PACK; fall back to first SANC*.zip anywhere
+        find_zip_cmd = (
+            f"installer_zip=$(ls -1t {repo_dir}/SANC_PACK/*.zip 2>/dev/null | head -n 1); "
+            "if [ -z \"$installer_zip\" ]; then "
+            f"installer_zip=$(find {repo_dir} -maxdepth 4 -type f -name '*SANC*.zip' 2>/dev/null | head -n 1); "
+            "fi; "
+            "if [ -z \"$installer_zip\" ]; then echo 'INSTALLER_ZIP_NOT_FOUND'; exit 1; fi; "
+            "echo $installer_zip"
+        )
+        zip_result = await self.ssh_service.execute_command(host, username, password, find_zip_cmd)
+        if not zip_result.get("success") or "INSTALLER_ZIP_NOT_FOUND" in (zip_result.get("stdout") or ""):
+            return {"success": False, "logs": logs, "error": "SANC installer kit zip not found in repo"}
+
+        zip_path = (zip_result.get("stdout") or "").splitlines()[0].strip()
+        logs.append(f"[INFO] SANC installer zip found: {zip_path}")
+
+        # Extract as oracle user
+        unzip_cmd = (
+            "if command -v bsdtar >/dev/null 2>&1; then "
+            f"bsdtar -xf {shell_escape(zip_path)} -C {target_dir}; "
+            "else "
+            f"unzip -oq {shell_escape(zip_path)} -d {target_dir}; "
+            "fi"
+        )
+        unzip_cmd_shell = f"bash -lc {shell_escape(unzip_cmd)}"
+        if username == "oracle":
+            unzip_as_oracle_cmd = f"mkdir -p {target_dir} && {unzip_cmd_shell}"
+        else:
+            unzip_as_oracle_cmd = (
+                "if command -v sudo >/dev/null 2>&1; then "
+                f"sudo mkdir -p {target_dir} && "
+                f"sudo chown -R oracle:oinstall {target_dir} && "
+                f"sudo chmod -R 775 {target_dir} && "
+                f"(sudo chmod a+r {shell_escape(zip_path)} 2>/dev/null || true) && "
+                f"sudo -u oracle {unzip_cmd_shell}; "
+                "else "
+                f"mkdir -p {target_dir} && "
+                f"chown -R oracle:oinstall {target_dir} && "
+                f"chmod -R 775 {target_dir} && "
+                f"(chmod a+r {shell_escape(zip_path)} 2>/dev/null || true) && "
+                f"su - oracle -c {shell_escape(unzip_cmd_shell)}; "
+                "fi"
+            )
+
+        unzip_result = await self.ssh_service.execute_command(
+            host, username, password, unzip_as_oracle_cmd, timeout=1800, get_pty=True
+        )
+        if not unzip_result.get("success"):
+            if unzip_result.get("stdout"):
+                logs.append(unzip_result["stdout"])
+            if unzip_result.get("stderr"):
+                logs.append(unzip_result["stderr"])
+            rc = unzip_result.get("returncode")
+            return {
+                "success": False,
+                "logs": logs,
+                "error": unzip_result.get("stderr")
+                or unzip_result.get("stdout")
+                or (f"Failed to unzip SANC installer kit (rc={rc})" if rc is not None else "Failed to unzip SANC installer kit"),
+            }
+        logs.append("[OK] SANC installer kit extracted")
+
+        # Ensure SANC pack folder has correct ownership/permissions
+        sanc_pack_dir = f"{target_dir}/OFS_SANC_PACK"
+        chown_chmod_cmd = f"chown -R oracle:oinstall {sanc_pack_dir} && chmod -R 775 {sanc_pack_dir}"
+        perm_result = await self.ssh_service.execute_command(
+            host, username, password, chown_chmod_cmd, timeout=300, get_pty=True
+        )
+        if perm_result.get("success"):
+            logs.append("[OK] SANC pack ownership set to oracle:oinstall with 775 permissions")
+        else:
+            logs.append(f"[WARN] Failed to set SANC permissions: {perm_result.get('stderr', '')}")
+
+        return {"success": True, "logs": logs}
+
+    async def set_sanc_permissions(self, host: str, username: str, password: str) -> dict:
+        """Set permissions and ownership on SANC kit directory."""
+        cmd = "chown -R oracle:oinstall /u01/SANC_INSTALLER_KIT_AUTOMATION/OFS_SANC_PACK && chmod -R 775 /u01/SANC_INSTALLER_KIT_AUTOMATION/OFS_SANC_PACK"
+        result = await self.ssh_service.execute_command(host, username, password, cmd, get_pty=True)
+        if not result.get("success"):
+            return {"success": False, "logs": [], "error": result.get("stderr") or "Failed to set SANC permissions"}
+        return {"success": True, "logs": ["[OK] Ownership and permissions set on OFS_SANC_PACK"]}
+
+    async def run_sanc_osc_schema_creator(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        on_output_callback: Optional[Callable[[str], Any]] = None,
+        on_prompt_callback: Optional[Callable[[str], Any]] = None,
+    ) -> dict:
+        """Run SANC schema creator osc.sh."""
+        osc_path = "/u01/SANC_INSTALLER_KIT_AUTOMATION/OFS_SANC_PACK/schema_creator/bin/osc.sh"
+
+        check = await self.ssh_service.execute_command(host, username, password, f"test -x {osc_path}")
+        if not check.get("success"):
+            return {"success": False, "logs": [], "error": "SANC osc.sh not found or not executable"}
+
+        schema_creator_dir = os.path.dirname(os.path.dirname(osc_path))
+        pack_root_dir = os.path.dirname(schema_creator_dir)
+
+        verinfo_preflight_cmd = (
+            f"pack_root={shell_escape(pack_root_dir)}; "
+            "patched=0; "
+            "found=0; "
+            "while IFS= read -r vf; do "
+            "  found=1; "
+            "  if grep -Eq '^[[:space:]]*Linux_VERSION' \"$vf\"; then "
+            "    sed -i -E 's/^[[:space:]]*Linux_VERSION.*$/Linux_VERSION=7,8,9/' \"$vf\"; "
+            "  else "
+            "    echo 'Linux_VERSION=7,8,9' >> \"$vf\"; "
+            "  fi; "
+            "  patched=$((patched+1)); "
+            "  echo \"[INFO] VerInfo patched: $vf\"; "
+            "done < <(find \"$pack_root\" -type f -name 'VerInfo.txt' 2>/dev/null); "
+            "if [ \"$found\" -eq 0 ]; then "
+            "  echo '[WARN] VerInfo.txt not found under OFS_SANC_PACK'; "
+            "else "
+            "  echo \"[INFO] VerInfo files patched count: $patched\"; "
+            "fi"
+        )
+
+        osc_run_cmd = f"cd $(dirname {osc_path}) && (./osc.sh -s || ./osc.sh -S)"
+        inner_cmd = (
+            "source /home/oracle/.profile >/dev/null 2>&1; "
+            f"{verinfo_preflight_cmd}; "
+            f"script -q -c {shell_escape(osc_run_cmd)} /dev/null"
+        )
+        if username == "oracle":
+            command = f"bash -lc {shell_escape(inner_cmd)}"
+        else:
+            command = f"su - oracle -c {shell_escape('bash -lc ' + shell_escape(inner_cmd))}"
+
+        captured_lines: list[str] = []
+        pending = ""
+
+        async def _sanc_osc_output_collector(text: str) -> None:
+            nonlocal pending
+            if not text:
+                return
+
+            pending += text.replace("\r", "\n")
+            parts = pending.split("\n")
+            for line in parts[:-1]:
+                cleaned = line.strip()
+                if cleaned:
+                    captured_lines.append(cleaned)
+            pending = parts[-1]
+
+            if on_output_callback is not None:
+                forwarded = on_output_callback(text)
+                if inspect.isawaitable(forwarded):
+                    await forwarded
+
+        result = await self.ssh_service.execute_interactive_command(
+            host,
+            username,
+            password,
+            command,
+            on_output_callback=_sanc_osc_output_collector,
+            on_prompt_callback=on_prompt_callback,
+            timeout=3600,
+        )
+        tail = pending.strip()
+        if tail:
+            captured_lines.append(tail)
+
+        fatal_runtime_patterns = [
+            re.compile(r"Exception in thread \"main\"", re.IGNORECASE),
+            re.compile(r"NoClassDefFoundError", re.IGNORECASE),
+            re.compile(r"ClassNotFoundException", re.IGNORECASE),
+            re.compile(r"\bSP2-0306\b", re.IGNORECASE),
+            re.compile(r"\bSP2-0157\b", re.IGNORECASE),
+            re.compile(r"\bORA-01017\b", re.IGNORECASE),
+            re.compile(r"\bFAIL\b", re.IGNORECASE),
+            re.compile(r"ERROR while applying", re.IGNORECASE),
+        ]
+        runtime_fatal_lines = [
+            line for line in captured_lines if any(p.search(line) for p in fatal_runtime_patterns)
+        ]
+        if runtime_fatal_lines:
+            logs = ["[ERROR] SANC osc.sh runtime output contains fatal errors:"] + [
+                f"[OSCOUT] {line}" for line in runtime_fatal_lines[:20]
+            ]
+            return {"success": False, "logs": logs, "error": "SANC osc.sh runtime output contains fatal errors"}
+
+        logs_dir = f"{schema_creator_dir}/logs"
+        latest_log_cmd = (
+            f"log_file=$(ls -1t {logs_dir}/* 2>/dev/null | head -n 1); "
+            "if [ -z \"$log_file\" ]; then echo 'LOG_NOT_FOUND'; exit 0; fi; "
+            "echo $log_file"
+        )
+        latest_log_result = await self.ssh_service.execute_command(host, username, password, latest_log_cmd)
+        latest_log = (latest_log_result.get("stdout") or "").splitlines()[0].strip() if latest_log_result.get("stdout") else ""
+
+        if not latest_log or latest_log == "LOG_NOT_FOUND":
+            return {
+                "success": False,
+                "logs": ["[ERROR] SANC osc.sh completed but schema_creator log file was not found"],
+                "error": "SANC schema_creator log file not found",
+            }
+
+        grep_cmd = f"grep -Ein 'ERROR|FAIL' {shell_escape(latest_log)} || true"
+        grep_result = await self.ssh_service.execute_command(host, username, password, grep_cmd)
+        matches = [line.strip() for line in (grep_result.get("stdout") or "").splitlines() if line.strip()]
+
+        schema_exists_pattern = re.compile(r"(already\s+exist|already\s+exists|ora-00955|name is already used)", re.IGNORECASE)
+        schema_exists_lines = [line for line in matches if schema_exists_pattern.search(line)]
+        fatal_lines = [line for line in matches if line not in schema_exists_lines]
+
+        if schema_exists_lines:
+            logs = [f"[INFO] Checked SANC log: {latest_log}"]
+            logs.append("[WARN] SANC schema already exists. Skipping schema creation and moving to next step.")
+            logs.extend([f"[OSCLOG] {line}" for line in schema_exists_lines])
+            if fatal_lines:
+                logs.extend([f"[OSCLOG] {line}" for line in fatal_lines])
+                return {"success": False, "logs": logs, "error": "SANC osc.sh log contains non-skippable ERROR/FAIL"}
+            return {"success": True, "logs": logs}
+
+        if fatal_lines:
+            logs = [
+                f"[ERROR] SANC osc.sh log contains ERROR/FAIL in {latest_log}:"
+            ] + [f"[OSCLOG] {line}" for line in fatal_lines]
+            return {"success": False, "logs": logs, "error": "SANC osc.sh log contains ERROR/FAIL"}
+
+        if not result.get("success"):
+            return {
+                "success": False,
+                "logs": [f"[INFO] Checked SANC log: {latest_log}"],
+                "error": "SANC osc.sh failed",
+            }
+
+        return {"success": True, "logs": [f"[INFO] Checked SANC log: {latest_log}", "[OK] No Error, SANC osc.sh SUCCESS"]}
+
+    async def run_sanc_setup_silent(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        on_output_callback: Optional[Callable[[str], Any]] = None,
+        on_prompt_callback: Optional[Callable[[str], Any]] = None,
+    ) -> dict:
+        """Run SANC setup.sh SILENT."""
+        setup_path = "/u01/SANC_INSTALLER_KIT_AUTOMATION/OFS_SANC_PACK/bin/setup.sh"
+
+        check = await self.ssh_service.execute_command(host, username, password, f"test -x {setup_path}")
+        if not check.get("success"):
+            return {"success": False, "logs": [], "error": "SANC setup.sh not found or not executable"}
+
+        inner_cmd = (
+            "source /home/oracle/.profile >/dev/null 2>&1; "
+            f"cd $(dirname {setup_path}) && "
+            "./setup.sh SILENT"
+        )
+        if username == "oracle":
+            command = f"bash -lc {shell_escape(inner_cmd)}"
+        else:
+            command = f"su - oracle -c {shell_escape('bash -lc ' + shell_escape(inner_cmd))}"
+
+        captured_lines: list[str] = []
+        pending_buf = ""
+
+        async def _sanc_setup_output_collector(text: str) -> None:
+            nonlocal pending_buf
+            if not text:
+                return
+            pending_buf += text.replace("\r", "\n")
+            parts = pending_buf.split("\n")
+            for line in parts[:-1]:
+                cleaned = line.strip()
+                if cleaned:
+                    captured_lines.append(cleaned)
+            pending_buf = parts[-1]
+            if on_output_callback is not None:
+                forwarded = on_output_callback(text)
+                if inspect.isawaitable(forwarded):
+                    await forwarded
+
+        result = await self.ssh_service.execute_interactive_command(
+            host,
+            username,
+            password,
+            command,
+            on_output_callback=_sanc_setup_output_collector,
+            on_prompt_callback=on_prompt_callback,
+            timeout=36000,
+        )
+        tail = pending_buf.strip()
+        if tail:
+            captured_lines.append(tail)
+
+        ram_patterns = [
+            re.compile(r"Validation for category RAM.*STATUS\s*:\s*FAILED", re.IGNORECASE),
+            re.compile(r"Insufficient RAM", re.IGNORECASE),
+        ]
+        has_ram_failure = any(p.search(line) for line in captured_lines for p in ram_patterns)
+        if has_ram_failure:
+            if on_output_callback is not None:
+                msg = "\n[RECOVERY] RAM validation failed. Dropping filesystem caches and retrying SANC setup.sh...\n"
+                fwd = on_output_callback(msg)
+                if inspect.isawaitable(fwd):
+                    await fwd
+
+            drop_cmd = "echo 2 | sudo tee /proc/sys/vm/drop_caches"
+            await self.ssh_service.execute_command(host, username, password, drop_cmd)
+
+            captured_lines.clear()
+            pending_buf = ""
+            result = await self.ssh_service.execute_interactive_command(
+                host,
+                username,
+                password,
+                command,
+                on_output_callback=_sanc_setup_output_collector,
+                on_prompt_callback=on_prompt_callback,
+                timeout=36000,
+            )
+            tail = pending_buf.strip()
+            if tail:
+                captured_lines.append(tail)
+
+        pack_log_path = "/u01/SANC_INSTALLER_KIT_AUTOMATION/OFS_SANC_PACK/logs/Pack_Install.log"
+        summary_cmd = (
+            f"log={shell_escape(pack_log_path)}; "
+            "if [ -f \"$log\" ]; then "
+            "tail -80 \"$log\"; "
+            "else "
+            "echo \"FILE_NOT_FOUND\"; "
+            "fi"
+        )
+        summary_result = await self.ssh_service.execute_command(host, username, password, summary_cmd)
+        summary_out = (summary_result.get("stdout") or "").strip()
+
+        summary_logs: list[str] = []
+        if not summary_out or summary_out == "FILE_NOT_FOUND":
+            summary_logs.append(f"[WARN] SANC Pack_Install.log not found at: {pack_log_path}")
+        else:
+            summary_logs = ["", f"--- SANC Pack_Install.log ({pack_log_path}) ---"] + summary_out.splitlines()
+
+        setup_fatal_patterns = [
+            re.compile(r"Installation terminated", re.IGNORECASE),
+            re.compile(r"Pre-?Check failed", re.IGNORECASE),
+            re.compile(r"APP Pre-?Check failed", re.IGNORECASE),
+            re.compile(r"Installation\s+failed", re.IGNORECASE),
+            re.compile(r"INSTALLATION.*FAIL", re.IGNORECASE),
+            re.compile(r"Exception in thread", re.IGNORECASE),
+            re.compile(r"NoClassDefFoundError", re.IGNORECASE),
+            re.compile(r"ClassNotFoundException", re.IGNORECASE),
+        ]
+        fatal_output_lines = [
+            line for line in captured_lines if any(p.search(line) for p in setup_fatal_patterns)
+        ]
+
+        if not result.get("success") or fatal_output_lines:
+            error_detail = "SANC setup.sh SILENT failed"
+            if fatal_output_lines:
+                error_detail = f"SANC setup.sh SILENT application failure detected: {fatal_output_lines[0][:120]}"
+            error_logs: list[str] = []
+            if fatal_output_lines:
+                error_logs = ["[ERROR] SANC setup.sh output contains fatal errors:"] + [
+                    f"[SETUP] {line}" for line in fatal_output_lines[:10]
+                ]
+            return {"success": False, "logs": error_logs + summary_logs, "error": error_detail}
+
+        logs = [f"[OK] SANC setup.sh SILENT completed from {setup_path}"] + summary_logs
         return {"success": True, "logs": logs}

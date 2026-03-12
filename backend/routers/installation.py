@@ -923,6 +923,118 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 bd_pack_checkpoint["timestamp"] = None
                 await append_output(task_id, "[CHECKPOINT] BD Pack checkpoint cleared after successful ECM completion.")
 
+        # ============== SANC MODULE INSTALLATION ==============
+        if request.install_sanc:
+            await append_output(task_id, "\n[INFO] ==================== SANC MODULE INSTALLATION ====================")
+
+            # SANC Step 1: Download and extract SANC installer kit
+            await update_status(task_id, "running", "Downloading and extracting SANC installer kit", 82)
+            await trace("Starting SANC installer download/extract step")
+            sanc_download_result = await installation_service.download_and_extract_sanc_installer(
+                request.host, request.username, request.password
+            )
+            await append_output(task_id, "\n".join(sanc_download_result.get("logs", [])))
+            if not sanc_download_result.get("success"):
+                await handle_failure("SANC installer download failed", sanc_download_result.get("error"))
+                return
+            await trace("SANC installer download/extract step completed")
+
+            # SANC Step 2: Set permissions
+            await update_status(task_id, "running", "Setting SANC kit permissions", 85)
+            sanc_perm_result = await installation_service.set_sanc_permissions(
+                request.host, request.username, request.password
+            )
+            await append_output(task_id, "\n".join(sanc_perm_result.get("logs", [])))
+            if not sanc_perm_result.get("success"):
+                await handle_failure("SANC permission setup failed", sanc_perm_result.get("error"))
+                return
+
+            # SANC Step 3: Apply SANC config files
+            await update_status(task_id, "running", "Applying SANC configuration files", 88)
+            await trace("Starting SANC config apply step")
+            sanc_cfg_result = await installation_service.apply_sanc_config_files(
+                request.host,
+                request.username,
+                request.password,
+                sanc_schema_jdbc_host=request.sanc_schema_jdbc_host,
+                sanc_schema_jdbc_port=request.sanc_schema_jdbc_port,
+                sanc_schema_jdbc_service=request.sanc_schema_jdbc_service,
+                sanc_schema_host=request.sanc_schema_host,
+                sanc_schema_setup_env=request.sanc_schema_setup_env,
+                sanc_schema_apply_same_for_all=request.sanc_schema_apply_same_for_all,
+                sanc_schema_default_password=request.sanc_schema_default_password,
+                sanc_schema_datafile_dir=request.sanc_schema_datafile_dir,
+                sanc_schema_tablespace_autoextend=request.sanc_schema_tablespace_autoextend,
+                sanc_schema_external_directory_value=request.sanc_schema_external_directory_value,
+                sanc_schema_config_schema_name=request.sanc_schema_config_schema_name,
+                sanc_schema_atomic_schema_name=request.sanc_schema_atomic_schema_name,
+                sanc_cs_swiftinfo=request.sanc_cs_swiftinfo,
+                sanc_tflt_swiftinfo=request.sanc_tflt_swiftinfo,
+                aai_webappservertype=request.aai_webappservertype,
+                aai_dbserver_ip=request.aai_dbserver_ip,
+                aai_oracle_service_name=request.aai_oracle_service_name,
+                aai_abs_driver_path=request.aai_abs_driver_path,
+                aai_olap_server_implementation=request.aai_olap_server_implementation,
+                aai_sftp_enable=request.aai_sftp_enable,
+                aai_file_transfer_port=request.aai_file_transfer_port,
+                aai_javaport=request.aai_javaport,
+                aai_nativeport=request.aai_nativeport,
+                aai_agentport=request.aai_agentport,
+                aai_iccport=request.aai_iccport,
+                aai_iccnativeport=request.aai_iccnativeport,
+                aai_olapport=request.aai_olapport,
+                aai_msgport=request.aai_msgport,
+                aai_routerport=request.aai_routerport,
+                aai_amport=request.aai_amport,
+                aai_https_enable=request.aai_https_enable,
+                aai_web_server_ip=request.aai_web_server_ip,
+                aai_web_server_port=request.aai_web_server_port,
+                aai_context_name=request.aai_context_name,
+                aai_webapp_context_path=request.aai_webapp_context_path,
+                aai_web_local_path=request.aai_web_local_path,
+                aai_weblogic_domain_home=request.aai_weblogic_domain_home,
+                aai_ftspshare_path=request.aai_ftspshare_path,
+                aai_sftp_user_id=request.aai_sftp_user_id,
+            )
+            await append_output(task_id, "\n".join(sanc_cfg_result.get("logs", [])))
+            if not sanc_cfg_result.get("success"):
+                await handle_failure("SANC config files apply failed", sanc_cfg_result.get("error"))
+                return
+            await trace("SANC config apply step completed")
+
+            # SANC Step 4a: Run SANC osc.sh -s
+            await update_status(task_id, "running", "Running SANC schema creator (osc.sh)", 92)
+            await trace("Starting SANC osc.sh step")
+            sanc_osc_result = await installation_service.run_sanc_osc_schema_creator(
+                request.host,
+                request.username,
+                request.password,
+                on_output_callback=output_callback,
+                on_prompt_callback=prompt_callback,
+            )
+            await append_output(task_id, "\n".join(sanc_osc_result.get("logs", [])))
+            if not sanc_osc_result.get("success"):
+                await handle_failure("SANC osc.sh execution failed", sanc_osc_result.get("error"))
+                return
+            await trace("SANC osc.sh step completed")
+
+            # SANC Step 4b: Run SANC setup.sh SILENT
+            await update_status(task_id, "running", "Running SANC setup (setup.sh SILENT)", 96)
+            await trace("Starting SANC setup.sh SILENT step")
+            sanc_setup_result = await installation_service.run_sanc_setup_silent(
+                request.host,
+                request.username,
+                request.password,
+                on_output_callback=output_callback,
+                on_prompt_callback=auto_yes_callback,
+            )
+            await append_output(task_id, "\n".join(sanc_setup_result.get("logs", [])))
+            if not sanc_setup_result.get("success"):
+                await handle_failure("SANC setup.sh SILENT execution failed", sanc_setup_result.get("error"))
+                return
+            await trace("SANC setup.sh SILENT step completed")
+            await append_output(task_id, "[OK] SANC Module installation completed")
+
         task.status = "completed"
         task.progress = 100
         await update_status(task_id, "completed", steps[9], 100)

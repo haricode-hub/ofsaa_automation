@@ -98,6 +98,24 @@ interface InstallationData {
   aai_weblogic_domain_home: string
   aai_ftspshare_path: string
   aai_sftp_user_id: string
+  // SANC module flag
+  install_sanc: boolean
+  // SANC schema inputs (OFS_SANC_SCHEMA_IN.xml)
+  sanc_schema_jdbc_host: string
+  sanc_schema_jdbc_port: string
+  sanc_schema_jdbc_service: string
+  sanc_schema_host: string
+  sanc_schema_setup_env: string
+  sanc_schema_apply_same_for_all: string
+  sanc_schema_default_password: string
+  sanc_schema_datafile_dir: string
+  sanc_schema_tablespace_autoextend: string
+  sanc_schema_external_directory_value: string
+  sanc_schema_config_schema_name: string
+  sanc_schema_atomic_schema_name: string
+  // SANC CS/TFLT SWIFTINFO
+  sanc_cs_swiftinfo: string
+  sanc_tflt_swiftinfo: string
   installation_mode: 'fresh' | 'addon'
   install_bdpack: boolean
   install_ecm: boolean
@@ -227,6 +245,22 @@ export function InstallationForm() {
     aai_weblogic_domain_home: '/u01/Oracle/Middleware/Oracle_Home/user_projects/domains/DEMO_OFSAA_DOMAIN',
     aai_ftspshare_path: '/u01/OFSAA/FTPSHARE',
     aai_sftp_user_id: 'oracle',
+    // SANC defaults (mirror BD schema semantics)
+    install_sanc: false,
+    sanc_schema_jdbc_host: '',
+    sanc_schema_jdbc_port: '1521',
+    sanc_schema_jdbc_service: '',
+    sanc_schema_host: '',
+    sanc_schema_setup_env: 'DEV',
+    sanc_schema_apply_same_for_all: 'Y',
+    sanc_schema_default_password: '',
+    sanc_schema_datafile_dir: '/u01/app/oracle/oradata/OFSAA/OFSAADB',
+    sanc_schema_tablespace_autoextend: 'OFF',
+    sanc_schema_external_directory_value: '/u01/OFSAA/FICHOME/bdf/inbox',
+    sanc_schema_config_schema_name: 'OFSCONFIG',
+    sanc_schema_atomic_schema_name: 'OFSATOMIC',
+    sanc_cs_swiftinfo: '',
+    sanc_tflt_swiftinfo: '',
     installation_mode: 'fresh',
     install_bdpack: false,
     install_ecm: false,
@@ -386,9 +420,25 @@ export function InstallationForm() {
           aai_weblogic_domain_home: formData.aai_weblogic_domain_home,
           aai_ftspshare_path: formData.aai_ftspshare_path,
           aai_sftp_user_id: formData.aai_sftp_user_id,
+          // SANC schema + properties
+          sanc_schema_jdbc_host: formData.sanc_schema_jdbc_host,
+          sanc_schema_jdbc_port: formData.sanc_schema_jdbc_port ? Number(formData.sanc_schema_jdbc_port) : null,
+          sanc_schema_jdbc_service: formData.sanc_schema_jdbc_service,
+          sanc_schema_host: (formData.sanc_schema_host || formData.host),
+          sanc_schema_setup_env: formData.sanc_schema_setup_env,
+          sanc_schema_apply_same_for_all: formData.sanc_schema_apply_same_for_all,
+          sanc_schema_default_password: formData.sanc_schema_default_password,
+          sanc_schema_datafile_dir: formData.sanc_schema_datafile_dir,
+          sanc_schema_tablespace_autoextend: formData.sanc_schema_tablespace_autoextend,
+          sanc_schema_external_directory_value: formData.sanc_schema_external_directory_value,
+          sanc_schema_config_schema_name: formData.sanc_schema_config_schema_name,
+          sanc_schema_atomic_schema_name: formData.sanc_schema_atomic_schema_name,
+          sanc_cs_swiftinfo: formData.sanc_cs_swiftinfo,
+          sanc_tflt_swiftinfo: formData.sanc_tflt_swiftinfo,
           installation_mode: formData.installation_mode,
           install_bdpack: formData.install_bdpack,
           install_ecm: formData.install_ecm,
+          install_sanc: formData.install_sanc,
           ecm_take_bd_backup: formData.ecm_take_bd_backup,
           db_sys_password: formData.db_sys_password || null,
           db_ssh_host: formData.db_ssh_host || null,
@@ -494,7 +544,7 @@ export function InstallationForm() {
       const updated = { ...prev, [field]: value }
 
       // ── Group 1: DB IP  (bidirectional: any DB-IP field fills the rest) ──
-      const dbIpFields: Array<keyof InstallationData> = ['aai_dbserver_ip', 'schema_jdbc_host', 'db_ssh_host']
+      const dbIpFields: Array<keyof InstallationData> = ['aai_dbserver_ip', 'schema_jdbc_host', 'db_ssh_host', 'sanc_schema_jdbc_host']
       if (dbIpFields.includes(field) && value) {
         for (const f of dbIpFields) {
           if (f !== field) updated[f] = value as never
@@ -502,7 +552,7 @@ export function InstallationForm() {
       }
 
       // ── Group 2: Oracle Service  (bidirectional) ──
-      const serviceFields: Array<keyof InstallationData> = ['aai_oracle_service_name', 'schema_jdbc_service']
+      const serviceFields: Array<keyof InstallationData> = ['aai_oracle_service_name', 'schema_jdbc_service', 'sanc_schema_jdbc_service']
       if (serviceFields.includes(field) && value) {
         for (const f of serviceFields) {
           if (f !== field) updated[f] = value as never
@@ -510,7 +560,7 @@ export function InstallationForm() {
       }
 
       // ── Group 3: Target / App Host  (bidirectional) ──
-      const hostFields: Array<keyof InstallationData> = ['host', 'schema_host', 'prop_smtp_host', 'aai_web_server_ip']
+      const hostFields: Array<keyof InstallationData> = ['host', 'schema_host', 'prop_smtp_host', 'aai_web_server_ip', 'sanc_schema_host']
       if (hostFields.includes(field) && value) {
         for (const f of hostFields) {
           if (f !== field) updated[f] = value as never
@@ -531,7 +581,7 @@ export function InstallationForm() {
     }))
   }
 
-  const toggleModuleSelection = (field: 'install_bdpack' | 'install_ecm') => {
+  const toggleModuleSelection = (field: 'install_bdpack' | 'install_ecm' | 'install_sanc') => {
     setFormData(prev => ({ ...prev, [field]: !prev[field] }))
   }
 
@@ -605,6 +655,10 @@ export function InstallationForm() {
                 <label className="inline-flex items-center gap-2 text-sm text-text-primary cursor-pointer">
                   <input type="checkbox" checked={formData.install_ecm} onChange={() => toggleModuleSelection('install_ecm')} />
                   ECM
+                </label>
+                <label className="inline-flex items-center gap-2 text-sm text-text-primary cursor-pointer">
+                  <input type="checkbox" checked={formData.install_sanc} onChange={() => toggleModuleSelection('install_sanc')} />
+                  SANC
                 </label>
                 {formData.install_ecm && !formData.install_bdpack && (
                   <label className="inline-flex items-center gap-2 text-sm text-text-primary cursor-pointer">
@@ -819,571 +873,681 @@ export function InstallationForm() {
           </details>
         </motion.div>
 
-        {/* Schema Config Section - BD Pack Only */}
+        {/* BD Pack Configuration - groups Schema, App Pack, Silent Installer and OFSAAI when BD is enabled */}
         {formData.install_bdpack && (
         <motion.div
           className="rounded-xl border border-border bg-bg-secondary/40 p-4 lg:p-5"
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.45 }}
+          transition={{ duration: 0.4, delay: 0.4 }}
         >
-          <details open className="group">
-            <summary className="list-none cursor-pointer select-none flex items-center justify-between gap-3">
-              <div>
-                <div className="text-sm font-bold text-text-primary uppercase tracking-wider">
-                  Schema Creator (OFS_BD_SCHEMA_IN.xml)
+          <div className="text-sm font-bold text-text-primary uppercase tracking-wider">BD PACK CONFIGURATION</div>
+          <div className="text-xs text-text-muted mt-1">
+            Database & Host, Schema & Password, Tablespaces, BD default.properties, OFSAAI configuration.
+          </div>
+
+          <div className="mt-4 space-y-4">
+            {/* Schema Config Section - BD Pack Only */}
+            <details open className="group">
+              <summary className="list-none cursor-pointer select-none flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-bold text-text-primary uppercase tracking-wider">
+                    Schema Creator (OFS_BD_SCHEMA_IN.xml)
+                  </div>
+                  <div className="text-xs text-text-muted mt-1">
+                    JDBC, tablespace paths, AUTOEXTEND, schema names.
+                  </div>
                 </div>
-                <div className="text-xs text-text-muted mt-1">
-                  JDBC, tablespace paths, AUTOEXTEND, schema names.
-                </div>
-              </div>
-              <div className="text-xs font-mono text-text-muted group-open:hidden">OPEN</div>
-              <div className="text-xs font-mono text-text-muted hidden group-open:block">CLOSE</div>
-            </summary>
+                <div className="text-xs font-mono text-text-muted group-open:hidden">OPEN</div>
+                <div className="text-xs font-mono text-text-muted hidden group-open:block">CLOSE</div>
+              </summary>
 
-            <div className="mt-5 space-y-4">
-
-          <div className="space-y-2">
-            <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-              JDBC Host (DB)
-            </label>
-            <input
-              type="text"
-              value={formData.schema_jdbc_host}
-              onChange={handleInputChange('schema_jdbc_host')}
-              placeholder="192.168.3.42"
-              className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-            />
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                JDBC Port
-              </label>
-              <input
-                type="text"
-                value={formData.schema_jdbc_port}
-                onChange={handleInputChange('schema_jdbc_port')}
-                placeholder="1521"
-                className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                JDBC Service/SID
-              </label>
-              <input
-                type="text"
-                value={formData.schema_jdbc_service}
-                onChange={handleInputChange('schema_jdbc_service')}
-                placeholder="OFSAAPDB"
-                className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-              />
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-              Application IP (HOST Tag Value)
-            </label>
-            <input
-              type="text"
-              value={formData.host}
-              placeholder="192.168.3.41"
-              className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-              readOnly
-            />
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                SETUPINFO Name
-              </label>
-              <input
-                type="text"
-                value={formData.schema_setup_env}
-                onChange={handleInputChange('schema_setup_env')}
-                placeholder="DEV"
-                className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                ApplySameForAll (Y/N)
-              </label>
-              <input
-                type="text"
-                value={formData.schema_apply_same_for_all}
-                onChange={handleInputChange('schema_apply_same_for_all')}
-                placeholder="Y"
-                className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-              />
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-              Default Schema Password
-            </label>
-            <input
-              type="password"
-              value={formData.schema_default_password}
-              onChange={handleInputChange('schema_default_password')}
-              placeholder="Password1"
-              className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-            />
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                DATAFILE Base Dir
-              </label>
-              <input
-                type="text"
-                value={formData.schema_datafile_dir}
-                onChange={handleInputChange('schema_datafile_dir')}
-                placeholder="/u01/app/oracle/oradata/OFSAA/OFSAADB"
-                className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                AUTOEXTEND (ON/OFF)
-              </label>
-              <input
-                type="text"
-                value={formData.schema_tablespace_autoextend}
-                onChange={handleInputChange('schema_tablespace_autoextend')}
-                placeholder="OFF"
-                className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-              />
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-              External Directory Value
-            </label>
-            <input
-              type="text"
-              value={formData.schema_external_directory_value}
-              onChange={handleInputChange('schema_external_directory_value')}
-              placeholder="/u01/OFSAA/FICHOME/bdf/inbox"
-              className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-            />
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                CONFIG Schema Name
-              </label>
-              <input
-                type="text"
-                value={formData.schema_config_schema_name}
-                onChange={handleInputChange('schema_config_schema_name')}
-                placeholder="OFSCONFIG"
-                className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-              />
-            </div>
-            <div className="space-y-2">
-              <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                ATOMIC Schema Name
-              </label>
-              <input
-                type="text"
-                value={formData.schema_atomic_schema_name}
-                onChange={handleInputChange('schema_atomic_schema_name')}
-                placeholder="OFSATOMIC"
-                className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-              />
-            </div>
-          </div>
-            </div>
-          </details>
-        </motion.div>
-        )}
-
-        {/* App Pack Config Section - BD Pack Only */}
-        {formData.install_bdpack && (
-        <motion.div
-          className="rounded-xl border border-border bg-bg-secondary/40 p-4 lg:p-5"
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.5 }}
-        >
-          <details open className="group">
-            <summary className="list-none cursor-pointer select-none flex items-center justify-between gap-3">
-              <div>
-                <div className="text-sm font-bold text-text-primary uppercase tracking-wider">
-                  Application Pack (OFS_BD_PACK.xml)
-                </div>
-                <div className="text-xs text-text-muted mt-1">
-                  Toggle apps to set `ENABLE=\"YES\"` (off = empty).
-                </div>
-              </div>
-              <div className="text-xs font-mono text-text-muted group-open:hidden">OPEN</div>
-              <div className="text-xs font-mono text-text-muted hidden group-open:block">CLOSE</div>
-            </summary>
-
-            <div className="mt-5 grid grid-cols-1 lg:grid-cols-2 gap-3">
-              {APP_PACK_APPS.map(app => {
-                const enabled = !!formData.pack_app_enable[app.id]
-                return (
-                  <button
-                    key={app.id}
-                    type="button"
-                    onClick={() => togglePackAppEnable(app.id)}
-                    aria-pressed={enabled}
-                    className="text-left rounded-lg border border-border bg-bg-secondary/40 hover:bg-bg-tertiary/40 transition-colors px-4 py-3 flex items-center justify-between gap-4"
-                  >
-                    <div className="min-w-0">
-                      <div className="text-xs font-mono text-text-muted">{app.id}</div>
-                      <div className="text-sm text-text-primary truncate">{app.name}</div>
-                    </div>
-                    <div className="shrink-0 flex items-center gap-2">
-                      <span className={`text-xs font-bold tracking-widest ${enabled ? 'text-success' : 'text-text-muted'}`}>
-                        {enabled ? 'YES' : 'OFF'}
-                      </span>
-                      <span
-                        className={`h-6 w-6 rounded-md border flex items-center justify-center transition-colors ${
-                          enabled ? 'bg-white text-black border-white' : 'bg-transparent text-transparent border-border'
-                        }`}
-                        aria-hidden="true"
-                      >
-                        <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="3">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                        </svg>
-                      </span>
-                    </div>
-                  </button>
-                )
-              })}
-            </div>
-          </details>
-        </motion.div>
-        )}
-
-        {/* Silent Installer Section - BD Pack Only */}
-        {formData.install_bdpack && (
-        <motion.div
-          className="rounded-xl border border-border bg-bg-secondary/40 p-4 lg:p-5"
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.55 }}
-        >
-          <details className="group">
-            <summary className="list-none cursor-pointer select-none flex items-center justify-between gap-3">
-              <div>
-                <div className="text-sm font-bold text-text-primary uppercase tracking-wider">
-                  Silent Installer (default.properties)
-                </div>
-                <div className="text-xs text-text-muted mt-1">
-                  User input section only (above `FSDF_UPLOAD_MODEL`).
-                </div>
-              </div>
-              <div className="text-xs font-mono text-text-muted group-open:hidden">OPEN</div>
-              <div className="text-xs font-mono text-text-muted hidden group-open:block">CLOSE</div>
-            </summary>
-
-            <div className="mt-5 space-y-5">
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              <div className="mt-5 space-y-4">
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    BASE_COUNTRY
+                    JDBC Host (DB)
                   </label>
                   <input
                     type="text"
-                    value={formData.prop_base_country}
-                    onChange={handleInputChange('prop_base_country')}
-                    placeholder="US"
+                    value={formData.schema_jdbc_host}
+                    onChange={handleInputChange('schema_jdbc_host')}
+                    placeholder="192.168.3.42"
                     className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
                   />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    DEFAULT_JURISDICTION
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.prop_default_jurisdiction}
-                    onChange={handleInputChange('prop_default_jurisdiction')}
-                    placeholder="AMEA"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  />
-                </div>
-              </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      JDBC Port
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.schema_jdbc_port}
+                      onChange={handleInputChange('schema_jdbc_port')}
+                      placeholder="1521"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      JDBC Service/SID
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.schema_jdbc_service}
+                      onChange={handleInputChange('schema_jdbc_service')}
+                      placeholder="OFSAAPDB"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                </div>
+
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    SMTP_HOST
+                    Application IP (HOST Tag Value)
                   </label>
                   <input
                     type="text"
-                    value={formData.prop_smtp_host}
-                    onChange={handleInputChange('prop_smtp_host')}
+                    value={formData.host}
                     placeholder="192.168.3.41"
                     className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    readOnly
                   />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    PARTITION_DATE_FORMAT
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.prop_partition_date_format}
-                    onChange={handleInputChange('prop_partition_date_format')}
-                    placeholder="DD-MM-YYYY"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  />
-                </div>
-              </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    DATADUMPDT_MINUS_0
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.prop_datadumpdt_minus_0}
-                    onChange={handleInputChange('prop_datadumpdt_minus_0')}
-                    placeholder="10/12/2015"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  />
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      SETUPINFO Name
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.schema_setup_env}
+                      onChange={handleInputChange('schema_setup_env')}
+                      placeholder="DEV"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      ApplySameForAll (Y/N)
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.schema_apply_same_for_all}
+                      onChange={handleInputChange('schema_apply_same_for_all')}
+                      placeholder="Y"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    ENDTHISWEEK_MINUS_00
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.prop_endthisweek_minus_00}
-                    onChange={handleInputChange('prop_endthisweek_minus_00')}
-                    placeholder="19/12/2015"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    STARTNEXTMNTH_MINUS_00
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.prop_startnextmnth_minus_00}
-                    onChange={handleInputChange('prop_startnextmnth_minus_00')}
-                    placeholder="01/01/2016"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  />
-                </div>
-              </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    ANALYST_DATA_SOURCE
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.prop_analyst_data_source}
-                    onChange={handleInputChange('prop_analyst_data_source')}
-                    placeholder="ANALYST"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    MINER_DATA_SOURCE
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.prop_miner_data_source}
-                    onChange={handleInputChange('prop_miner_data_source')}
-                    placeholder="MINER"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    NLS_LENGTH_SEMANTICS
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.prop_nls_length_semantics}
-                    onChange={handleInputChange('prop_nls_length_semantics')}
-                    placeholder="CHAR"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  />
-                </div>
-              </div>
-
-
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    WEB_SERVICE_USER
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.prop_web_service_user}
-                    onChange={handleInputChange('prop_web_service_user')}
-                    placeholder="oracle"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    WEB_SERVICE_PASSWORD
+                    Default Schema Password
                   </label>
                   <input
                     type="password"
-                    value={formData.prop_web_service_password}
-                    onChange={handleInputChange('prop_web_service_password')}
-                    placeholder="Oracle@123"
+                    value={formData.schema_default_password}
+                    onChange={handleInputChange('schema_default_password')}
+                    placeholder="Password1"
                     className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
                   />
                 </div>
-              </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      DATAFILE Base Dir
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.schema_datafile_dir}
+                      onChange={handleInputChange('schema_datafile_dir')}
+                      placeholder="/u01/app/oracle/oradata/OFSAA/OFSAADB"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      AUTOEXTEND (ON/OFF)
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.schema_tablespace_autoextend}
+                      onChange={handleInputChange('schema_tablespace_autoextend')}
+                      placeholder="OFF"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                </div>
+
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    CONFIGURE_OBIEE
+                    External Directory Value
                   </label>
                   <input
                     type="text"
-                    value={formData.prop_configure_obiee}
-                    onChange={handleInputChange('prop_configure_obiee')}
-                    placeholder="0"
+                    value={formData.schema_external_directory_value}
+                    onChange={handleInputChange('schema_external_directory_value')}
+                    placeholder="/u01/OFSAA/FICHOME/bdf/inbox"
                     className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
                   />
                 </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    OBIEE_URL (optional)
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.prop_obiee_url}
-                    onChange={handleInputChange('prop_obiee_url')}
-                    placeholder="(empty allowed)"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  />
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      CONFIG Schema Name
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.schema_config_schema_name}
+                      onChange={handleInputChange('schema_config_schema_name')}
+                      placeholder="OFSCONFIG"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      ATOMIC Schema Name
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.schema_atomic_schema_name}
+                      onChange={handleInputChange('schema_atomic_schema_name')}
+                      placeholder="OFSATOMIC"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
                 </div>
               </div>
+            </details>
 
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    SW_RMIPORT
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.prop_sw_rmiport}
-                    onChange={handleInputChange('prop_sw_rmiport')}
-                    placeholder="8204"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  />
+            {/* App Pack Config Section - BD Pack Only */}
+            <details open className="group">
+              <summary className="list-none cursor-pointer select-none flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-bold text-text-primary uppercase tracking-wider">
+                    Application Pack (OFS_BD_PACK.xml)
+                  </div>
+                  <div className="text-xs text-text-muted mt-1">
+                    Toggle apps to set `ENABLE=\"YES\"` (off = empty).
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    BIG_DATA_ENABLE
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.prop_big_data_enable}
-                    onChange={handleInputChange('prop_big_data_enable')}
-                    placeholder="FALSE"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  />
-                </div>
-                
+                <div className="text-xs font-mono text-text-muted group-open:hidden">OPEN</div>
+                <div className="text-xs font-mono text-text-muted hidden group-open:block">CLOSE</div>
+              </summary>
+
+              <div className="mt-5 grid grid-cols-1 lg:grid-cols-2 gap-3">
+                {APP_PACK_APPS.map(app => {
+                  const enabled = !!formData.pack_app_enable[app.id]
+                  return (
+                    <button
+                      key={app.id}
+                      type="button"
+                      onClick={() => togglePackAppEnable(app.id)}
+                      aria-pressed={enabled}
+                      className="text-left rounded-lg border border-border bg-bg-secondary/40 hover:bg-bg-tertiary/40 transition-colors px-4 py-3 flex items-center justify-between gap-4"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-xs font-mono text-text-muted">{app.id}</div>
+                        <div className="text-sm text-text-primary truncate">{app.name}</div>
+                      </div>
+                      <div className="shrink-0 flex items-center gap-2">
+                        <span className={`text-xs font-bold tracking-widest ${enabled ? 'text-success' : 'text-text-muted'}`}>
+                          {enabled ? 'YES' : 'OFF'}
+                        </span>
+                        <span
+                          className={`h-6 w-6 rounded-md border flex items-center justify-center transition-colors ${
+                            enabled ? 'bg-white text-black border-white' : 'bg-transparent text-transparent border-border'
+                          }`}
+                          aria-hidden="true"
+                        >
+                          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="3">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                          </svg>
+                        </span>
+                      </div>
+                    </button>
+                  )
+                })}
               </div>
+            </details>
 
-              {/* Commented out - SQOOP, SSH, ECM, CS, CRR, FSDF fields
-              <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    SQOOP_WORKING_DIR
-                  </label>
-                  <input type="text" value={formData.prop_sqoop_working_dir} onChange={handleInputChange('prop_sqoop_working_dir')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+            {/* Silent Installer Section - BD Pack Only */}
+            <details className="group">
+              <summary className="list-none cursor-pointer select-none flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-bold text-text-primary uppercase tracking-wider">
+                    Silent Installer (default.properties)
+                  </div>
+                  <div className="text-xs text-text-muted mt-1">
+                    User input section only (above `FSDF_UPLOAD_MODEL`).
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    SSH_AUTH_ALIAS
-                  </label>
-                  <input type="text" value={formData.prop_ssh_auth_alias} onChange={handleInputChange('prop_ssh_auth_alias')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                <div className="text-xs font-mono text-text-muted group-open:hidden">OPEN</div>
+                <div className="text-xs font-mono text-text-muted hidden group-open:block">CLOSE</div>
+              </summary>
+
+              <div className="mt-5 space-y-5">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      BASE_COUNTRY
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.prop_base_country}
+                      onChange={handleInputChange('prop_base_country')}
+                      placeholder="US"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      DEFAULT_JURISDICTION
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.prop_default_jurisdiction}
+                      onChange={handleInputChange('prop_default_jurisdiction')}
+                      placeholder="AMEA"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    SSH_HOST_NAME
-                  </label>
-                  <input type="text" value={formData.prop_ssh_host_name} onChange={handleInputChange('prop_ssh_host_name')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      SMTP_HOST
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.prop_smtp_host}
+                      onChange={handleInputChange('prop_smtp_host')}
+                      placeholder="192.168.3.41"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      PARTITION_DATE_FORMAT
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.prop_partition_date_format}
+                      onChange={handleInputChange('prop_partition_date_format')}
+                      placeholder="DD-MM-YYYY"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
                 </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      DATADUMPDT_MINUS_0
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.prop_datadumpdt_minus_0}
+                      onChange={handleInputChange('prop_datadumpdt_minus_0')}
+                      placeholder="10/12/2015"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      ENDTHISWEEK_MINUS_00
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.prop_endthisweek_minus_00}
+                      onChange={handleInputChange('prop_endthisweek_minus_00')}
+                      placeholder="19/12/2015"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      STARTNEXTMNTH_MINUS_00
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.prop_startnextmnth_minus_00}
+                      onChange={handleInputChange('prop_startnextmnth_minus_00')}
+                      placeholder="01/01/2016"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      ANALYST_DATA_SOURCE
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.prop_analyst_data_source}
+                      onChange={handleInputChange('prop_analyst_data_source')}
+                      placeholder="ANALYST"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      MINER_DATA_SOURCE
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.prop_miner_data_source}
+                      onChange={handleInputChange('prop_miner_data_source')}
+                      placeholder="MINER"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      NLS_LENGTH_SEMANTICS
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.prop_nls_length_semantics}
+                      onChange={handleInputChange('prop_nls_length_semantics')}
+                      placeholder="CHAR"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      WEB_SERVICE_USER
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.prop_web_service_user}
+                      onChange={handleInputChange('prop_web_service_user')}
+                      placeholder="oracle"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      WEB_SERVICE_PASSWORD
+                    </label>
+                    <input
+                      type="password"
+                      value={formData.prop_web_service_password}
+                      onChange={handleInputChange('prop_web_service_password')}
+                      placeholder="Oracle@123"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      CONFIGURE_OBIEE
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.prop_configure_obiee}
+                      onChange={handleInputChange('prop_configure_obiee')}
+                      placeholder="0"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      OBIEE_URL (optional)
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.prop_obiee_url}
+                      onChange={handleInputChange('prop_obiee_url')}
+                      placeholder="(empty allowed)"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      SW_RMIPORT
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.prop_sw_rmiport}
+                      onChange={handleInputChange('prop_sw_rmiport')}
+                      placeholder="8204"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      BIG_DATA_ENABLE
+                    </label>
+                    <input
+                      type="text"
+                      value={formData.prop_big_data_enable}
+                      onChange={handleInputChange('prop_big_data_enable')}
+                      placeholder="FALSE"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                </div>
+
+                {/* Commented out - SQOOP, SSH, ECM, CS, CRR, FSDF fields
+                <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      SQOOP_WORKING_DIR
+                    </label>
+                    <input type="text" value={formData.prop_sqoop_working_dir} onChange={handleInputChange('prop_sqoop_working_dir')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      SSH_AUTH_ALIAS
+                    </label>
+                    <input type="text" value={formData.prop_ssh_auth_alias} onChange={handleInputChange('prop_ssh_auth_alias')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      SSH_HOST_NAME
+                    </label>
+                    <input type="text" value={formData.prop_ssh_host_name} onChange={handleInputChange('prop_ssh_host_name')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      SSH_PORT
+                    </label>
+                    <input type="text" value={formData.prop_ssh_port} onChange={handleInputChange('prop_ssh_port')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      ECMSOURCE
+                    </label>
+                    <input type="text" value={formData.prop_ecmsource} onChange={handleInputChange('prop_ecmsource')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      ECMLOADTYPE
+                    </label>
+                    <input type="text" value={formData.prop_ecmloadtype} onChange={handleInputChange('prop_ecmloadtype')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      CSSOURCE
+                    </label>
+                    <input type="text" value={formData.prop_cssource} onChange={handleInputChange('prop_cssource')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      CSLOADTYPE
+                    </label>
+                    <input type="text" value={formData.prop_csloadtype} onChange={handleInputChange('prop_csloadtype')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      CRRSOURCE
+                    </label>
+                    <input type="text" value={formData.prop_crrsource} onChange={handleInputChange('prop_crrsource')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      CRRLOADTYPE
+                    </label>
+                    <input type="text" value={formData.prop_crrloadtype} onChange={handleInputChange('prop_crrloadtype')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                      FSDF_UPLOAD_MODEL
+                    </label>
+                    <input type="text" value={formData.prop_fsdf_upload_model} onChange={handleInputChange('prop_fsdf_upload_model')} placeholder="1" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                </div>
+                */}
+
+              </div>
+            </details>
+
+            {/* OFSAAI Install Config Section - BD Pack */}
+            <details className="group">
+              <summary className="list-none cursor-pointer select-none flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-bold text-text-primary uppercase tracking-wider">
+                    OFSAAI Install (OFSAAI_InstallConfig.xml)
+                  </div>
+                  <div className="text-xs text-text-muted mt-1">
+                    Web server, DB, SFTP and port configuration.
+                  </div>
+                </div>
+                <div className="text-xs font-mono text-text-muted group-open:hidden">OPEN</div>
+                <div className="text-xs font-mono text-text-muted hidden group-open:block">CLOSE</div>
+              </summary>
+
+              <div className="mt-5 space-y-5">
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">WEBAPPSERVERTYPE</label>
+                    <input type="text" value={formData.aai_webappservertype} onChange={handleInputChange('aai_webappservertype')} placeholder="3" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">DBSERVER_IP</label>
+                    <input type="text" value={formData.aai_dbserver_ip} onChange={handleInputChange('aai_dbserver_ip')} placeholder="192.168.3.42" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">ORACLE SERVICE</label>
+                    <input type="text" value={formData.aai_oracle_service_name} onChange={handleInputChange('aai_oracle_service_name')} placeholder="OFSAAPDB" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">ABS_DRIVER_PATH</label>
+                    <input type="text" value={formData.aai_abs_driver_path} onChange={handleInputChange('aai_abs_driver_path')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">WEB_SERVER_IP</label>
+                    <input type="text" value={formData.aai_web_server_ip} onChange={handleInputChange('aai_web_server_ip')} placeholder="192.168.3.41" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">HTTPS_ENABLE</label>
+                    <input type="text" value={formData.aai_https_enable} onChange={handleInputChange('aai_https_enable')} placeholder="1" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">WEB_SERVER_PORT</label>
+                    <input type="text" value={formData.aai_web_server_port} onChange={handleInputChange('aai_web_server_port')} placeholder="7002" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">CONTEXT_NAME</label>
+                    <input type="text" value={formData.aai_context_name} onChange={handleInputChange('aai_context_name')} placeholder="FICHOME" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">OLAP_IMPL</label>
+                    <input type="text" value={formData.aai_olap_server_implementation} onChange={handleInputChange('aai_olap_server_implementation')} placeholder="0" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                </div>
+
                 <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    SSH_PORT
-                  </label>
-                  <input type="text" value={formData.prop_ssh_port} onChange={handleInputChange('prop_ssh_port')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">WEBAPP_CONTEXT_PATH</label>
+                  <input type="text" value={formData.aai_webapp_context_path} onChange={handleInputChange('aai_webapp_context_path')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">WEB_LOCAL_PATH</label>
+                    <input type="text" value={formData.aai_web_local_path} onChange={handleInputChange('aai_web_local_path')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">WEBLOGIC_DOMAIN_HOME</label>
+                    <input type="text" value={formData.aai_weblogic_domain_home} onChange={handleInputChange('aai_weblogic_domain_home')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+                  {[
+                    ['JAVAPORT', 'aai_javaport'],
+                    ['NATIVEPORT', 'aai_nativeport'],
+                    ['AGENTPORT', 'aai_agentport'],
+                    ['ICCPORT', 'aai_iccport'],
+                    ['ICCNATIVE', 'aai_iccnativeport'],
+                    ['OLAPPORT', 'aai_olapport'],
+                    ['MSGPORT', 'aai_msgport'],
+                    ['ROUTERPORT', 'aai_routerport'],
+                    ['AMPORT', 'aai_amport']
+                  ].map(([label, field]) => (
+                    <div key={label} className="space-y-2">
+                      <label className="text-[10px] font-bold text-text-primary uppercase tracking-wider">{label}</label>
+                      <input
+                        type="text"
+                        value={(formData as any)[field]}
+                        onChange={handleInputChange(field as any)}
+                        className="w-full bg-bg-secondary border border-border rounded-lg px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">SFTP_ENABLE</label>
+                    <input type="text" value={formData.aai_sftp_enable} onChange={handleInputChange('aai_sftp_enable')} placeholder="1" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">FILE_TRANSFER_PORT</label>
+                    <input type="text" value={formData.aai_file_transfer_port} onChange={handleInputChange('aai_file_transfer_port')} placeholder="22" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">OFSAAI_SFTP_USER_ID</label>
+                    <input type="text" value={formData.aai_sftp_user_id} onChange={handleInputChange('aai_sftp_user_id')} placeholder="oracle" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">OFSAAI_FTPSHARE_PATH</label>
+                  <input type="text" value={formData.aai_ftspshare_path} onChange={handleInputChange('aai_ftspshare_path')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
                 </div>
               </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    ECMSOURCE
-                  </label>
-                  <input type="text" value={formData.prop_ecmsource} onChange={handleInputChange('prop_ecmsource')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    ECMLOADTYPE
-                  </label>
-                  <input type="text" value={formData.prop_ecmloadtype} onChange={handleInputChange('prop_ecmloadtype')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    CSSOURCE
-                  </label>
-                  <input type="text" value={formData.prop_cssource} onChange={handleInputChange('prop_cssource')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    CSLOADTYPE
-                  </label>
-                  <input type="text" value={formData.prop_csloadtype} onChange={handleInputChange('prop_csloadtype')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    CRRSOURCE
-                  </label>
-                  <input type="text" value={formData.prop_crrsource} onChange={handleInputChange('prop_crrsource')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    CRRLOADTYPE
-                  </label>
-                  <input type="text" value={formData.prop_crrloadtype} onChange={handleInputChange('prop_crrloadtype')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    FSDF_UPLOAD_MODEL
-                  </label>
-                  <input type="text" value={formData.prop_fsdf_upload_model} onChange={handleInputChange('prop_fsdf_upload_model')} placeholder="1" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-                </div>
-              </div>
-              */}
-
-            </div>
-          </details>
+            </details>
+          </div>
         </motion.div>
         )}
 
@@ -1427,8 +1591,225 @@ export function InstallationForm() {
         )}
         {ecmSubmitError && <p className="text-xs text-error">{ecmSubmitError}</p>}
 
-        {/* OFSAAI Install Config Section - BD Pack Only */}
-        {formData.install_bdpack && (
+        {/* SANC Pack Configuration (match ECM style) */}
+        {formData.install_sanc && (
+        <motion.div
+          className="rounded-xl border border-border bg-bg-secondary/40 p-4 lg:p-5"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.58 }}
+        >
+          <div className="text-sm font-bold text-text-primary uppercase tracking-wider">SANC PACK CONFIGURATION</div>
+          <div className="text-xs text-text-muted mb-3">
+            Database & Host, Schema & Password, Tablespaces, CS/TFLT SWIFTINFO review.
+          </div>
+          <details open className="group">
+            <summary className="list-none cursor-pointer select-none flex items-center justify-between gap-3">
+              <div>
+                <div className="text-sm font-bold text-text-primary uppercase tracking-wider">
+                  SANC Schema & SWIFTINFO
+                </div>
+                <div className="text-xs text-text-muted mt-1">
+                  OFS_SANC_SCHEMA_IN.xml and CS/TFLT SWIFTINFO properties.
+                </div>
+              </div>
+              <div className="text-xs font-mono text-text-muted group-open:hidden">OPEN</div>
+              <div className="text-xs font-mono text-text-muted hidden group-open:block">CLOSE</div>
+            </summary>
+
+            <div className="mt-5 space-y-4">
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                  JDBC Host (DB)
+                </label>
+                <input
+                  type="text"
+                  value={formData.sanc_schema_jdbc_host}
+                  onChange={handleInputChange('sanc_schema_jdbc_host')}
+                  placeholder="192.168.3.42"
+                  className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    JDBC Port
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.sanc_schema_jdbc_port}
+                    onChange={handleInputChange('sanc_schema_jdbc_port')}
+                    placeholder="1521"
+                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    JDBC Service/SID
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.sanc_schema_jdbc_service}
+                    onChange={handleInputChange('sanc_schema_jdbc_service')}
+                    placeholder="FLEXPDB1"
+                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                  Application IP (HOST Tag Value)
+                </label>
+                <input
+                  type="text"
+                  value={formData.sanc_schema_host || formData.host}
+                  onChange={handleInputChange('sanc_schema_host')}
+                  placeholder="192.168.3.41"
+                  className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    SETUPINFO Name
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.sanc_schema_setup_env}
+                    onChange={handleInputChange('sanc_schema_setup_env')}
+                    placeholder="DEV"
+                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    ApplySameForAll (Y/N)
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.sanc_schema_apply_same_for_all}
+                    onChange={handleInputChange('sanc_schema_apply_same_for_all')}
+                    placeholder="Y"
+                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                  Default Schema Password
+                </label>
+                <input
+                  type="password"
+                  value={formData.sanc_schema_default_password}
+                  onChange={handleInputChange('sanc_schema_default_password')}
+                  placeholder="Password1"
+                  className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    DATAFILE Base Dir
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.sanc_schema_datafile_dir}
+                    onChange={handleInputChange('sanc_schema_datafile_dir')}
+                    placeholder="/u01/app/oracle/oradata/OFSAA/OFSAADB"
+                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    AUTOEXTEND (ON/OFF)
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.sanc_schema_tablespace_autoextend}
+                    onChange={handleInputChange('sanc_schema_tablespace_autoextend')}
+                    placeholder="OFF"
+                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                  External Directory Value
+                </label>
+                <input
+                  type="text"
+                  value={formData.sanc_schema_external_directory_value}
+                  onChange={handleInputChange('sanc_schema_external_directory_value')}
+                  placeholder="/u01/OFSAA/FICHOME/bdf/inbox"
+                  className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    CONFIG Schema Name
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.sanc_schema_config_schema_name}
+                    onChange={handleInputChange('sanc_schema_config_schema_name')}
+                    placeholder="OFSCONFIG"
+                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
+                    ATOMIC Schema Name
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.sanc_schema_atomic_schema_name}
+                    onChange={handleInputChange('sanc_schema_atomic_schema_name')}
+                    placeholder="OFSATOMIC"
+                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  />
+                </div>
+              </div>
+
+              <div className="border-t border-border pt-4 space-y-4">
+                <div className="text-xs font-bold text-text-primary uppercase tracking-wider">SANC SWIFTINFO (default.properties_CS / _TFLT)</div>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">CS SWIFTINFO</label>
+                    <input
+                      type="text"
+                      value={formData.sanc_cs_swiftinfo}
+                      onChange={handleInputChange('sanc_cs_swiftinfo')}
+                      placeholder="SWIFT_CS_INFO"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">TFLT SWIFTINFO</label>
+                    <input
+                      type="text"
+                      value={formData.sanc_tflt_swiftinfo}
+                      onChange={handleInputChange('sanc_tflt_swiftinfo')}
+                      placeholder="SWIFT_TFLT_INFO"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </details>
+        </motion.div>
+        )}
+
+        {/* OFSAAI Install Config Section - SANC only (BD Pack groups its own) */}
+        {!formData.install_bdpack && formData.install_sanc && (
         <motion.div
           className="rounded-xl border border-border bg-bg-secondary/40 p-4 lg:p-5"
           initial={{ opacity: 0, y: 10 }}
