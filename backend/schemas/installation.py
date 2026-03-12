@@ -17,7 +17,7 @@ class InstallationRequest(BaseModel):
     fic_home: Optional[str] = Field(default="/u01/OFSAA/FICHOME", description="FIC_HOME path")
     java_home: Optional[str] = Field(default=None, description="Custom JAVA_HOME path (optional)")
     java_bin: Optional[str] = Field(default=None, description="Custom JAVA_BIN path (optional)")
-    oracle_sid: Optional[str] = Field(default="ORCL", description="Oracle SID")
+    oracle_sid: Optional[str] = Field(default="OFSAADB", description="Oracle SID")
 
     # OFS_BD_SCHEMA_IN.xml user-driven inputs (optional)
     schema_jdbc_host: Optional[str] = Field(default=None, description="DB host for JDBC_URL")

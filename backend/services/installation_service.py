@@ -288,6 +288,7 @@ class InstallationService:
     async def backup_db_schemas(
         self, host: str, username: str, password: str,
         *, db_sys_password: str, db_jdbc_service: str,
+        db_oracle_sid: str = "ORCL",
         db_ssh_host: Optional[str] = None, db_ssh_username: Optional[str] = None, db_ssh_password: Optional[str] = None,
     ) -> dict:
         """Run DB schema backup using Git-controlled script."""
@@ -295,6 +296,7 @@ class InstallationService:
             host, username, password,
             db_sys_password=db_sys_password,
             db_jdbc_service=db_jdbc_service,
+            db_oracle_sid=db_oracle_sid,
             db_ssh_host=db_ssh_host,
             db_ssh_username=db_ssh_username,
             db_ssh_password=db_ssh_password,
@@ -319,6 +321,7 @@ class InstallationService:
     async def restore_db_schemas(
         self, host: str, username: str, password: str,
         *, db_sys_password: str, db_jdbc_service: str,
+        db_oracle_sid: str = "OFSAADB",
         db_ssh_host: Optional[str] = None, db_ssh_username: Optional[str] = None, db_ssh_password: Optional[str] = None,
     ) -> dict:
         """Restore DB schemas using Git-controlled script."""
@@ -326,6 +329,7 @@ class InstallationService:
             host, username, password,
             db_sys_password=db_sys_password,
             db_jdbc_service=db_jdbc_service,
+            db_oracle_sid=db_oracle_sid,
             db_ssh_host=db_ssh_host,
             db_ssh_username=db_ssh_username,
             db_ssh_password=db_ssh_password,
@@ -334,6 +338,7 @@ class InstallationService:
     async def full_restore_to_bd_state(
         self, host: str, username: str, password: str,
         *, db_sys_password: str, db_jdbc_service: str,
+        db_oracle_sid: str = "ORCL",
         db_ssh_host: Optional[str] = None, db_ssh_username: Optional[str] = None, db_ssh_password: Optional[str] = None,
     ) -> dict:
         """Full restore to BD state: rm OFSAA -> restore tar -> restore DB schemas."""
@@ -343,6 +348,7 @@ class InstallationService:
             host, username, password,
             db_sys_password=db_sys_password,
             db_jdbc_service=db_jdbc_service,
+            db_oracle_sid=db_oracle_sid,
             db_ssh_host=db_ssh_host,
             db_ssh_username=db_ssh_username,
             db_ssh_password=db_ssh_password,

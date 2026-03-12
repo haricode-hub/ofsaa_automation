@@ -202,6 +202,7 @@ async def _restore_bd_on_ecm_failure(
         request.host, request.username, request.password,
         db_sys_password=db_sys_pass or "",
         db_jdbc_service=db_service or "",
+        db_oracle_sid=getattr(request, "oracle_sid", None) or "ORCL",
         db_ssh_host=getattr(request, "db_ssh_host", None),
         db_ssh_username=getattr(request, "db_ssh_username", None),
         db_ssh_password=getattr(request, "db_ssh_password", None),
@@ -617,9 +618,10 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                     request.host, request.username, request.password,
                     db_sys_password=db_sys_pass,
                     db_jdbc_service=db_service,
-                        db_ssh_host=getattr(request, "db_ssh_host", None),
-                        db_ssh_username=getattr(request, "db_ssh_username", None),
-                        db_ssh_password=getattr(request, "db_ssh_password", None),
+                    db_oracle_sid=getattr(request, "oracle_sid", None) or "ORCL",
+                    db_ssh_host=getattr(request, "db_ssh_host", None),
+                    db_ssh_username=getattr(request, "db_ssh_username", None),
+                    db_ssh_password=getattr(request, "db_ssh_password", None),
                 )
                 await append_output(task_id, "\n".join(db_backup_result.get("logs", [])))
                 if not db_backup_result.get("success"):
@@ -675,6 +677,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                         request.host, request.username, request.password,
                         db_sys_password=db_sys_pass,
                         db_jdbc_service=db_service,
+                        db_oracle_sid=getattr(request, "oracle_sid", None) or "ORCL",
                         db_ssh_host=getattr(request, "db_ssh_host", None),
                         db_ssh_username=getattr(request, "db_ssh_username", None),
                         db_ssh_password=getattr(request, "db_ssh_password", None),
@@ -741,6 +744,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                             request.host, request.username, request.password,
                             db_sys_password=db_sys_pass,
                             db_jdbc_service=db_service,
+                            db_oracle_sid=getattr(request, "oracle_sid", None) or "ORCL",
                             db_ssh_host=getattr(request, "db_ssh_host", None),
                             db_ssh_username=getattr(request, "db_ssh_username", None),
                             db_ssh_password=getattr(request, "db_ssh_password", None),

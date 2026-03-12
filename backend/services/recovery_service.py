@@ -259,6 +259,7 @@ class RecoveryService:
         *,
         db_sys_password: str,
         db_jdbc_service: str,
+        db_oracle_sid: str = "OFSAADB",
         db_ssh_host: Optional[str] = None,
         db_ssh_username: Optional[str] = None,
         db_ssh_password: Optional[str] = None,
@@ -401,7 +402,7 @@ echo "Setting environment variables for backup..."
 export DB_USER="system"
 export DB_PASS="{db_sys_password}"
 export SERVICE="{db_jdbc_service}"
-export ORACLE_SID="{db_jdbc_service}"
+export ORACLE_SID="{db_oracle_sid}"
 echo "DB_USER=$DB_USER"
 echo "SERVICE=$SERVICE"
 echo "ORACLE_SID=$ORACLE_SID"
@@ -618,6 +619,7 @@ bash ./backup_ofs_schemas.sh
         *,
         db_sys_password: str,
         db_jdbc_service: str,
+        db_oracle_sid: str = "OFSAADB",
         db_ssh_host: Optional[str] = None,
         db_ssh_username: Optional[str] = None,
         db_ssh_password: Optional[str] = None,
@@ -784,7 +786,7 @@ export DB_USER="system"
 export DB_PASS="{db_sys_password}"
 export SERVICE="{db_jdbc_service}"
 export DUMPFILE="{dmp_filename}"
-export ORACLE_SID="{db_jdbc_service}"
+export ORACLE_SID="{db_oracle_sid}"
 echo "DB_USER=$DB_USER"
 echo "SERVICE=$SERVICE"
 echo "DUMPFILE=$DUMPFILE"
@@ -843,6 +845,7 @@ bash ./restore_ofs_schemas.sh
         *,
         db_sys_password: str,
         db_jdbc_service: str,
+        db_oracle_sid: str = "ORCL",
         db_ssh_host: Optional[str] = None,
         db_ssh_username: Optional[str] = None,
         db_ssh_password: Optional[str] = None,
@@ -876,6 +879,7 @@ bash ./restore_ofs_schemas.sh
             host, username, password,
             db_sys_password=db_sys_password,
             db_jdbc_service=db_jdbc_service,
+            db_oracle_sid=db_oracle_sid,
             db_ssh_host=db_ssh_host,
             db_ssh_username=db_ssh_username,
             db_ssh_password=db_ssh_password,
