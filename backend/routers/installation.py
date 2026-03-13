@@ -442,12 +442,53 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
 
             await append_output(task_id, "[INFO] Sourcing /home/oracle/.profile before envCheck")
 
+            # BD envCheck prompt callback: auto-answer DB username, password, and SID
+            bd_db_password = request.db_sys_password or ""
+            bd_oracle_sid = request.oracle_sid or "OFSAADB"
+
+            async def bd_envcheck_prompt_callback(prompt: str) -> str:
+                prompt_lower = prompt.lower()
+                # Auto-answer DB username prompt
+                if "db user name" in prompt_lower or ("oracle" in prompt_lower and "user name" in prompt_lower):
+                    await append_output(task_id, f"[AUTO-ANSWER] {prompt} -> SYS AS SYSDBA")
+                    return "SYS AS SYSDBA"
+                # Auto-answer password prompt
+                if "enter password" in prompt_lower or "enter the password" in prompt_lower or prompt_lower.strip().startswith("please enter password"):
+                    await append_output(task_id, f"[AUTO-ANSWER] {prompt} -> ********")
+                    return bd_db_password
+                # Auto-answer Oracle SID/SERVICE prompt
+                if ("oracle sid" in prompt_lower or "service name" in prompt_lower) and "enter" in prompt_lower:
+                    await append_output(task_id, f"[AUTO-ANSWER] {prompt} -> {bd_oracle_sid}")
+                    return bd_oracle_sid
+                # Y/N confirmation prompts
+                yn_patterns = [
+                    "(y/n)", "(y/y)", "(n/n)", "(n/y)",
+                    "(y)", "(n)",
+                    "y/y", "n/n", "y/n", "n/y",
+                    "enter (y", "enter (n", "enter y", "enter n",
+                    "to proceed",
+                    "y to", "n to",
+                    "y or n", "yes or no",
+                    "(yes/no)", "yes/no",
+                    "to change the selection",
+                ]
+                if any(p in prompt_lower for p in yn_patterns):
+                    await append_output(task_id, f"[AUTO-ANSWER Y] {prompt}")
+                    return "Y"
+                # Anything else - forward to user
+                await append_output(task_id, f"[PROMPT] {prompt}")
+                await websocket_manager.send_prompt(task_id, prompt)
+                await update_status(task_id, "waiting_input", task.current_step, task.progress)
+                response = await websocket_manager.wait_for_user_input(task_id, timeout=3600)
+                await update_status(task_id, "running", task.current_step, task.progress)
+                return response
+
             env_result = await installation_service.run_environment_check(
                 request.host,
                 request.username,
                 request.password,
                 on_output_callback=output_callback,
-                on_prompt_callback=prompt_callback,
+                on_prompt_callback=bd_envcheck_prompt_callback,
             )
             await append_output(task_id, "\n".join(env_result.get("logs", [])))
             if not env_result.get("success"):
@@ -532,12 +573,46 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 await handle_failure("Applying installer config files failed", cfg_result.get("error"))
                 return
 
+            # BD osc.sh prompt callback: auto-answer SYSDBA user, password, and Y/N prompts
+            async def bd_osc_prompt_callback(prompt: str) -> str:
+                prompt_lower = prompt.lower()
+                # Auto-answer SYSDBA username prompt
+                if "db user name" in prompt_lower and "sysdba" in prompt_lower:
+                    await append_output(task_id, f"[AUTO-ANSWER] {prompt} -> SYS AS SYSDBA")
+                    return "SYS AS SYSDBA"
+                # Auto-answer password prompt
+                if "user password" in prompt_lower or "enter the password" in prompt_lower or "enter password" in prompt_lower:
+                    await append_output(task_id, f"[AUTO-ANSWER] {prompt} -> ********")
+                    return bd_db_password
+                # Y/N confirmation prompts
+                yn_patterns = [
+                    "(y/n)", "(y/y)", "(n/n)", "(n/y)",
+                    "(y)", "(n)",
+                    "y/y", "n/n", "y/n", "n/y",
+                    "enter (y", "enter (n", "enter y", "enter n",
+                    "to proceed",
+                    "y to", "n to",
+                    "y or n", "yes or no",
+                    "(yes/no)", "yes/no",
+                    "to change the selection",
+                ]
+                if any(p in prompt_lower for p in yn_patterns):
+                    await append_output(task_id, f"[AUTO-ANSWER Y] {prompt}")
+                    return "Y"
+                # Anything else - forward to user
+                await append_output(task_id, f"[PROMPT] {prompt}")
+                await websocket_manager.send_prompt(task_id, prompt)
+                await update_status(task_id, "waiting_input", task.current_step, task.progress)
+                response = await websocket_manager.wait_for_user_input(task_id, timeout=3600)
+                await update_status(task_id, "running", task.current_step, task.progress)
+                return response
+
             osc_result = await installation_service.run_osc_schema_creator(
                 request.host,
                 request.username,
                 request.password,
                 on_output_callback=output_callback,
-                on_prompt_callback=prompt_callback,
+                on_prompt_callback=bd_osc_prompt_callback,
             )
             await append_output(task_id, "\n".join(osc_result.get("logs", [])))
             if not osc_result.get("success"):
@@ -890,12 +965,49 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             # ECM Step 4a: Run ECM osc.sh -s
             await update_status(task_id, "running", "Running ECM schema creator (osc.sh)", 92)
             await trace("Starting ECM osc.sh step")
+
+            # ECM osc.sh prompt callback: auto-answer SYSDBA user, DB password, and Y/N prompts
+            ecm_db_password = request.db_sys_password or ""
+
+            async def ecm_osc_prompt_callback(prompt: str) -> str:
+                prompt_lower = prompt.lower()
+                # Auto-answer SYSDBA username prompt
+                if ("db user name" in prompt_lower and "sysdba" in prompt_lower) or ("db user name" in prompt_lower) or ("oracle" in prompt_lower and "user name" in prompt_lower):
+                    await append_output(task_id, f"[AUTO-ANSWER] {prompt} -> SYS AS SYSDBA")
+                    return "SYS AS SYSDBA"
+                # Auto-answer password prompt
+                if "user password" in prompt_lower or "enter the password" in prompt_lower or "enter password" in prompt_lower:
+                    await append_output(task_id, f"[AUTO-ANSWER] {prompt} -> ********")
+                    return ecm_db_password
+                # Y/N confirmation prompts
+                yn_patterns = [
+                    "(y/n)", "(y/y)", "(n/n)", "(n/y)",
+                    "(y)", "(n)",
+                    "y/y", "n/n", "y/n", "n/y",
+                    "enter (y", "enter (n", "enter y", "enter n",
+                    "to proceed",
+                    "y to", "n to",
+                    "y or n", "yes or no",
+                    "(yes/no)", "yes/no",
+                    "to change the selection",
+                ]
+                if any(p in prompt_lower for p in yn_patterns):
+                    await append_output(task_id, f"[AUTO-ANSWER Y] {prompt}")
+                    return "Y"
+                # Anything else - forward to user
+                await append_output(task_id, f"[PROMPT] {prompt}")
+                await websocket_manager.send_prompt(task_id, prompt)
+                await update_status(task_id, "waiting_input", task.current_step, task.progress)
+                response = await websocket_manager.wait_for_user_input(task_id, timeout=3600)
+                await update_status(task_id, "running", task.current_step, task.progress)
+                return response
+
             ecm_osc_result = await installation_service.run_ecm_osc_schema_creator(
                 request.host,
                 request.username,
                 request.password,
                 on_output_callback=output_callback,
-                on_prompt_callback=prompt_callback,
+                on_prompt_callback=ecm_osc_prompt_callback,
             )
             await append_output(task_id, "\n".join(ecm_osc_result.get("logs", [])))
             if not ecm_osc_result.get("success"):
@@ -1041,7 +1153,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             async def sanc_osc_prompt_callback(prompt: str) -> str:
                 prompt_lower = prompt.lower()
                 # Auto-answer SYSDBA username prompt
-                if "db user name" in prompt_lower and "sysdba" in prompt_lower:
+                if ("db user name" in prompt_lower and "sysdba" in prompt_lower) or ("db user name" in prompt_lower) or ("oracle" in prompt_lower and "user name" in prompt_lower):
                     await append_output(task_id, f"[AUTO-ANSWER] {prompt} -> SYS AS SYSDBA")
                     return "SYS AS SYSDBA"
                 # Auto-answer password prompt
