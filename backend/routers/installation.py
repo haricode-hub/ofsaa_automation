@@ -337,6 +337,23 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
 
         # Run BD Pack only if selected AND not resuming from checkpoint
         if request.install_bdpack and not request.resume_from_checkpoint:
+            # Clear RAM caches before BD Pack only if BD is running alone
+            if not request.install_ecm and not request.install_sanc:
+                await append_output(task_id, "[INFO] Clearing filesystem caches before BD Pack...")
+                await installation_service.ssh_service.execute_command(request.host, request.username, request.password, "echo 2 | sudo tee /proc/sys/vm/drop_caches")
+
+            # Set open_cursors=2000 on DB server via sqlplus
+            db_host_for_cursor = getattr(request, "db_ssh_host", None) or request.host
+            db_user_for_cursor = getattr(request, "db_ssh_username", None) or request.username
+            db_pass_for_cursor = getattr(request, "db_ssh_password", None) or request.password
+            cursor_cmd = "echo \"ALTER SYSTEM SET open_cursors=2000 SCOPE=BOTH;\" | sqlplus / as sysdba"
+            await append_output(task_id, "[INFO] Setting open_cursors=2000 on DB server...")
+            cursor_result = await installation_service.ssh_service.execute_command(db_host_for_cursor, db_user_for_cursor, db_pass_for_cursor, cursor_cmd)
+            if cursor_result.get("success"):
+                await append_output(task_id, "[OK] open_cursors=2000 set successfully")
+            else:
+                await append_output(task_id, f"[WARN] Failed to set open_cursors: {cursor_result.get('error', 'unknown error')}")
+
             # Step 1: Oracle user and oinstall group
             await update_status(task_id, "running", steps[0], InstallationSteps.progress_for_index(0))
             result = await installation_service.create_oracle_user_and_oinstall_group(request.host, request.username, request.password)
@@ -701,6 +718,10 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
         if request.install_ecm:
             await append_output(task_id, "\n[INFO] ==================== ECM MODULE INSTALLATION ====================")
 
+            # Clear RAM caches before ECM
+            await append_output(task_id, "[INFO] Clearing filesystem caches before ECM Pack...")
+            await installation_service.ssh_service.execute_command(request.host, request.username, request.password, "echo 2 | sudo tee /proc/sys/vm/drop_caches")
+
             # ---- Verify backup availability before ECM starts ----
             await append_output(task_id, "[INFO] Verifying BD backup availability before ECM installation...")
             await update_status(task_id, "running", "Verifying BD backups for ECM safety", 81)
@@ -931,6 +952,10 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
         if request.install_sanc:
             await append_output(task_id, "\n[INFO] ==================== SANC MODULE INSTALLATION ====================")
 
+            # Clear RAM caches before SANC
+            await append_output(task_id, "[INFO] Clearing filesystem caches before SANC Pack...")
+            await installation_service.ssh_service.execute_command(request.host, request.username, request.password, "echo 2 | sudo tee /proc/sys/vm/drop_caches")
+
             # SANC Step 1: Download and extract SANC installer kit
             await update_status(task_id, "running", "Downloading and extracting SANC installer kit", 82)
             await trace("Starting SANC installer download/extract step")
@@ -1009,12 +1034,49 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             # SANC Step 4a: Run SANC osc.sh -s
             await update_status(task_id, "running", "Running SANC schema creator (osc.sh)", 92)
             await trace("Starting SANC osc.sh step")
+
+            # SANC osc.sh specific callback: auto-answer SYSDBA user, DB password, and Y/N prompts
+            sanc_db_password = request.db_sys_password or ""
+
+            async def sanc_osc_prompt_callback(prompt: str) -> str:
+                prompt_lower = prompt.lower()
+                # Auto-answer SYSDBA username prompt
+                if "db user name" in prompt_lower and "sysdba" in prompt_lower:
+                    await append_output(task_id, f"[AUTO-ANSWER] {prompt} -> SYS AS SYSDBA")
+                    return "SYS AS SYSDBA"
+                # Auto-answer password prompt
+                if "user password" in prompt_lower or "enter the password" in prompt_lower:
+                    await append_output(task_id, f"[AUTO-ANSWER] {prompt} -> ********")
+                    return sanc_db_password
+                # Y/N confirmation prompts
+                yn_patterns = [
+                    "(y/n)", "(y/y)", "(n/n)", "(n/y)",
+                    "(y)", "(n)",
+                    "y/y", "n/n", "y/n", "n/y",
+                    "enter (y", "enter (n", "enter y", "enter n",
+                    "to proceed",
+                    "y to", "n to",
+                    "y or n", "yes or no",
+                    "(yes/no)", "yes/no",
+                    "to change the selection",
+                ]
+                if any(p in prompt_lower for p in yn_patterns):
+                    await append_output(task_id, f"[AUTO-ANSWER Y] {prompt}")
+                    return "Y"
+                # Anything else - forward to user
+                await append_output(task_id, f"[PROMPT] {prompt}")
+                await websocket_manager.send_prompt(task_id, prompt)
+                await update_status(task_id, "waiting_input", task.current_step, task.progress)
+                response = await websocket_manager.wait_for_user_input(task_id, timeout=3600)
+                await update_status(task_id, "running", task.current_step, task.progress)
+                return response
+
             sanc_osc_result = await installation_service.run_sanc_osc_schema_creator(
                 request.host,
                 request.username,
                 request.password,
                 on_output_callback=output_callback,
-                on_prompt_callback=prompt_callback,
+                on_prompt_callback=sanc_osc_prompt_callback,
             )
             await append_output(task_id, "\n".join(sanc_osc_result.get("logs", [])))
             if not sanc_osc_result.get("success"):

@@ -1257,38 +1257,6 @@ class InstallerService:
         if tail:
             captured_lines.append(tail)
 
-        # ── RAM retry: detect RAM validation failure → drop caches → retry once ──
-        ram_patterns = [
-            re.compile(r"Validation for category RAM.*STATUS\s*:\s*FAILED", re.IGNORECASE),
-            re.compile(r"Insufficient RAM", re.IGNORECASE),
-        ]
-        has_ram_failure = any(p.search(line) for line in captured_lines for p in ram_patterns)
-        if has_ram_failure:
-            if on_output_callback is not None:
-                msg = "\n[RECOVERY] RAM validation failed. Dropping filesystem caches and retrying setup.sh...\n"
-                fwd = on_output_callback(msg)
-                if inspect.isawaitable(fwd):
-                    await fwd
-
-            drop_cmd = "echo 2 | sudo tee /proc/sys/vm/drop_caches"
-            await self.ssh_service.execute_command(host, username, password, drop_cmd)
-
-            # Re-run setup.sh SILENT (osc.sh already succeeded, skip it)
-            captured_lines.clear()
-            pending_buf = ""
-            result = await self.ssh_service.execute_interactive_command(
-                host,
-                username,
-                password,
-                command,
-                on_output_callback=_setup_output_collector,
-                on_prompt_callback=on_prompt_callback,
-                timeout=36000,
-            )
-            tail = pending_buf.strip()
-            if tail:
-                captured_lines.append(tail)
-
         summary = await self._collect_installation_summary_after_setup(
             host,
             username,
@@ -2838,35 +2806,6 @@ class InstallerService:
         if tail:
             captured_lines.append(tail)
 
-        # ── RAM retry: detect RAM validation failure → drop caches → retry once ──
-        ram_patterns = [
-            re.compile(r"Validation for category RAM.*STATUS\s*:\s*FAILED", re.IGNORECASE),
-            re.compile(r"Insufficient RAM", re.IGNORECASE),
-        ]
-        has_ram_failure = any(p.search(line) for line in captured_lines for p in ram_patterns)
-        if has_ram_failure:
-            if on_output_callback is not None:
-                msg = "\n[RECOVERY] RAM validation failed. Dropping filesystem caches and retrying ECM setup.sh...\n"
-                fwd = on_output_callback(msg)
-                if inspect.isawaitable(fwd):
-                    await fwd
-
-            drop_cmd = "echo 2 | sudo tee /proc/sys/vm/drop_caches"
-            await self.ssh_service.execute_command(host, username, password, drop_cmd)
-
-            # Re-run setup.sh SILENT only (osc.sh already succeeded, skip it)
-            captured_lines.clear()
-            pending_buf = ""
-            result = await self.ssh_service.execute_interactive_command(
-                host, username, password, command,
-                on_output_callback=_ecm_setup_output_collector,
-                on_prompt_callback=on_prompt_callback,
-                timeout=36000,
-            )
-            tail = pending_buf.strip()
-            if tail:
-                captured_lines.append(tail)
-
         # Collect installation summary
         pack_log_path = "/u01/ECM_Installer_Kit/OFS_ECM_PACK/logs/Pack_Install.log"
         summary_cmd = (
@@ -3246,36 +3185,6 @@ class InstallerService:
         tail = pending_buf.strip()
         if tail:
             captured_lines.append(tail)
-
-        ram_patterns = [
-            re.compile(r"Validation for category RAM.*STATUS\s*:\s*FAILED", re.IGNORECASE),
-            re.compile(r"Insufficient RAM", re.IGNORECASE),
-        ]
-        has_ram_failure = any(p.search(line) for line in captured_lines for p in ram_patterns)
-        if has_ram_failure:
-            if on_output_callback is not None:
-                msg = "\n[RECOVERY] RAM validation failed. Dropping filesystem caches and retrying SANC setup.sh...\n"
-                fwd = on_output_callback(msg)
-                if inspect.isawaitable(fwd):
-                    await fwd
-
-            drop_cmd = "echo 2 | sudo tee /proc/sys/vm/drop_caches"
-            await self.ssh_service.execute_command(host, username, password, drop_cmd)
-
-            captured_lines.clear()
-            pending_buf = ""
-            result = await self.ssh_service.execute_interactive_command(
-                host,
-                username,
-                password,
-                command,
-                on_output_callback=_sanc_setup_output_collector,
-                on_prompt_callback=on_prompt_callback,
-                timeout=36000,
-            )
-            tail = pending_buf.strip()
-            if tail:
-                captured_lines.append(tail)
 
         pack_log_path = "/u01/SANC_INSTALLER_KIT_AUTOMATION/OFS_SANC_PACK/logs/Pack_Install.log"
         summary_cmd = (

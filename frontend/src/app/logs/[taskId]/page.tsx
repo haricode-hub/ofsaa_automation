@@ -34,6 +34,14 @@ const ECM_PACK_STEPS = [
   'Running ECM setup (setup.sh SILENT)'
 ]
 
+const SANC_PACK_STEPS = [
+  'Downloading and extracting SANC installer kit',
+  'Setting SANC kit permissions',
+  'Applying SANC configuration files',
+  'Running SANC schema creator (osc.sh)',
+  'Running SANC setup (setup.sh SILENT)'
+]
+
 export default function LogsPage() {
   const params = useParams()
   const router = useRouter()
@@ -48,18 +56,22 @@ export default function LogsPage() {
   const [outputLines, setOutputLines] = useState<string[]>([])
   const [autoFollowOutput, setAutoFollowOutput] = useState(true)
   const [redirectCountdown, setRedirectCountdown] = useState<number>(redirectDelaySec)
-  const [currentModule, setCurrentModule] = useState<'BD_PACK' | 'ECM_PACK'>('BD_PACK')
+  const [currentModule, setCurrentModule] = useState<'BD_PACK' | 'ECM_PACK' | 'SANC_PACK'>('BD_PACK')
   const socketRef = useRef<WebSocket | null>(null)
   const outputEndRef = useRef<HTMLDivElement>(null)
   const outputContainerRef = useRef<HTMLDivElement>(null)
 
   // Determine which module is active based on current step
   const activeSteps = useMemo(() => {
-    return currentModule === 'ECM_PACK' ? ECM_PACK_STEPS : BD_PACK_STEPS
+    if (currentModule === 'ECM_PACK') return ECM_PACK_STEPS
+    if (currentModule === 'SANC_PACK') return SANC_PACK_STEPS
+    return BD_PACK_STEPS
   }, [currentModule])
 
   const moduleLabel = useMemo(() => {
-    return currentModule === 'ECM_PACK' ? 'ECM Pack' : 'BD Pack'
+    if (currentModule === 'ECM_PACK') return 'ECM Pack'
+    if (currentModule === 'SANC_PACK') return 'SANC Pack'
+    return 'BD Pack'
   }, [currentModule])
 
   const statusLabel = useMemo(() => {
@@ -107,7 +119,11 @@ export default function LogsPage() {
           if (data?.step) {
             setCurrentStep(data.step)
             // Detect module change based on step name
-            if (data.step.toLowerCase().includes('ecm')) {
+            if (data.step.toLowerCase().includes('sanc')) {
+              setCurrentModule('SANC_PACK')
+            } else if (SANC_PACK_STEPS.some(s => s === data.step)) {
+              setCurrentModule('SANC_PACK')
+            } else if (data.step.toLowerCase().includes('ecm')) {
               setCurrentModule('ECM_PACK')
             } else if (ECM_PACK_STEPS.some(s => s === data.step)) {
               setCurrentModule('ECM_PACK')
@@ -178,6 +194,17 @@ export default function LogsPage() {
     }
   }
 
+  const handleDownloadLogs = () => {
+    const content = outputLines.join('\n')
+    const blob = new Blob([content], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `installation-logs-${taskId.slice(0, 8)}.txt`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
   const statusColor = (() => {
     if (status === 'failed') return 'text-error'
     if (status === 'completed') return 'text-success'
@@ -199,6 +226,13 @@ export default function LogsPage() {
             <div className="text-xs text-text-muted">Task: {taskId.slice(0, 8)}...</div>
           </div>
           <div className="text-xs text-text-secondary flex items-center gap-3">
+            <button
+              onClick={handleDownloadLogs}
+              disabled={outputLines.length === 0}
+              className="px-3 py-1 rounded-md border border-border text-text-secondary hover:text-white hover:border-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Download Logs
+            </button>
             <span>Progress</span>
             <div className="w-40 h-1 bg-bg-tertiary rounded">
               <div
