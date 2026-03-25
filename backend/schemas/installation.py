@@ -194,6 +194,40 @@ class InstallationRequest(BaseModel):
     sanc_cs_swiftinfo: Optional[str] = Field(default=None, description="SWIFTINFO value for OFS_CS default.properties")
     sanc_tflt_swiftinfo: Optional[str] = Field(default=None, description="SWIFTINFO value for OFS_TFLT default.properties")
 
+    # SANC OFSAAI_InstallConfig.xml fields (mirrors BD Pack structure)
+    sanc_aai_webappservertype: Optional[str] = Field(default="3", description="SANC WEBAPPSERVERTYPE")
+    sanc_aai_dbserver_ip: Optional[str] = Field(default=None, description="SANC DBSERVER_IP")
+    sanc_aai_oracle_service_name: Optional[str] = Field(default=None, description="SANC ORACLE_SERVICE_NAME")
+    sanc_aai_abs_driver_path: Optional[str] = Field(default=None, description="SANC ABS_DRIVER_PATH")
+    sanc_aai_olap_server_implementation: Optional[str] = Field(default="0", description="SANC OLAP_SERVER_IMPLEMENTATION")
+    sanc_aai_sftp_enable: Optional[str] = Field(default="1", description="SANC SFTP_ENABLE")
+    sanc_aai_file_transfer_port: Optional[str] = Field(default="22", description="SANC FILE_TRANSFER_PORT")
+    sanc_aai_javaport: Optional[str] = Field(default="9999", description="SANC JAVAPORT")
+    sanc_aai_nativeport: Optional[str] = Field(default="6666", description="SANC NATIVEPORT")
+    sanc_aai_agentport: Optional[str] = Field(default="6510", description="SANC AGENTPORT")
+    sanc_aai_iccport: Optional[str] = Field(default="6507", description="SANC ICCPORT")
+    sanc_aai_iccnativeport: Optional[str] = Field(default="6509", description="SANC ICCNATIVEPORT")
+    sanc_aai_olapport: Optional[str] = Field(default="10101", description="SANC OLAPPORT")
+    sanc_aai_msgport: Optional[str] = Field(default="6501", description="SANC MSGPORT")
+    sanc_aai_routerport: Optional[str] = Field(default="6502", description="SANC ROUTERPORT")
+    sanc_aai_amport: Optional[str] = Field(default="6506", description="SANC AMPORT")
+    sanc_aai_https_enable: Optional[str] = Field(default="1", description="SANC HTTPS_ENABLE")
+    sanc_aai_web_server_ip: Optional[str] = Field(default=None, description="SANC WEB_SERVER_IP")
+    sanc_aai_web_server_port: Optional[str] = Field(default="7002", description="SANC WEB_SERVER_PORT")
+    sanc_aai_context_name: Optional[str] = Field(default="FICHOME", description="SANC CONTEXT_NAME")
+    sanc_aai_webapp_context_path: Optional[str] = Field(default=None, description="SANC WEBAPP_CONTEXT_PATH")
+    sanc_aai_web_local_path: Optional[str] = Field(default="/u01/OFSAA/FTPSHARE", description="SANC WEB_LOCAL_PATH")
+    sanc_aai_weblogic_domain_home: Optional[str] = Field(default=None, description="SANC WEBLOGIC_DOMAIN_HOME")
+    sanc_aai_ftspshare_path: Optional[str] = Field(default="/u01/OFSAA/FTPSHARE", description="SANC OFSAAI_FTPSHARE_PATH")
+    sanc_aai_sftp_user_id: Optional[str] = Field(default="oracle", description="SANC OFSAAI_SFTP_USER_ID")
+
+    # ============== FICHOME DEPLOYMENT FIELDS ==============
+    install_fichome_deployment: Optional[bool] = Field(default=False, description="Enable FICHOME deployment post-installation")
+    fichome_enable_deployment: Optional[bool] = Field(default=False, description="Deploy FICHOME after module installation")
+    fichome_weblogic_host: Optional[str] = Field(default=None, description="WebLogic server host (optional, auto-detect if empty)")
+    fichome_weblogic_port: Optional[str] = Field(default="7001", description="WebLogic server port")
+    fichome_ant_timeout_minutes: Optional[int] = Field(default=20, description="Timeout in minutes for ant.sh build execution")
+
 class InstallationResponse(BaseModel):
     """Schema for installation response"""
     task_id: str
@@ -221,6 +255,32 @@ class ServiceResult(BaseModel):
     message: str
     logs: List[str] = []
     error: Optional[str] = None
+
+class FichomeDeploymentRequest(BaseModel):
+    """Schema for FICHOME deployment request (17-step workflow)"""
+    host: str = Field(..., description="Target host IP address or hostname")
+    username: str = Field(..., description="SSH username (typically root)")
+    password: str = Field(..., description="SSH password")
+    
+    # Database privilege grant parameters (STEP 1)
+    db_sys_password: str = Field(..., description="Oracle SYS password for sqlplus connections")
+    db_jdbc_host: Optional[str] = Field(default=None, description="Database host (defaults to target host if not provided)")
+    db_jdbc_port: int = Field(default=1521, description="Database port")
+    db_jdbc_service: str = Field(..., description="Database service name (e.g., FLEXPDB1)")
+    
+    # Schema names (determined by last installed module: SANC > ECM > BD)
+    config_schema_name: str = Field(..., description="CONFIG schema name (from last installed module)")
+    atomic_schema_name: str = Field(..., description="ATOMIC schema name (from last installed module)")
+    
+    # WebLogic domain (extracted from installconfig.xml on target)
+    weblogic_domain_home: Optional[str] = Field(default=None, description="WebLogic domain home path (e.g., /u01/Oracle/user_projects/domains/ofsaa_domain)")
+
+class FichomeDeploymentResponse(BaseModel):
+    """Schema for FICHOME deployment response"""
+    success: bool = Field(..., description="Whether deployment started successfully")
+    task_id: str = Field(..., description="Unique task ID for tracking deployment progress")
+    message: str = Field(..., description="Status message")
+    estimated_duration: str = Field(default="15 minutes", description="Estimated deployment duration")
     output: Optional[str] = None
     stderr: Optional[str] = None
     returncode: Optional[int] = None

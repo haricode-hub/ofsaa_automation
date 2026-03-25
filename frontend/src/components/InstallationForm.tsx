@@ -15,6 +15,8 @@ import {
 } from '@heroicons/react/24/outline'
 import { EcmPackPage } from '@/components/EcmPackPage'
 import { EcmFormData } from '@/components/EcmPackForm'
+import { FichomeDeploymentPage } from '@/components/FichomeDeploymentPage'
+import { FichomeDeploymentFormData } from '@/components/FichomeDeploymentForm'
 
 interface InstallationData {
   host: string
@@ -116,6 +118,14 @@ interface InstallationData {
   // SANC CS/TFLT SWIFTINFO
   sanc_cs_swiftinfo: string
   sanc_tflt_swiftinfo: string
+  
+  // FICHOME Deployment flag and configuration
+  install_fichome_deployment: boolean
+  fichome_enable_deployment: boolean
+  fichome_weblogic_host: string
+  fichome_weblogic_port: string
+  fichome_ant_timeout_minutes: number
+  
   installation_mode: 'fresh' | 'addon'
   install_bdpack: boolean
   install_ecm: boolean
@@ -261,6 +271,11 @@ export function InstallationForm() {
     sanc_schema_atomic_schema_name: 'OFSATOMIC',
     sanc_cs_swiftinfo: '',
     sanc_tflt_swiftinfo: '',
+    install_fichome_deployment: false,
+    fichome_enable_deployment: false,
+    fichome_weblogic_host: '',
+    fichome_weblogic_port: '7001',
+    fichome_ant_timeout_minutes: 20,
     installation_mode: 'fresh',
     install_bdpack: false,
     install_ecm: false,
@@ -275,6 +290,8 @@ export function InstallationForm() {
   const [ecmConfig, setEcmConfig] = useState<EcmFormData | null>(null)
   const [isEcmValid, setIsEcmValid] = useState(true)
   const [ecmSubmitError, setEcmSubmitError] = useState('')
+  const [fichomeConfig, setFichomeConfig] = useState<FichomeDeploymentFormData | null>(null)
+  const [isFichomeValid, setIsFichomeValid] = useState(true)
 
   useEffect(() => {
     try {
@@ -312,6 +329,11 @@ export function InstallationForm() {
   const handleEcmChange = useCallback((data: EcmFormData, valid: boolean) => {
     setEcmConfig(data)
     setIsEcmValid(valid)
+  }, [])
+
+  const handleFichomeChange = useCallback((data: FichomeDeploymentFormData, valid: boolean) => {
+    setFichomeConfig(data)
+    setIsFichomeValid(valid)
   }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -581,7 +603,7 @@ export function InstallationForm() {
     }))
   }
 
-  const toggleModuleSelection = (field: 'install_bdpack' | 'install_ecm' | 'install_sanc') => {
+  const toggleModuleSelection = (field: 'install_bdpack' | 'install_ecm' | 'install_sanc' | 'install_fichome_deployment') => {
     setFormData(prev => ({ ...prev, [field]: !prev[field] }))
   }
 
@@ -659,6 +681,10 @@ export function InstallationForm() {
                 <label className="inline-flex items-center gap-2 text-sm text-text-primary cursor-pointer">
                   <input type="checkbox" checked={formData.install_sanc} onChange={() => toggleModuleSelection('install_sanc')} />
                   SANC
+                </label>
+                <label className="inline-flex items-center gap-2 text-sm text-text-primary cursor-pointer">
+                  <input type="checkbox" checked={formData.install_fichome_deployment} onChange={() => toggleModuleSelection('install_fichome_deployment')} />
+                  FICHOME Deployment
                 </label>
                 {formData.install_ecm && !formData.install_bdpack && (
                   <label className="inline-flex items-center gap-2 text-sm text-text-primary cursor-pointer">
@@ -1938,6 +1964,14 @@ export function InstallationForm() {
             </div>
           </details>
         </motion.div>
+        )}
+
+        {/* FICHOME Deployment Configuration */}
+        {formData.install_fichome_deployment && (
+          <FichomeDeploymentPage
+            enabled={formData.install_fichome_deployment}
+            onChange={handleFichomeChange}
+          />
         )}
 
         {/* Submit Button */}

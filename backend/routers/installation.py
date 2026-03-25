@@ -12,6 +12,8 @@ from schemas.installation import (
     InstallationRequest,
     InstallationResponse,
     InstallationStatus,
+    FichomeDeploymentRequest,
+    FichomeDeploymentResponse,
 )
 from services.installation_service import InstallationService
 from services.ssh_service import SSHService
@@ -184,7 +186,7 @@ async def _restore_bd_on_ecm_failure(
     This is called when ECM osc.sh or setup.sh fails.
     BD backup acts as the restore point. BD reinstall is NOT required."""
     await append_output(task_id, "\n[RECOVERY] ==================== ECM FAILURE - RESTORING BD STATE ====================")
-    await update_status(task_id, "running", "Restoring to BD state after ECM failure", 0)
+    await update_status(task_id, "running", "Restoring to BD state after ECM failure")
 
     db_sys_pass = request.db_sys_password or getattr(request, "schema_default_password", None)
     db_service = (
@@ -218,6 +220,187 @@ async def _restore_bd_on_ecm_failure(
         await append_output(task_id, "[RECOVERY] Please manually complete the failed steps before retrying ECM.")
 
     await trace("BD state restore process completed")
+
+
+# ============== FICHOME DEPLOYMENT ==============
+
+fichome_deployment_tasks: dict[str, dict] = {}
+
+
+@router.post("/deploy-fichome", response_model=FichomeDeploymentResponse)
+async def deploy_fichome(request: FichomeDeploymentRequest):
+    """
+    Start FICHOME deployment workflow (17-step process).
+    
+    Steps 1-15: FICHOME EAR/WAR deployment
+    Steps 16-17: Post-deployment scripts (startofsaa.sh, checkofsaa.sh)
+    
+    Returns task_id for polling status and WebSocket connection.
+    """
+    try:
+        # Validate required parameters
+        if not request.db_sys_password:
+            raise HTTPException(400, "db_sys_password is required")
+        
+        if not request.config_schema_name:
+            raise HTTPException(400, "config_schema_name is required")
+        
+        if not request.atomic_schema_name:
+            raise HTTPException(400, "atomic_schema_name is required")
+        
+        if not request.db_jdbc_service:
+            raise HTTPException(400, "db_jdbc_service is required")
+        
+        # Create task
+        task_id = str(uuid.uuid4())
+        
+        fichome_deployment_tasks[task_id] = {
+            "status": "starting",
+            "progress": 0,
+            "logs": [],
+            "current_step": 0,
+            "total_steps": 17,
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        
+        # Start async deployment
+        asyncio.create_task(
+            execute_fichome_deployment(
+                task_id=task_id,
+                request=request,
+            )
+        )
+        
+        return FichomeDeploymentResponse(
+            success=True,
+            task_id=task_id,
+            message="FICHOME deployment started (17-step workflow)",
+            estimated_duration="15 minutes",
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to start FICHOME deployment")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/deploy-fichome/status/{task_id}")
+async def get_fichome_status(task_id: str):
+    """Get FICHOME deployment task status."""
+    if task_id not in fichome_deployment_tasks:
+        raise HTTPException(status_code=404, detail="FICHOME deployment task not found")
+    
+    task = fichome_deployment_tasks[task_id]
+    return {
+        "success": True,
+        "task_id": task_id,
+        "status": task["status"],
+        "current_step": task["current_step"],
+        "total_steps": task["total_steps"],
+        "progress": task["progress"],
+        "logs": task["logs"][-50:],  # Return last 50 lines
+    }
+
+
+# ============== FICHOME ASYNC EXECUTION ==============
+
+async def execute_fichome_deployment(task_id: str, request: FichomeDeploymentRequest) -> None:
+    """
+    Execute FICHOME 17-step deployment workflow asynchronously.
+    
+    1. Call installer.deploy_fichome() for 17 steps
+    2. Update task status and progress
+    3. Stream logs to WebSocket
+    4. Handle errors gracefully
+    """
+    logs: list[str] = []
+    task = fichome_deployment_tasks.get(task_id)
+    
+    if not task:
+        return
+    
+    try:
+        task["status"] = "in_progress"
+        
+        await websocket_send(task_id, "[INFO] Initializing FICHOME deployment")
+        
+        # Initialize SSH service and installer
+        ssh_service = SSHService()
+        installation_service = InstallationService(ssh_service)
+        
+        # Define callbacks for real-time updates
+        def on_subtask_callback(message: str) -> None:
+            """Called when entering a new step."""
+            asyncio.create_task(websocket_send(task_id, message))
+            task["logs"].append(message)
+        
+        def on_output_callback(line: str) -> None:
+            """Called for each output line."""
+            if line and line.strip():
+                asyncio.create_task(websocket_send(task_id, line))
+                task["logs"].append(line)
+                
+                # Parse step number to update progress
+                if "[FICHOME] STEP" in line and ":" in line:
+                    try:
+                        step_num = int(line.split("STEP ")[1].split(":")[0])
+                        task["current_step"] = step_num
+                        task["progress"] = int((step_num / 17) * 100)
+                        asyncio.create_task(
+                            websocket_send(
+                                task_id,
+                                f"progress::{task['progress']}::{step_num}/17"
+                            )
+                        )
+                    except (ValueError, IndexError):
+                        pass
+        
+        # Call installer service for 17-step deployment
+        result = await installation_service.installer.deploy_fichome(
+            host=request.host,
+            username=request.username,
+            password=request.password,
+            on_subtask_callback=on_subtask_callback,
+            on_output_callback=on_output_callback,
+            db_sys_password=request.db_sys_password,
+            db_jdbc_host=request.db_jdbc_host or request.host,
+            db_jdbc_port=request.db_jdbc_port,
+            db_jdbc_service=request.db_jdbc_service,
+            config_schema_name=request.config_schema_name,
+            atomic_schema_name=request.atomic_schema_name,
+        )
+        
+        logs.extend(result.get("logs", []))
+        task["logs"].extend(logs)
+        
+        if not result.get("success"):
+            task["status"] = "failed"
+            error_msg = result.get("error") or "FICHOME deployment failed"
+            task["error"] = error_msg
+            await websocket_send(task_id, f"[ERROR] {error_msg}")
+            return
+        
+        # All 17 steps successful
+        task["status"] = "completed"
+        task["progress"] = 100
+        task["current_step"] = 17
+        
+        await websocket_send(task_id, "[SUCCESS] FICHOME deployment completed: All 17 steps successful")
+        
+    except Exception as exc:
+        logger.exception(f"FICHOME deployment failed: {task_id}")
+        task["status"] = "failed"
+        task["error"] = str(exc)
+        await websocket_send(task_id, f"[ERROR] Exception: {str(exc)}")
+
+
+async def websocket_send(task_id: str, message: str) -> None:
+    """Send message to WebSocket if connected."""
+    try:
+        await websocket_manager.send_output(task_id, message)
+    except Exception:
+        pass  # WebSocket not connected, silent fail
 
 
 async def run_installation_process(task_id: str, request: InstallationRequest):
@@ -257,7 +440,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
         await append_output(task_id, f"[TRACE] {message}")
 
     try:
-        await update_status(task_id, "running", task.current_step, 0)
+        await update_status(task_id, "running", task.current_step)
 
         connection: dict = {"success": False, "error": "SSH connection failed"}
         for attempt in range(1, 4):
@@ -293,9 +476,9 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             """Wait for user input via WebSocket for interactive prompts."""
             await append_output(task_id, f"[PROMPT] {prompt}")
             await websocket_manager.send_prompt(task_id, prompt)
-            await update_status(task_id, "waiting_input", task.current_step, task.progress)
+            await update_status(task_id, "waiting_input", task.current_step)
             response = await websocket_manager.wait_for_user_input(task_id, timeout=3600)
-            await update_status(task_id, "running", task.current_step, task.progress)
+            await update_status(task_id, "running", task.current_step)
             return response
 
         async def auto_yes_callback(prompt: str) -> str:
@@ -330,9 +513,9 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 # Not a Y/N prompt - wait for user input
                 await append_output(task_id, f"[PROMPT] {prompt}")
                 await websocket_manager.send_prompt(task_id, prompt)
-                await update_status(task_id, "waiting_input", task.current_step, task.progress)
+                await update_status(task_id, "waiting_input", task.current_step)
                 response = await websocket_manager.wait_for_user_input(task_id, timeout=3600)
-                await update_status(task_id, "running", task.current_step, task.progress)
+                await update_status(task_id, "running", task.current_step)
                 return response
 
         # Run BD Pack only if selected AND not resuming from checkpoint
@@ -355,7 +538,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 await append_output(task_id, f"[WARN] Failed to set open_cursors: {cursor_result.get('error', 'unknown error')}")
 
             # Step 1: Oracle user and oinstall group
-            await update_status(task_id, "running", steps[0], InstallationSteps.progress_for_index(0))
+            await update_status(task_id, "running", steps[0])
             result = await installation_service.create_oracle_user_and_oinstall_group(request.host, request.username, request.password)
             await append_output(task_id, "\n".join(result.get("logs", [])))
             if not result.get("success"):
@@ -363,7 +546,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 return
 
             # Step 2: Mount point /u01
-            await update_status(task_id, "running", steps[1], InstallationSteps.progress_for_index(1))
+            await update_status(task_id, "running", steps[1])
             result = await installation_service.create_mount_point(request.host, request.username, request.password)
             await append_output(task_id, "\n".join(result.get("logs", [])))
             if not result.get("success"):
@@ -371,7 +554,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 return
 
             # Step 3: Install packages
-            await update_status(task_id, "running", steps[2], InstallationSteps.progress_for_index(2))
+            await update_status(task_id, "running", steps[2])
             result = await installation_service.install_ksh_and_git(request.host, request.username, request.password)
             await append_output(task_id, "\n".join(result.get("logs", [])))
             if not result.get("success"):
@@ -379,7 +562,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 return
 
             # Step 4: Create .profile
-            await update_status(task_id, "running", steps[3], InstallationSteps.progress_for_index(3))
+            await update_status(task_id, "running", steps[3])
             result = await installation_service.create_profile_file(request.host, request.username, request.password)
             await append_output(task_id, "\n".join(result.get("logs", [])))
             if not result.get("success"):
@@ -387,7 +570,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 return
 
             # Step 5: Java installation
-            await update_status(task_id, "running", steps[4], InstallationSteps.progress_for_index(4))
+            await update_status(task_id, "running", steps[4])
             await trace("Starting Java installation step")
             result = await installation_service.install_java_from_repo(request.host, request.username, request.password)
             await append_output(task_id, "\n".join(result.get("logs", [])))
@@ -407,7 +590,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                     return
 
             # Step 6: OFSAA directories
-            await update_status(task_id, "running", steps[5], InstallationSteps.progress_for_index(5))
+            await update_status(task_id, "running", steps[5])
             result = await installation_service.create_ofsaa_directories(request.host, request.username, request.password)
             await append_output(task_id, "\n".join(result.get("logs", [])))
             if not result.get("success"):
@@ -415,7 +598,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 return
 
             # Step 7: Oracle client check
-            await update_status(task_id, "running", steps[6], InstallationSteps.progress_for_index(6))
+            await update_status(task_id, "running", steps[6])
             result = await installation_service.check_existing_oracle_client_and_update_profile(
                 request.host, request.username, request.password, request.oracle_sid
             )
@@ -425,7 +608,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 return
 
             # Step 8: Installer setup and envCheck
-            await update_status(task_id, "running", steps[7], InstallationSteps.progress_for_index(7))
+            await update_status(task_id, "running", steps[7])
             await trace("Starting installer download/extract step")
             result = await installation_service.download_and_extract_installer(request.host, request.username, request.password)
             await append_output(task_id, "\n".join(result.get("logs", [])))
@@ -478,9 +661,9 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 # Anything else - forward to user
                 await append_output(task_id, f"[PROMPT] {prompt}")
                 await websocket_manager.send_prompt(task_id, prompt)
-                await update_status(task_id, "waiting_input", task.current_step, task.progress)
+                await update_status(task_id, "waiting_input", task.current_step)
                 response = await websocket_manager.wait_for_user_input(task_id, timeout=3600)
-                await update_status(task_id, "running", task.current_step, task.progress)
+                await update_status(task_id, "running", task.current_step)
                 return response
 
             env_result = await installation_service.run_environment_check(
@@ -497,7 +680,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await trace("Environment check step completed")
 
             # Step 9: Apply XML/properties and run schema creator (osc.sh)
-            await update_status(task_id, "running", steps[8], InstallationSteps.progress_for_index(8))
+            await update_status(task_id, "running", steps[8])
             await trace("Starting config apply and osc.sh step")
             cfg_result = await installation_service.apply_installer_config_files(
                 request.host,
@@ -602,9 +785,9 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 # Anything else - forward to user
                 await append_output(task_id, f"[PROMPT] {prompt}")
                 await websocket_manager.send_prompt(task_id, prompt)
-                await update_status(task_id, "waiting_input", task.current_step, task.progress)
+                await update_status(task_id, "waiting_input", task.current_step)
                 response = await websocket_manager.wait_for_user_input(task_id, timeout=3600)
-                await update_status(task_id, "running", task.current_step, task.progress)
+                await update_status(task_id, "running", task.current_step)
                 return response
 
             osc_result = await installation_service.run_osc_schema_creator(
@@ -643,7 +826,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await trace("osc.sh step completed")
 
             # Step 10: setup.sh SILENT
-            await update_status(task_id, "running", steps[9], InstallationSteps.progress_for_index(9))
+            await update_status(task_id, "running", steps[9])
             await trace("Starting setup.sh SILENT step")
             setup_result = await installation_service.run_setup_silent(
                 request.host,
@@ -680,7 +863,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await append_output(task_id, "\n[INFO] ==================== BD PACK BACKUP ====================")
             
             # Ensure backup/restore scripts from Git repo are available
-            await update_status(task_id, "running", "Verifying backup/restore scripts", 76)
+            await update_status(task_id, "running", "Verifying backup/restore scripts")
             scripts_result = await installation_service.ensure_backup_restore_scripts(
                 request.host, request.username, request.password
             )
@@ -689,7 +872,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 await append_output(task_id, "[WARN] Backup scripts not found in Git repo. Backup may fail for DB schemas.")
 
             # Application Backup: tar with BD tag and date
-            await update_status(task_id, "running", "Taking application backup (tar)", 77)
+            await update_status(task_id, "running", "Taking application backup (tar)")
             await trace("Starting application backup after BD Pack success")
             app_backup_result = await installation_service.backup_application(
                 request.host, request.username, request.password, backup_tag="BD"
@@ -704,7 +887,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             db_sys_pass = request.db_sys_password
             db_service = request.schema_jdbc_service
             if db_sys_pass and db_service:
-                await update_status(task_id, "running", "Taking DB schema backup", 79)
+                await update_status(task_id, "running", "Taking DB schema backup")
                 await trace("Starting DB schema backup after BD Pack success")
                 db_backup_result = await installation_service.backup_db_schemas(
                     request.host, request.username, request.password,
@@ -727,6 +910,28 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await append_output(task_id, "[INFO] BD Pack backup phase complete")
             if bd_pack_checkpoint.get("backup_taken"):
                 await append_output(task_id, "[CHECKPOINT] BD Pack backup saved. ECM can be restored to this point if it fails.")
+            
+            # Deploy FICHOME if no other modules are selected (BD-only installation)
+            if not request.install_ecm and not request.install_sanc:
+                await append_output(task_id, "\n[INFO] ==================== FICHOME DEPLOYMENT ====================")
+                await update_status(task_id, "running", "Deploying FICHOME to WebLogic domain")
+                
+                async def fichome_subtask_callback(message: str) -> None:
+                    await append_output(task_id, message)
+                
+                fichome_result = await installation_service.deploy_fichome(
+                    request.host,
+                    request.username,
+                    request.password,
+                    on_subtask_callback=fichome_subtask_callback,
+                    on_output_callback=output_callback,
+                )
+                await append_output(task_id, "\n".join(fichome_result.get("logs", [])))
+                if not fichome_result.get("success"):
+                    await append_output(task_id, f"[WARN] FICHOME deployment failed: {fichome_result.get('error')}")
+                else:
+                    await append_output(task_id, "[OK] FICHOME deployment completed successfully")
+
         else:
             # Check if we're resuming from BD backup or just skipping BD Pack
             if request.resume_from_checkpoint and bd_pack_checkpoint.get("completed"):
@@ -742,7 +947,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             # be restored to this point on failure.
             if (not request.install_bdpack) and getattr(request, "ecm_take_bd_backup", False):
                 await append_output(task_id, "\n[INFO] ECM-only run: taking BD application + DB schema backup before ECM start as requested")
-                await update_status(task_id, "running", "Preparing BD backup before ECM", 80)
+                await update_status(task_id, "running", "Preparing BD backup before ECM")
 
                 scripts_result = await installation_service.ensure_backup_restore_scripts(
                     request.host, request.username, request.password
@@ -751,7 +956,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 if not scripts_result.get("success"):
                     await append_output(task_id, "[WARN] Backup scripts not found in Git repo. Backup may fail for DB schemas.")
 
-                await update_status(task_id, "running", "Taking application backup (tar)", 81)
+                await update_status(task_id, "running", "Taking application backup (tar)")
                 app_backup_result = await installation_service.backup_application(
                     request.host, request.username, request.password, backup_tag="BD"
                 )
@@ -764,7 +969,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 db_sys_pass = request.db_sys_password
                 db_service = request.schema_jdbc_service
                 if db_sys_pass and db_service:
-                    await update_status(task_id, "running", "Taking DB schema backup", 82)
+                    await update_status(task_id, "running", "Taking DB schema backup")
                     db_backup_result = await installation_service.backup_db_schemas(
                         request.host, request.username, request.password,
                         db_sys_password=db_sys_pass,
@@ -799,7 +1004,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
 
             # ---- Verify backup availability before ECM starts ----
             await append_output(task_id, "[INFO] Verifying BD backup availability before ECM installation...")
-            await update_status(task_id, "running", "Verifying BD backups for ECM safety", 81)
+            await update_status(task_id, "running", "Verifying BD backups for ECM safety")
             verify_result = await installation_service.verify_backups_exist(
                 request.host, request.username, request.password,
                 db_ssh_host=getattr(request, "db_ssh_host", None),
@@ -811,7 +1016,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             if not verify_result.get("both_exist"):
                 # Backups missing — take a fresh backup now
                 await append_output(task_id, "[INFO] BD backups not fully available. Taking fresh backup before ECM starts...")
-                await update_status(task_id, "running", "Taking BD backup before ECM", 81)
+                await update_status(task_id, "running", "Taking BD backup before ECM")
 
                 scripts_result = await installation_service.ensure_backup_restore_scripts(
                     request.host, request.username, request.password
@@ -821,7 +1026,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                     await append_output(task_id, "[WARN] Backup scripts not found in Git repo. Backup may fail for DB schemas.")
 
                 if not verify_result.get("app_backup_exists"):
-                    await update_status(task_id, "running", "Taking application backup (tar)", 81)
+                    await update_status(task_id, "running", "Taking application backup (tar)")
                     app_bkp = await installation_service.backup_application(
                         request.host, request.username, request.password, backup_tag="BD"
                     )
@@ -835,7 +1040,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                     db_sys_pass = request.db_sys_password
                     db_service = request.schema_jdbc_service
                     if db_sys_pass and db_service:
-                        await update_status(task_id, "running", "Taking DB schema backup", 82)
+                        await update_status(task_id, "running", "Taking DB schema backup")
                         db_bkp = await installation_service.backup_db_schemas(
                             request.host, request.username, request.password,
                             db_sys_password=db_sys_pass,
@@ -862,7 +1067,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 await append_output(task_id, "[OK] BD backups verified — both application tar and DB dump exist. Safe to proceed with ECM.")
             
             # ECM Step 1: Download and extract ECM installer kit
-            await update_status(task_id, "running", "Downloading and extracting ECM installer kit", 82)
+            await update_status(task_id, "running", "Downloading and extracting ECM installer kit")
             await trace("Starting ECM installer download/extract step")
             ecm_download_result = await installation_service.download_and_extract_ecm_installer(
                 request.host, request.username, request.password
@@ -874,7 +1079,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await trace("ECM installer download/extract step completed")
 
             # ECM Step 2: Set permissions
-            await update_status(task_id, "running", "Setting ECM kit permissions", 85)
+            await update_status(task_id, "running", "Setting ECM kit permissions")
             ecm_perm_result = await installation_service.set_ecm_permissions(
                 request.host, request.username, request.password
             )
@@ -884,7 +1089,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 return
 
             # ECM Step 3: Apply ECM config files
-            await update_status(task_id, "running", "Applying ECM configuration files", 88)
+            await update_status(task_id, "running", "Applying ECM configuration files")
             await trace("Starting ECM config apply step")
             ecm_cfg_result = await installation_service.apply_ecm_config_files(
                 request.host,
@@ -963,7 +1168,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await trace("ECM config apply step completed")
 
             # ECM Step 4a: Run ECM osc.sh -s
-            await update_status(task_id, "running", "Running ECM schema creator (osc.sh)", 92)
+            await update_status(task_id, "running", "Running ECM schema creator (osc.sh)")
             await trace("Starting ECM osc.sh step")
 
             # ECM osc.sh prompt callback: auto-answer SYSDBA user, DB password, and Y/N prompts
@@ -997,9 +1202,9 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 # Anything else - forward to user
                 await append_output(task_id, f"[PROMPT] {prompt}")
                 await websocket_manager.send_prompt(task_id, prompt)
-                await update_status(task_id, "waiting_input", task.current_step, task.progress)
+                await update_status(task_id, "waiting_input", task.current_step)
                 response = await websocket_manager.wait_for_user_input(task_id, timeout=3600)
-                await update_status(task_id, "running", task.current_step, task.progress)
+                await update_status(task_id, "running", task.current_step)
                 return response
 
             ecm_osc_result = await installation_service.run_ecm_osc_schema_creator(
@@ -1019,7 +1224,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await trace("ECM osc.sh step completed")
 
             # ECM Step 4b: Run ECM setup.sh SILENT
-            await update_status(task_id, "running", "Running ECM setup (setup.sh SILENT)", 96)
+            await update_status(task_id, "running", "Running ECM setup (setup.sh SILENT)")
             await trace("Starting ECM setup.sh SILENT step")
             ecm_setup_result = await installation_service.run_ecm_setup_silent(
                 request.host,
@@ -1040,7 +1245,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
 
             # Take ECM success backup with ECM tag
             await append_output(task_id, "\n[INFO] ==================== ECM SUCCESS BACKUP ====================")
-            await update_status(task_id, "running", "Taking ECM success backup", 98)
+            await update_status(task_id, "running", "Taking ECM success backup")
             ecm_app_bkp = await installation_service.backup_application(
                 request.host, request.username, request.password, backup_tag="ECM"
             )
@@ -1059,6 +1264,28 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 bd_pack_checkpoint["host"] = None
                 bd_pack_checkpoint["timestamp"] = None
                 await append_output(task_id, "[CHECKPOINT] BD Pack checkpoint cleared after successful ECM completion.")
+            
+            # Deploy FICHOME if SANC is not selected (BD+ECM but not SANC)
+            if not request.install_sanc:
+                await append_output(task_id, "\n[INFO] ==================== FICHOME DEPLOYMENT ====================")
+                await update_status(task_id, "running", "Deploying FICHOME to WebLogic domain")
+                
+                async def fichome_subtask_callback(message: str) -> None:
+                    await append_output(task_id, message)
+                
+                fichome_result = await installation_service.deploy_fichome(
+                    request.host,
+                    request.username,
+                    request.password,
+                    on_subtask_callback=fichome_subtask_callback,
+                    on_output_callback=output_callback,
+                )
+                await append_output(task_id, "\n".join(fichome_result.get("logs", [])))
+                if not fichome_result.get("success"):
+                    await append_output(task_id, f"[WARN] FICHOME deployment failed: {fichome_result.get('error')}")
+                else:
+                    await append_output(task_id, "[OK] FICHOME deployment completed successfully")
+
 
         # ============== SANC MODULE INSTALLATION ==============
         if request.install_sanc:
@@ -1069,7 +1296,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await installation_service.ssh_service.execute_command(request.host, request.username, request.password, "echo 2 | sudo tee /proc/sys/vm/drop_caches")
 
             # SANC Step 1: Download and extract SANC installer kit
-            await update_status(task_id, "running", "Downloading and extracting SANC installer kit", 82)
+            await update_status(task_id, "running", "Downloading and extracting SANC installer kit")
             await trace("Starting SANC installer download/extract step")
             sanc_download_result = await installation_service.download_and_extract_sanc_installer(
                 request.host, request.username, request.password
@@ -1081,7 +1308,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await trace("SANC installer download/extract step completed")
 
             # SANC Step 2: Set permissions
-            await update_status(task_id, "running", "Setting SANC kit permissions", 85)
+            await update_status(task_id, "running", "Setting SANC kit permissions")
             sanc_perm_result = await installation_service.set_sanc_permissions(
                 request.host, request.username, request.password
             )
@@ -1091,7 +1318,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 return
 
             # SANC Step 3: Apply SANC config files
-            await update_status(task_id, "running", "Applying SANC configuration files", 88)
+            await update_status(task_id, "running", "Applying SANC configuration files")
             await trace("Starting SANC config apply step")
             sanc_cfg_result = await installation_service.apply_sanc_config_files(
                 request.host,
@@ -1144,7 +1371,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await trace("SANC config apply step completed")
 
             # SANC Step 4a: Run SANC osc.sh -s
-            await update_status(task_id, "running", "Running SANC schema creator (osc.sh)", 92)
+            await update_status(task_id, "running", "Running SANC schema creator (osc.sh)")
             await trace("Starting SANC osc.sh step")
 
             # SANC osc.sh specific callback: auto-answer SYSDBA user, DB password, and Y/N prompts
@@ -1178,9 +1405,9 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 # Anything else - forward to user
                 await append_output(task_id, f"[PROMPT] {prompt}")
                 await websocket_manager.send_prompt(task_id, prompt)
-                await update_status(task_id, "waiting_input", task.current_step, task.progress)
+                await update_status(task_id, "waiting_input", task.current_step)
                 response = await websocket_manager.wait_for_user_input(task_id, timeout=3600)
-                await update_status(task_id, "running", task.current_step, task.progress)
+                await update_status(task_id, "running", task.current_step)
                 return response
 
             sanc_osc_result = await installation_service.run_sanc_osc_schema_creator(
@@ -1197,7 +1424,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await trace("SANC osc.sh step completed")
 
             # SANC Step 4b: Run SANC setup.sh SILENT
-            await update_status(task_id, "running", "Running SANC setup (setup.sh SILENT)", 96)
+            await update_status(task_id, "running", "Running SANC setup (setup.sh SILENT)")
             await trace("Starting SANC setup.sh SILENT step")
             sanc_setup_result = await installation_service.run_sanc_setup_silent(
                 request.host,
@@ -1213,9 +1440,82 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await trace("SANC setup.sh SILENT step completed")
             await append_output(task_id, "[OK] SANC Module installation completed")
 
+            # Take SANC success backup with SANC tag (application + DB)
+            await append_output(task_id, "\n[INFO] ==================== SANC SUCCESS BACKUP ====================")
+            
+            # Ensure backup/restore scripts from Git repo are available
+            await update_status(task_id, "running", "Verifying backup/restore scripts for SANC")
+            scripts_result = await installation_service.ensure_backup_restore_scripts(
+                request.host, request.username, request.password
+            )
+            await append_output(task_id, "\n".join(scripts_result.get("logs", [])))
+            if not scripts_result.get("success"):
+                await append_output(task_id, "[WARN] Backup scripts not found in Git repo. SANC backup may fail for DB schemas.")
+
+            # Application Backup: tar with SANC tag
+            await update_status(task_id, "running", "Taking SANC application backup (tar)")
+            await trace("Starting SANC application backup after SANC Pack success")
+            sanc_app_bkp = await installation_service.backup_application(
+                request.host, request.username, request.password, backup_tag="SANC"
+            )
+            await append_output(task_id, "\n".join(sanc_app_bkp.get("logs", [])))
+            if not sanc_app_bkp.get("success"):
+                await append_output(task_id, "[WARN] SANC application backup failed.")
+            else:
+                await trace("SANC application backup completed")
+
+            # DB Schema Backup: backup_ofs_schemas.sh system <DB_PASS> <SERVICE>
+            db_sys_pass = request.db_sys_password
+            db_service = request.sanc_schema_jdbc_service
+            if db_sys_pass and db_service:
+                await update_status(task_id, "running", "Taking SANC DB schema backup")
+                await trace("Starting SANC DB schema backup after SANC Pack success")
+                sanc_db_bkp = await installation_service.backup_db_schemas(
+                    request.host, request.username, request.password,
+                    db_sys_password=db_sys_pass,
+                    db_jdbc_service=db_service,
+                    db_oracle_sid=getattr(request, "oracle_sid", None) or "ORCL",
+                    db_ssh_host=getattr(request, "db_ssh_host", None),
+                    db_ssh_username=getattr(request, "db_ssh_username", None),
+                    db_ssh_password=getattr(request, "db_ssh_password", None),
+                )
+                await append_output(task_id, "\n".join(sanc_db_bkp.get("logs", [])))
+                if not sanc_db_bkp.get("success"):
+                    await append_output(task_id, "[WARN] SANC DB schema backup failed.")
+                else:
+                    await trace("SANC DB schema backup completed")
+            else:
+                await append_output(task_id, "[WARN] db_sys_password or sanc_schema_jdbc_service not provided. Skipping SANC DB schema backup.")
+
+            await append_output(task_id, "[INFO] SANC Pack backup phase complete")
+
+            # Deploy FICHOME after all modules complete (BD+ECM+SANC) - only if enabled
+            if request.install_fichome_deployment and request.fichome_enable_deployment:
+                await append_output(task_id, "\n[INFO] ==================== FICHOME DEPLOYMENT ====================")
+                await update_status(task_id, "running", "Deploying FICHOME to WebLogic domain")
+                
+                async def fichome_subtask_callback(message: str) -> None:
+                    await append_output(task_id, message)
+                
+                fichome_result = await installation_service.deploy_fichome(
+                    request.host,
+                    request.username,
+                    request.password,
+                    on_subtask_callback=fichome_subtask_callback,
+                    on_output_callback=output_callback,
+                )
+                await append_output(task_id, "\n".join(fichome_result.get("logs", [])))
+                if not fichome_result.get("success"):
+                    await append_output(task_id, f"[WARN] FICHOME deployment failed: {fichome_result.get('error')}")
+                else:
+                    await append_output(task_id, "[OK] FICHOME deployment completed successfully")
+            else:
+                await append_output(task_id, "[INFO] FICHOME deployment is disabled. Skipping deployment step.")
+
+
         task.status = "completed"
         task.progress = 100
-        await update_status(task_id, "completed", steps[9], 100)
+        await update_status(task_id, "completed", steps[9])
         await append_output(task_id, "[OK] Installation completed successfully")
         return
 

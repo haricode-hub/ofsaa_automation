@@ -42,6 +42,19 @@ const SANC_PACK_STEPS = [
   'Running SANC setup (setup.sh SILENT)'
 ]
 
+const FICHOME_DEPLOYMENT_STEPS = [
+  'Granting database privileges to schema users',
+  'Extracting WebLogic domain configuration',
+  'Backing up existing FICHOME files',
+  'Rebuilding FICHOME with ant.sh',
+  'Setting permissions on build artifacts',
+  'Preparing WebLogic domain applications directory',
+  'Copying and extracting EAR file',
+  'Extracting and preparing WAR content',
+  'Running post-deployment startup script',
+  'Running health check validation'
+]
+
 export default function LogsPage() {
   const params = useParams()
   const router = useRouter()
@@ -56,7 +69,7 @@ export default function LogsPage() {
   const [outputLines, setOutputLines] = useState<string[]>([])
   const [autoFollowOutput, setAutoFollowOutput] = useState(true)
   const [redirectCountdown, setRedirectCountdown] = useState<number>(redirectDelaySec)
-  const [currentModule, setCurrentModule] = useState<'BD_PACK' | 'ECM_PACK' | 'SANC_PACK'>('BD_PACK')
+  const [currentModule, setCurrentModule] = useState<'BD_PACK' | 'ECM_PACK' | 'SANC_PACK' | 'FICHOME_DEPLOYMENT'>('BD_PACK')
   const socketRef = useRef<WebSocket | null>(null)
   const outputEndRef = useRef<HTMLDivElement>(null)
   const outputContainerRef = useRef<HTMLDivElement>(null)
@@ -65,12 +78,14 @@ export default function LogsPage() {
   const activeSteps = useMemo(() => {
     if (currentModule === 'ECM_PACK') return ECM_PACK_STEPS
     if (currentModule === 'SANC_PACK') return SANC_PACK_STEPS
+    if (currentModule === 'FICHOME_DEPLOYMENT') return FICHOME_DEPLOYMENT_STEPS
     return BD_PACK_STEPS
   }, [currentModule])
 
   const moduleLabel = useMemo(() => {
     if (currentModule === 'ECM_PACK') return 'ECM Pack'
     if (currentModule === 'SANC_PACK') return 'SANC Pack'
+    if (currentModule === 'FICHOME_DEPLOYMENT') return 'FICHOME Deployment'
     return 'BD Pack'
   }, [currentModule])
 
@@ -119,7 +134,11 @@ export default function LogsPage() {
           if (data?.step) {
             setCurrentStep(data.step)
             // Detect module change based on step name
-            if (data.step.toLowerCase().includes('sanc')) {
+            if (data.step.toLowerCase().includes('fichome')) {
+              setCurrentModule('FICHOME_DEPLOYMENT')
+            } else if (FICHOME_DEPLOYMENT_STEPS.some(s => s === data.step)) {
+              setCurrentModule('FICHOME_DEPLOYMENT')
+            } else if (data.step.toLowerCase().includes('sanc')) {
               setCurrentModule('SANC_PACK')
             } else if (SANC_PACK_STEPS.some(s => s === data.step)) {
               setCurrentModule('SANC_PACK')

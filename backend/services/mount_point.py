@@ -45,7 +45,7 @@ class MountPointService:
         dirs = [
             "/u01/OFSAA/FICHOME",
             "/u01/OFSAA/FTPSHARE",
-            "/u01/BD_Installer_Kit",
+            "/u01/Installation_Kit/BD_PACK_INSTALLATION_KIT",
         ]
 
         for path in dirs:
@@ -65,7 +65,7 @@ class MountPointService:
             logs.append(f"[OK] Created {path}")
 
         result = await self.ssh_service.execute_command(
-            host, username, password, "chown -R oracle:oinstall /u01/OFSAA /u01/BD_Installer_Kit", get_pty=True
+            host, username, password, "chown -R oracle:oinstall /u01/OFSAA /u01/Installation_Kit/BD_PACK_INSTALLATION_KIT", get_pty=True
         )
         if not result["success"]:
             return {
