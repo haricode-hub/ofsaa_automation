@@ -2590,18 +2590,18 @@ class InstallerService:
         await self.ssh_service.execute_command(host, username, password, fix_ownership_cmd, get_pty=True)
         logs.append("[OK] Fixed SANC kit ownership to oracle:oinstall")
 
-        # Optional: push repo changes
-        if enable_config_push and updated_repo_pathspecs:
+        # Push repo changes (same pattern as BD Pack and ECM)
+        if enable_config_push:
             push_result = await self._commit_and_push_repo_changes(
                 host,
                 username,
                 password,
                 repo_dir=repo_dir,
                 commit_message="Update SANC installer configs from UI inputs",
-                pathspecs=sorted(updated_repo_pathspecs),
+                pathspecs=sorted(updated_repo_pathspecs) if updated_repo_pathspecs else ["SANC_PACK"],
             )
             logs.extend(push_result.get("logs", []))
-        elif not enable_config_push:
+        else:
             logs.append("[INFO] SANC config push skipped (OFSAA_ENABLE_CONFIG_PUSH is disabled)")
 
         return {"success": True, "logs": logs}
