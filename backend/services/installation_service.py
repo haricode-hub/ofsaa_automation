@@ -289,6 +289,8 @@ class InstallationService:
         self, host: str, username: str, password: str,
         *, db_sys_password: str, db_jdbc_service: str,
         db_oracle_sid: str = "ORCL",
+        schema_config_schema_name: Optional[str] = None,
+        schema_atomic_schema_name: Optional[str] = None,
         db_ssh_host: Optional[str] = None, db_ssh_username: Optional[str] = None, db_ssh_password: Optional[str] = None,
     ) -> dict:
         """Run DB schema backup using Git-controlled script."""
@@ -297,6 +299,8 @@ class InstallationService:
             db_sys_password=db_sys_password,
             db_jdbc_service=db_jdbc_service,
             db_oracle_sid=db_oracle_sid,
+            schema_config_schema_name=schema_config_schema_name,
+            schema_atomic_schema_name=schema_atomic_schema_name,
             db_ssh_host=db_ssh_host,
             db_ssh_username=db_ssh_username,
             db_ssh_password=db_ssh_password,

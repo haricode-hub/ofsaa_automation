@@ -46,11 +46,18 @@ class RecoveryService:
         db_jdbc_host: Optional[str] = None,
         db_jdbc_port: int = 1521,
         db_jdbc_service: Optional[str] = None,
+        schema_config_schema_name: Optional[str] = None,
+        schema_atomic_schema_name: Optional[str] = None,
         db_ssh_host: Optional[str] = None,
         db_ssh_username: Optional[str] = None,
         db_ssh_password: Optional[str] = None,
     ) -> dict:
-        """Execute full cleanup after OSC.SH failure: kill Java, drop schema, clear cache."""
+        """Execute full cleanup after OSC.SH failure: kill Java, drop schema, clear cache.
+        
+        Args:
+            schema_config_schema_name: CONFIG schema name from UI (e.g., "OFSCONFIG")
+            schema_atomic_schema_name: ATOMIC schema name from UI (e.g., "OFSATOMIC")
+        """
         logs = ["[RECOVERY] Starting cleanup after osc.sh failure..."]
         failed_steps = []
 
@@ -83,6 +90,8 @@ class RecoveryService:
                 db_jdbc_host=drop_jdbc_host,
                 db_jdbc_port=db_jdbc_port,
                 db_jdbc_service=db_jdbc_service,
+                schema_config_schema_name=schema_config_schema_name,
+                schema_atomic_schema_name=schema_atomic_schema_name,
             )
         else:
             drop_result = await self._drop_database_schema(
@@ -91,6 +100,8 @@ class RecoveryService:
                 db_jdbc_host=db_jdbc_host,
                 db_jdbc_port=db_jdbc_port,
                 db_jdbc_service=db_jdbc_service,
+                schema_config_schema_name=schema_config_schema_name,
+                schema_atomic_schema_name=schema_atomic_schema_name,
             )
         logs.extend(drop_result.get("logs", []))
         if not drop_result.get("success"):
@@ -260,14 +271,31 @@ class RecoveryService:
         db_sys_password: str,
         db_jdbc_service: str,
         db_oracle_sid: str = "OFSAADB",
+        schema_config_schema_name: Optional[str] = None,
+        schema_atomic_schema_name: Optional[str] = None,
         db_ssh_host: Optional[str] = None,
         db_ssh_username: Optional[str] = None,
         db_ssh_password: Optional[str] = None,
     ) -> dict:
-        """Run DB schema backup: backup_ofs_schemas.sh system <DB_PASS> <SERVICE>"""
+        """Run DB schema backup: backup_ofs_schemas.sh system <DB_PASS> <SERVICE> <SCHEMAS>"""
         logs = ["[BACKUP] Starting DB schema backup..."]
         repo_dir = Config.REPO_DIR
         backup_dir = f"{repo_dir}/backup_Restore"
+
+        # Build SCHEMAS export from UI schema names
+        schemas = []
+        if schema_atomic_schema_name:
+            schemas.append(schema_atomic_schema_name)
+        else:
+            schemas.append("OFSATOMIC")  # fallback default
+        
+        if schema_config_schema_name:
+            schemas.append(schema_config_schema_name)
+        else:
+            schemas.append("OFSCONFIG")  # fallback default
+        
+        schemas_export = ",".join(schemas)  # e.g., "OFSATOMIC1,OFSCONFIG1"
+        logs.append(f"[BACKUP] Schema names from UI: {schemas_export}")
 
         # Ensure scripts exist on the application/repo host first
         scripts_result = await self.ensure_backup_restore_scripts(host, username, password)
@@ -285,11 +313,12 @@ class RecoveryService:
             # Check if exports are already present to avoid duplicates
             if "export DB_USER=" not in orig_script or "export DB_PASS=" not in orig_script:
                 # Prepend exports matching the expected names in backup_ofs_schemas.sh
-                # Script expects: export DB_USER=system, export DB_PASS=, export SERVICE=
+                # Script expects: export DB_USER=system, export DB_PASS=, export SERVICE=, export SCHEMAS=
                 patched_script = (
                     f"export DB_USER=system\n"
                     + f"export DB_PASS={db_sys_password}\n"
                     + f"export SERVICE={db_jdbc_service}\n"
+                    + f"export SCHEMAS={schemas_export}\n"
                     + orig_script
                 )
                 
@@ -305,11 +334,14 @@ class RecoveryService:
                 updated_script = updated_script.replace("export DB_PASS=\r\n", f"export DB_PASS={db_sys_password}\n")
                 updated_script = updated_script.replace("export SERVICE=\n", f"export SERVICE={db_jdbc_service}\n")
                 updated_script = updated_script.replace("export SERVICE=\r\n", f"export SERVICE={db_jdbc_service}\n")
+                updated_script = updated_script.replace("export SCHEMAS=\n", f"export SCHEMAS={schemas_export}\n")
+                updated_script = updated_script.replace("export SCHEMAS=\r\n", f"export SCHEMAS={schemas_export}\n")
                 
                 # Handle existing values
                 import re
                 updated_script = re.sub(r'export DB_PASS=.*', f'export DB_PASS={db_sys_password}', updated_script)
                 updated_script = re.sub(r'export SERVICE=.*', f'export SERVICE={db_jdbc_service}', updated_script)
+                updated_script = re.sub(r'export SCHEMAS=.*', f'export SCHEMAS={schemas_export}', updated_script)
                 
                 write_repo_cmd = f"cat > {backup_dir}/backup_ofs_schemas.sh <<'EOFSCRIPT'\n{updated_script}\nEOFSCRIPT"
                 await self.ssh_service.execute_command(host, username, password, write_repo_cmd)
@@ -971,11 +1003,17 @@ bash ./restore_ofs_schemas.sh
         db_jdbc_host: Optional[str] = None,
         db_jdbc_port: int = 1521,
         db_jdbc_service: Optional[str] = None,
+        schema_config_schema_name: Optional[str] = None,
+        schema_atomic_schema_name: Optional[str] = None,
     ) -> dict:
         """Drop all OFSAA users and tablespaces from Oracle database.
 
         Connects via: sqlplus "sys/<db_sys_password>@<host>:<port>/<service> as sysdba"
         Then runs DROP USER ... CASCADE and DROP TABLESPACE ... for all OFSAA objects.
+        
+        Args:
+            schema_config_schema_name: CONFIG schema name (e.g., "OFSCONFIG") from UI
+            schema_atomic_schema_name: ATOMIC schema name (e.g., "OFSATOMIC") from UI
         """
         logs = []
 
@@ -993,8 +1031,17 @@ bash ./restore_ofs_schemas.sh
         # Format: sqlplus "sys/Welcome#123@192.168.0.165:1521/FLEXPDB1 as sysdba"
         sqlplus_login = f"sys/{db_sys_password}@{jdbc_host}:{db_jdbc_port}/{db_jdbc_service} as sysdba"
 
-        # Users to drop
-        users = ["OFSATOMIC", "OFSCONFIG"]
+        # Users to drop - derive from UI schema names, with defaults as fallback
+        users = []
+        if schema_atomic_schema_name:
+            users.append(schema_atomic_schema_name)
+        else:
+            users.append("OFSATOMIC")  # default fallback
+        
+        if schema_config_schema_name:
+            users.append(schema_config_schema_name)
+        else:
+            users.append("OFSCONFIG")  # default fallback
 
         # Tablespaces to drop
         tablespaces = [

@@ -252,14 +252,6 @@ export default function LogsPage() {
             >
               Download Logs
             </button>
-            <span>Progress</span>
-            <div className="w-40 h-1 bg-bg-tertiary rounded">
-              <div
-                className="h-1 bg-white rounded"
-                style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
-              />
-            </div>
-            <span>{progress}%</span>
           </div>
         </div>
 
