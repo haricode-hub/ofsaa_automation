@@ -116,6 +116,9 @@ interface InstallationData {
   // SANC CS/TFLT SWIFTINFO
   sanc_cs_swiftinfo: string
   sanc_tflt_swiftinfo: string
+  // SANC OFSAAI_InstallConfig.xml inputs (auto-populated from BD)
+  sanc_aai_weblogic_domain_home: string
+  sanc_aai_webapp_context_path: string
   
   installation_mode: 'fresh' | 'addon'
   install_bdpack: boolean
@@ -262,6 +265,8 @@ export function InstallationForm() {
     sanc_schema_atomic_schema_name: 'OFSATOMIC',
     sanc_cs_swiftinfo: '',
     sanc_tflt_swiftinfo: '',
+    sanc_aai_weblogic_domain_home: '',
+    sanc_aai_webapp_context_path: '',
     installation_mode: 'fresh',
     install_bdpack: false,
     install_ecm: false,
@@ -309,6 +314,40 @@ export function InstallationForm() {
       // Ignore local storage write errors
     }
   }, [formData, ecmConfig])
+
+  // Auto-populate SANC fields from BD Pack
+  useEffect(() => {
+    setFormData(prev => {
+      const next = { ...prev }
+      // WEBLOGIC_DOMAIN_HOME
+      if (formData.aai_weblogic_domain_home) {
+        next.sanc_aai_weblogic_domain_home = formData.aai_weblogic_domain_home
+      }
+      // WEBAPP_CONTEXT_PATH
+      if (formData.aai_webapp_context_path) {
+        next.sanc_aai_webapp_context_path = formData.aai_webapp_context_path
+      }
+      // Datafile Base Dir
+      if (formData.schema_datafile_dir) {
+        next.sanc_schema_datafile_dir = formData.schema_datafile_dir
+      }
+      // Config Schema Name
+      if (formData.schema_config_schema_name) {
+        next.sanc_schema_config_schema_name = formData.schema_config_schema_name
+      }
+      // Atomic Schema Name
+      if (formData.schema_atomic_schema_name) {
+        next.sanc_schema_atomic_schema_name = formData.schema_atomic_schema_name
+      }
+      return next
+    })
+  }, [
+    formData.aai_weblogic_domain_home,
+    formData.aai_webapp_context_path,
+    formData.schema_datafile_dir,
+    formData.schema_config_schema_name,
+    formData.schema_atomic_schema_name
+  ])
 
   const handleEcmChange = useCallback((data: EcmFormData, valid: boolean) => {
     setEcmConfig(data)

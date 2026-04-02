@@ -61,6 +61,14 @@ export function EcmPackPage({ enabled, host, configSchemaName, atomicSchemaName,
       if (aaiConfig?.aai_web_server_ip) {
         next.aai_web_server_ip = aaiConfig.aai_web_server_ip
       }
+      // WebLogic Domain Home
+      if (aaiConfig?.aai_weblogic_domain_home) {
+        next.aai_weblogic_domain_home = aaiConfig.aai_weblogic_domain_home
+      }
+      // WebApp Context Path
+      if (aaiConfig?.aai_webapp_context_path) {
+        next.aai_webapp_context_path = aaiConfig.aai_webapp_context_path
+      }
       // SMTP host mirrors the app host
       if (host) {
         next.prop_smtp_host = host
@@ -70,9 +78,39 @@ export function EcmPackPage({ enabled, host, configSchemaName, atomicSchemaName,
         next.datafileDir = schemaDatafileDir
       }
 
+      // Schema-based sources
+      // ATOMIC schema for data sources
+      if (atomicSchemaName) {
+        next.prop_amlsource = atomicSchemaName
+        next.prop_kycsource = atomicSchemaName
+        next.prop_cssource = atomicSchemaName
+        next.prop_externalsystemsource = atomicSchemaName
+        next.prop_tbamlsource = atomicSchemaName
+        next.prop_fatcasource = atomicSchemaName
+      }
+      // CONFIG schema for metadata/gateway sources
+      if (configSchemaName) {
+        next.prop_ofsecm_datasrcname = configSchemaName
+        next.prop_comn_gateway_ds = configSchemaName
+      }
+
+      // Build URLs from web server IP and port
+      if (aaiConfig?.aai_web_server_ip && aaiConfig?.aai_web_server_port) {
+        const protocol = aaiConfig.aai_https_enable === '1' ? 'https' : 'http'
+        const baseUrl = `${protocol}://${aaiConfig.aai_web_server_ip}:${aaiConfig.aai_web_server_port}`
+        next.prop_t2jurl = baseUrl
+        next.prop_j2turl = baseUrl
+        next.prop_cmngtwyurl = baseUrl
+        next.prop_ofss_wls_url = baseUrl
+        next.prop_cs_url = baseUrl
+        next.prop_bdurl = `${baseUrl}/FICHOME`
+        next.prop_aai_url = `${baseUrl}/FICHOME`
+        next.prop_arachnys_nns_service_url = `${baseUrl}/FICHOME`
+      }
+
       return next
     })
-  }, [host, configSchemaName, atomicSchemaName, aaiConfig?.aai_dbserver_ip, aaiConfig?.aai_oracle_service_name, aaiConfig?.aai_web_server_ip, schemaDatafileDir])
+  }, [host, configSchemaName, atomicSchemaName, aaiConfig?.aai_dbserver_ip, aaiConfig?.aai_oracle_service_name, aaiConfig?.aai_web_server_ip, aaiConfig?.aai_web_server_port, aaiConfig?.aai_https_enable, aaiConfig?.aai_weblogic_domain_home, aaiConfig?.aai_webapp_context_path, schemaDatafileDir])
 
   const validation = useMemo(() => validateEcmData(data), [data])
 

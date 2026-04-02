@@ -482,10 +482,29 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             return response
 
         async def auto_yes_callback(prompt: str) -> str:
-            """Automatically answer Y only for Y/N confirmation prompts.
-            For other prompts (passwords, usernames, etc.), wait for user input.
+            """Automatically answer Y for Y/N confirmation prompts, and SFTP password with WEB_SERVICE_PASSWORD.
+            For other prompts (usernames, etc.), wait for user input.
             """
             prompt_lower = prompt.lower()
+            
+            # Auto-answer Infrastructure FTP/SFTP password prompt ONLY for exact pattern
+            # Pattern: "Please enter Infrastructure FTP/SFTP password"
+            # This prompt comes only on BD Pack (step 10: setup.sh SILENT)
+            if "please enter infrastructure ftp/sftp password" in prompt_lower:
+                # Use BD Pack WEB_SERVICE_PASSWORD (prop_web_service_password)
+                sftp_password = request.prop_web_service_password
+                if sftp_password:
+                    await append_output(task_id, f"[AUTO-ANSWER SFTP] {prompt} -> ********")
+                    return sftp_password
+                else:
+                    # If no password configured, forward to user
+                    await append_output(task_id, f"[PROMPT] No SFTP password configured. {prompt}")
+                    await websocket_manager.send_prompt(task_id, prompt)
+                    await update_status(task_id, "waiting_input", task.current_step)
+                    response = await websocket_manager.wait_for_user_input(task_id, timeout=3600)
+                    await update_status(task_id, "running", task.current_step)
+                    return response
+            
             # Detect Y/N confirmation patterns (all lowercase since we check against prompt_lower)
             yn_patterns = [
                 # Parenthesized patterns (lowercase versions)
@@ -510,7 +529,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 await append_output(task_id, f"[AUTO-ANSWER Y] {prompt}")
                 return "Y"
             else:
-                # Not a Y/N prompt - wait for user input
+                # Not a Y/N prompt or SFTP password - wait for user input
                 await append_output(task_id, f"[PROMPT] {prompt}")
                 await websocket_manager.send_prompt(task_id, prompt)
                 await update_status(task_id, "waiting_input", task.current_step)
