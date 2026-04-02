@@ -221,12 +221,6 @@ class InstallationRequest(BaseModel):
     sanc_aai_ftspshare_path: Optional[str] = Field(default="/u01/OFSAA/FTPSHARE", description="SANC OFSAAI_FTPSHARE_PATH")
     sanc_aai_sftp_user_id: Optional[str] = Field(default="oracle", description="SANC OFSAAI_SFTP_USER_ID")
 
-    # ============== FICHOME DEPLOYMENT FIELDS ==============
-    install_fichome_deployment: Optional[bool] = Field(default=False, description="Enable FICHOME deployment post-installation")
-    fichome_enable_deployment: Optional[bool] = Field(default=False, description="Deploy FICHOME after module installation")
-    fichome_weblogic_host: Optional[str] = Field(default=None, description="WebLogic server host (optional, auto-detect if empty)")
-    fichome_weblogic_port: Optional[str] = Field(default="7001", description="WebLogic server port")
-    fichome_ant_timeout_minutes: Optional[int] = Field(default=20, description="Timeout in minutes for ant.sh build execution")
 
 class InstallationResponse(BaseModel):
     """Schema for installation response"""

@@ -1499,28 +1499,25 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
 
             await append_output(task_id, "[INFO] SANC Pack backup phase complete")
 
-            # Deploy FICHOME after all modules complete (BD+ECM+SANC) - only if enabled
-            if request.install_fichome_deployment and request.fichome_enable_deployment:
-                await append_output(task_id, "\n[INFO] ==================== FICHOME DEPLOYMENT ====================")
-                await update_status(task_id, "running", "Deploying FICHOME to WebLogic domain")
-                
-                async def fichome_subtask_callback(message: str) -> None:
-                    await append_output(task_id, message)
-                
-                fichome_result = await installation_service.deploy_fichome(
-                    request.host,
-                    request.username,
-                    request.password,
-                    on_subtask_callback=fichome_subtask_callback,
-                    on_output_callback=output_callback,
-                )
-                await append_output(task_id, "\n".join(fichome_result.get("logs", [])))
-                if not fichome_result.get("success"):
-                    await append_output(task_id, f"[WARN] FICHOME deployment failed: {fichome_result.get('error')}")
-                else:
-                    await append_output(task_id, "[OK] FICHOME deployment completed successfully")
+            # Deploy FICHOME after all modules complete (BD+ECM+SANC) - always
+            await append_output(task_id, "\n[INFO] ==================== FICHOME DEPLOYMENT ====================")
+            await update_status(task_id, "running", "Deploying FICHOME to WebLogic domain")
+            
+            async def fichome_subtask_callback(message: str) -> None:
+                await append_output(task_id, message)
+            
+            fichome_result = await installation_service.deploy_fichome(
+                request.host,
+                request.username,
+                request.password,
+                on_subtask_callback=fichome_subtask_callback,
+                on_output_callback=output_callback,
+            )
+            await append_output(task_id, "\n".join(fichome_result.get("logs", [])))
+            if not fichome_result.get("success"):
+                await append_output(task_id, f"[WARN] FICHOME deployment failed: {fichome_result.get('error')}")
             else:
-                await append_output(task_id, "[INFO] FICHOME deployment is disabled. Skipping deployment step.")
+                await append_output(task_id, "[OK] FICHOME deployment completed successfully")
 
 
         task.status = "completed"
