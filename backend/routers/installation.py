@@ -948,6 +948,12 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                     request.password,
                     on_subtask_callback=fichome_subtask_callback,
                     on_output_callback=output_callback,
+                    db_sys_password=request.db_sys_password,
+                    db_jdbc_host=request.schema_jdbc_host,
+                    db_jdbc_port=request.schema_jdbc_port or 1521,
+                    db_jdbc_service=request.schema_jdbc_service,
+                    config_schema_name=request.schema_config_schema_name,
+                    atomic_schema_name=request.schema_atomic_schema_name,
                 )
                 await append_output(task_id, "\n".join(fichome_result.get("logs", [])))
                 if not fichome_result.get("success"):
@@ -1281,6 +1287,33 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 await trace("ECM success application backup completed")
             else:
                 await append_output(task_id, "[WARN] ECM success application backup failed.")
+
+            # DB Schema Backup after ECM success
+            ecm_db_sys_pass = request.db_sys_password
+            ecm_db_service = getattr(request, 'ecm_schema_jdbc_service', None) or request.schema_jdbc_service
+            if ecm_db_sys_pass and ecm_db_service:
+                await update_status(task_id, "running", "Taking ECM DB schema backup")
+                await trace("Starting ECM DB schema backup after ECM setup success")
+                ecm_db_bkp = await installation_service.backup_db_schemas(
+                    request.host, request.username, request.password,
+                    db_sys_password=ecm_db_sys_pass,
+                    db_jdbc_service=ecm_db_service,
+                    db_oracle_sid=getattr(request, "oracle_sid", None) or "ORCL",
+                    schema_config_schema_name=getattr(request, 'ecm_schema_config_schema_name', None) or request.schema_config_schema_name,
+                    schema_atomic_schema_name=getattr(request, 'ecm_schema_atomic_schema_name', None) or request.schema_atomic_schema_name,
+                    db_ssh_host=getattr(request, "db_ssh_host", None),
+                    db_ssh_username=getattr(request, "db_ssh_username", None),
+                    db_ssh_password=getattr(request, "db_ssh_password", None),
+                )
+                await append_output(task_id, "\n".join(ecm_db_bkp.get("logs", [])))
+                if not ecm_db_bkp.get("success"):
+                    await append_output(task_id, "[WARN] ECM DB schema backup failed.")
+                else:
+                    await trace("ECM DB schema backup completed")
+            else:
+                await append_output(task_id, "[WARN] db_sys_password or ECM JDBC service not provided. Skipping DB schema backup.")
+
+            await append_output(task_id, "[INFO] ECM backup phase complete")
             
             # Clear BD Pack checkpoint after successful ECM completion
             if bd_pack_checkpoint.get("completed"):
@@ -1306,6 +1339,12 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                     request.password,
                     on_subtask_callback=fichome_subtask_callback,
                     on_output_callback=output_callback,
+                    db_sys_password=request.db_sys_password,
+                    db_jdbc_host=getattr(request, 'ecm_schema_jdbc_host', None) or request.schema_jdbc_host,
+                    db_jdbc_port=getattr(request, 'ecm_schema_jdbc_port', None) or request.schema_jdbc_port or 1521,
+                    db_jdbc_service=getattr(request, 'ecm_schema_jdbc_service', None) or request.schema_jdbc_service,
+                    config_schema_name=getattr(request, 'ecm_schema_config_schema_name', None) or request.schema_config_schema_name,
+                    atomic_schema_name=getattr(request, 'ecm_schema_atomic_schema_name', None) or request.schema_atomic_schema_name,
                 )
                 await append_output(task_id, "\n".join(fichome_result.get("logs", [])))
                 if not fichome_result.get("success"):
@@ -1531,6 +1570,12 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 request.password,
                 on_subtask_callback=fichome_subtask_callback,
                 on_output_callback=output_callback,
+                db_sys_password=request.db_sys_password,
+                db_jdbc_host=getattr(request, 'sanc_schema_jdbc_host', None) or getattr(request, 'ecm_schema_jdbc_host', None) or request.schema_jdbc_host,
+                db_jdbc_port=getattr(request, 'sanc_schema_jdbc_port', None) or getattr(request, 'ecm_schema_jdbc_port', None) or request.schema_jdbc_port or 1521,
+                db_jdbc_service=getattr(request, 'sanc_schema_jdbc_service', None) or getattr(request, 'ecm_schema_jdbc_service', None) or request.schema_jdbc_service,
+                config_schema_name=getattr(request, 'sanc_schema_config_schema_name', None) or getattr(request, 'ecm_schema_config_schema_name', None) or request.schema_config_schema_name,
+                atomic_schema_name=getattr(request, 'sanc_schema_atomic_schema_name', None) or getattr(request, 'ecm_schema_atomic_schema_name', None) or request.schema_atomic_schema_name,
             )
             await append_output(task_id, "\n".join(fichome_result.get("logs", [])))
             if not fichome_result.get("success"):

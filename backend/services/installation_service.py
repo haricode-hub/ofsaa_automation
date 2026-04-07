@@ -628,3 +628,34 @@ class InstallationService:
         """Run SANC setup.sh SILENT."""
         return await self.installer.run_sanc_setup_silent(host, username, password, **kwargs)
 
+    # ============== FICHOME DEPLOYMENT METHODS ==============
+
+    async def deploy_fichome(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        on_subtask_callback=None,
+        on_output_callback=None,
+        db_sys_password: Optional[str] = None,
+        db_jdbc_host: Optional[str] = None,
+        db_jdbc_port: int = 1521,
+        db_jdbc_service: Optional[str] = None,
+        config_schema_name: Optional[str] = None,
+        atomic_schema_name: Optional[str] = None,
+    ) -> dict:
+        """Deploy FICHOME to WebLogic domain using 17-step workflow."""
+        return await self.installer.deploy_fichome(
+            host,
+            username,
+            password,
+            on_subtask_callback=on_subtask_callback,
+            on_output_callback=on_output_callback,
+            db_sys_password=db_sys_password,
+            db_jdbc_host=db_jdbc_host,
+            db_jdbc_port=db_jdbc_port,
+            db_jdbc_service=db_jdbc_service,
+            config_schema_name=config_schema_name,
+            atomic_schema_name=atomic_schema_name,
+        )
+

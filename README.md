@@ -259,6 +259,55 @@ When BD osc.sh fails, automatic cleanup:
 └── AGENTS.md                   # Architecture reference
 ```
 
+## Recent Fixes & Updates (April 7, 2026)
+
+### 1. FICHOME Deployment — Fixed Missing Wrapper Method
+**Issue**: FICHOME deployment failed with `'InstallationService' object has no attribute 'deploy_fichome'`
+
+**Root Cause**: The `deploy_fichome()` method existed in `installer.py` but was NOT exposed as a wrapper method in the `InstallationService` class. The router was calling `installation_service.deploy_fichome()` which didn't exist.
+
+**Fix**:
+- ✅ Added wrapper method `deploy_fichome()` to [Installation Service](backend/services/installation_service.py)
+- ✅ Updated all 3 FICHOME deployment calls in [router](backend/routers/installation.py) to pass database credentials:
+  - `db_sys_password` — Oracle SYS password
+  - `db_jdbc_host`, `db_jdbc_port`, `db_jdbc_service` — Database connection info  
+  - `config_schema_name`, `atomic_schema_name` — Schema names from last installed module
+
+**Files Modified**:
+- `backend/services/installation_service.py` — Added wrapper method
+- `backend/routers/installation.py` — Updated 3 deployment calls with DB parameters
+
+### 2. DB Backup Missing for ECM Module
+**Issue**: DB backup was not being triggered after ECM installation. Only BD Pack and SANC had DB backups.
+
+**Root Cause**: After ECM's `setup.sh` completes, the code only backed up the application (tar) but skipped DB schema backup. BD Pack and SANC had both.
+
+**Fix**:
+- ✅ Added DB schema backup after ECM module success (lines 1289–1319 in router)
+- ✅ Uses ECM schema values if provided (`ecm_schema_config_schema_name`, `ecm_schema_atomic_schema_name`), falls back to BD schema names
+- ✅ Shows same warning if fields missing as other modules
+
+**Files Modified**:
+- `backend/routers/installation.py` — Added ECM DB backup block
+
+**Result**: Now ALL modules (BD, ECM, SANC) take both application + DB backups on success:
+- **BD Pack success** → App backup (BD tag) + DB backup
+- **ECM success** → App backup (ECM tag) + **DB backup (NEW)**
+- **SANC success** → App backup (SANC tag) + DB backup
+
+### 3. TypeScript Deprecation — Removed `baseUrl` 
+**Issue**: TypeScript warning: `Option 'baseUrl' is deprecated and will stop functioning in TypeScript 7.0`
+
+**Fix**:
+- ✅ Removed deprecated `baseUrl: "."` from [tsconfig.json](frontend/tsconfig.json)
+- ✅ Kept `paths` config which provides full functionality
+- ✅ `@/` path aliases continue to work without deprecation warnings
+
+**Files Modified**:
+- `frontend/tsconfig.json` — Removed baseUrl line
+
+---
+
 ## Troubleshooting
 
 - **Port conflict**: Ensure ports 3000 and 8000 are free, or update configs accordingly
