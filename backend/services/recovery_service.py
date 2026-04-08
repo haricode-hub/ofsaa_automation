@@ -134,6 +134,48 @@ class RecoveryService:
         return {"success": True, "logs": logs, "failed_steps": []}
 
     # ------------------------------------------------------------------
+    # Auto-detect ORACLE_HOME on remote host
+    # ------------------------------------------------------------------
+    async def _detect_oracle_home(
+        self,
+        host: str,
+        username: str,
+        password: str,
+    ) -> str:
+        """Auto-detect ORACLE_HOME from /etc/oratab on the DB host.
+
+        Parses lines like ``OFSAADB:/u01/app/oracle/product/19.0.0/dbhome_1:N``
+        and returns the second colon-delimited field.
+
+        Falls back to searching the filesystem if /etc/oratab is missing or empty.
+        """
+        fallback = "/u01/app/oracle/product/19.0.0/dbhome_1"
+
+        # Primary: parse /etc/oratab (skip comments & blank lines)
+        oratab_cmd = (
+            "grep '^[A-Za-z]' /etc/oratab 2>/dev/null | head -1 | cut -d: -f2"
+        )
+        result = await self.ssh_service.execute_command(host, username, password, oratab_cmd)
+        detected = (result.get("stdout") or "").strip()
+        if detected and "/" in detected:
+            logger.info("Detected ORACLE_HOME from /etc/oratab: %s", detected)
+            return detected
+
+        # Fallback: locate sqlplus binary
+        find_cmd = (
+            "find /u01/app/oracle/product -name sqlplus -type f 2>/dev/null "
+            "| head -1 | sed 's|/bin/sqlplus||'"
+        )
+        result2 = await self.ssh_service.execute_command(host, username, password, find_cmd)
+        detected2 = (result2.get("stdout") or "").strip()
+        if detected2 and "/" in detected2:
+            logger.info("Detected ORACLE_HOME via find: %s", detected2)
+            return detected2
+
+        logger.warning("Could not auto-detect ORACLE_HOME, using fallback: %s", fallback)
+        return fallback
+
+    # ------------------------------------------------------------------
     # Backup methods
     # ------------------------------------------------------------------
     async def ensure_backup_restore_scripts(
@@ -282,6 +324,13 @@ class RecoveryService:
         repo_dir = Config.REPO_DIR
         backup_dir = f"{repo_dir}/backup_Restore"
 
+        # Auto-detect ORACLE_HOME on the DB host
+        target_ssh_host = db_ssh_host or host
+        target_ssh_username = db_ssh_username or username
+        target_ssh_password = db_ssh_password or password
+        oracle_home = await self._detect_oracle_home(target_ssh_host, target_ssh_username, target_ssh_password)
+        logs.append(f"[BACKUP] Detected ORACLE_HOME: {oracle_home}")
+
         # Build SCHEMAS export from UI schema names
         schemas = []
         if schema_atomic_schema_name:
@@ -313,12 +362,13 @@ class RecoveryService:
             # Check if exports are already present to avoid duplicates
             if "export DB_USER=" not in orig_script or "export DB_PASS=" not in orig_script:
                 # Prepend exports matching the expected names in backup_ofs_schemas.sh
-                # Script expects: export DB_USER=system, export DB_PASS=, export SERVICE=, export SCHEMAS=
+                # Script expects: export DB_USER=system, export DB_PASS=, export SERVICE=, export SCHEMAS=, export ORACLE_HOME=
                 patched_script = (
                     f"export DB_USER=system\n"
                     + f"export DB_PASS={db_sys_password}\n"
                     + f"export SERVICE={db_jdbc_service}\n"
                     + f"export SCHEMAS={schemas_export}\n"
+                    + f"export ORACLE_HOME={oracle_home}\n"
                     + orig_script
                 )
                 
@@ -329,19 +379,12 @@ class RecoveryService:
                 logs.append("[BACKUP] Patched backup_ofs_schemas.sh in git repo with provided DB values (password masked)")
             else:
                 # Update existing exports in place
-                updated_script = orig_script
-                updated_script = updated_script.replace("export DB_PASS=\n", f"export DB_PASS={db_sys_password}\n")
-                updated_script = updated_script.replace("export DB_PASS=\r\n", f"export DB_PASS={db_sys_password}\n")
-                updated_script = updated_script.replace("export SERVICE=\n", f"export SERVICE={db_jdbc_service}\n")
-                updated_script = updated_script.replace("export SERVICE=\r\n", f"export SERVICE={db_jdbc_service}\n")
-                updated_script = updated_script.replace("export SCHEMAS=\n", f"export SCHEMAS={schemas_export}\n")
-                updated_script = updated_script.replace("export SCHEMAS=\r\n", f"export SCHEMAS={schemas_export}\n")
-                
-                # Handle existing values
                 import re
+                updated_script = orig_script
                 updated_script = re.sub(r'export DB_PASS=.*', f'export DB_PASS={db_sys_password}', updated_script)
                 updated_script = re.sub(r'export SERVICE=.*', f'export SERVICE={db_jdbc_service}', updated_script)
                 updated_script = re.sub(r'export SCHEMAS=.*', f'export SCHEMAS={schemas_export}', updated_script)
+                updated_script = re.sub(r'export ORACLE_HOME=.*', f'export ORACLE_HOME={oracle_home}', updated_script)
                 
                 write_repo_cmd = f"cat > {backup_dir}/backup_ofs_schemas.sh <<'EOFSCRIPT'\n{updated_script}\nEOFSCRIPT"
                 await self.ssh_service.execute_command(host, username, password, write_repo_cmd)
@@ -391,16 +434,7 @@ class RecoveryService:
         except Exception as exc:  # pragma: no cover - defensive
             logs.append(f"[BACKUP] WARNING: Failed to patch script in repo: {exc}")
 
-        # Determine where to execute the backup: prefer explicit db_ssh_host, otherwise use host (app host)
-        target_ssh_host = db_ssh_host or host
-        target_ssh_username = db_ssh_username or username
-        target_ssh_password = db_ssh_password or password
-
-        # Always execute the backup on the target DB host via SSH (repo-local execution removed)
-        target_ssh_host = db_ssh_host or host
-        target_ssh_username = db_ssh_username or username
-        target_ssh_password = db_ssh_password or password
-
+        # target_ssh_host/username/password already resolved above (for ORACLE_HOME detection)
         logs.append(f"[BACKUP] Preparing to run backup on DB host {target_ssh_host}")
 
         # Read script content from repo host
@@ -441,8 +475,8 @@ echo "ORACLE_SID=$ORACLE_SID"
 echo "DB_PASS is set: $([ -n "$DB_PASS" ] && echo "yes" || echo "no")"
 cd {remote_dir}
 echo "Executing backup script..."
-# Set Oracle environment for local connections
-export ORACLE_HOME=/u01/app/oracle/product/19.0.0/dbhome_1
+# Set Oracle environment (auto-detected from /etc/oratab)
+export ORACLE_HOME={oracle_home}
 export PATH=$ORACLE_HOME/bin:$PATH
 export LD_LIBRARY_PATH=$ORACLE_HOME/lib:$LD_LIBRARY_PATH
 echo "Oracle environment set: ORACLE_HOME=$ORACLE_HOME"
@@ -686,6 +720,10 @@ bash ./backup_ofs_schemas.sh
         target_ssh_username = db_ssh_username or username
         target_ssh_password = db_ssh_password or password
 
+        # Auto-detect ORACLE_HOME on the DB host
+        oracle_home = await self._detect_oracle_home(target_ssh_host, target_ssh_username, target_ssh_password)
+        logs.append(f"[RESTORE] Detected ORACLE_HOME: {oracle_home}")
+
         # ------------------------------------------------------------------
         # Step 1: Discover the .dmp file on the DB server
         # ------------------------------------------------------------------
@@ -721,6 +759,7 @@ bash ./backup_ofs_schemas.sh
                     f"export DB_PASS={db_sys_password}\n"
                     f"export SERVICE={db_jdbc_service}\n"
                     f"export DUMPFILE={dmp_filename}\n"
+                    f"export ORACLE_HOME={oracle_home}\n"
                     + orig_script
                 )
                 write_repo_cmd = f"cat > {backup_dir}/restore_ofs_schemas.sh <<'EOFSCRIPT'\n{patched_script}\nEOFSCRIPT"
@@ -733,6 +772,7 @@ bash ./backup_ofs_schemas.sh
                 updated_script = _re.sub(r'export DB_PASS=.*', f'export DB_PASS={db_sys_password}', updated_script)
                 updated_script = _re.sub(r'export SERVICE=.*', f'export SERVICE={db_jdbc_service}', updated_script)
                 updated_script = _re.sub(r'export DUMPFILE=.*', f'export DUMPFILE={dmp_filename}', updated_script)
+                updated_script = _re.sub(r'export ORACLE_HOME=.*', f'export ORACLE_HOME={oracle_home}', updated_script)
 
                 write_repo_cmd = f"cat > {backup_dir}/restore_ofs_schemas.sh <<'EOFSCRIPT'\n{updated_script}\nEOFSCRIPT"
                 await self.ssh_service.execute_command(host, username, password, write_repo_cmd)
@@ -827,8 +867,8 @@ echo "ORACLE_SID=$ORACLE_SID"
 echo "DB_PASS is set: $([ -n \"$DB_PASS\" ] && echo \"yes\" || echo \"no\")"
 cd {remote_dir}
 echo "Executing restore script..."
-# Set Oracle environment for local connections
-export ORACLE_HOME=/u01/app/oracle/product/19.0.0/dbhome_1
+# Set Oracle environment (auto-detected from /etc/oratab)
+export ORACLE_HOME={oracle_home}
 export PATH=$ORACLE_HOME/bin:$PATH
 export LD_LIBRARY_PATH=$ORACLE_HOME/lib:$LD_LIBRARY_PATH
 echo "Oracle environment set: ORACLE_HOME=$ORACLE_HOME"
