@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 from core.logging import setup_logging
-from routers.installation import router as installation_router, installation_tasks, websocket_manager
+from routers.installation import router as installation_router, installation_tasks, websocket_manager, log_persistence
 setup_logging()
 logger = logging.getLogger(__name__)
 
@@ -67,8 +67,11 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
     task = installation_tasks.get(task_id)
     if task:
         await websocket_manager.send_status(task_id, task.status, task.current_step, task.progress)
-        if task.logs:
-            await websocket_manager.send_output(task_id, "\n".join(task.logs[-20:]))
+    
+    # Send full historical logs from disk (not just last 20)
+    persisted_logs = await log_persistence.read_all_logs(task_id)
+    if persisted_logs:
+        await websocket_manager.send_historical_logs(task_id, persisted_logs)
 
     try:
         while True:

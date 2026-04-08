@@ -103,12 +103,21 @@ export default function LogsPage() {
 
     ws.onopen = () => {
       setStatus('running')
-      setOutputLines(prev => [...prev, '[CONNECTED] Live log stream started'])
     }
 
     ws.onmessage = event => {
       try {
         const message = JSON.parse(event.data)
+        if (message.type === 'historical_logs') {
+          // On reconnect/refresh: load all previous logs from disk
+          const logs = Array.isArray(message.data) ? message.data : [message.data]
+          const lines = logs
+            .flatMap((line: string) => String(line || '').split(/\r?\n/))
+            .filter((l: string) => l.length > 0)
+          if (lines.length) {
+            setOutputLines(lines)
+          }
+        }
         if (message.type === 'output') {
           const chunk = String(message.data || '')
           const lines = chunk.split(/\r?\n/).filter(l => l.length > 0)

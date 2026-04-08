@@ -17,6 +17,7 @@ from schemas.installation import (
 )
 from services.installation_service import InstallationService
 from services.ssh_service import SSHService
+from services.log_persistence import LogPersistence
 
 
 router = APIRouter()
@@ -24,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 installation_tasks: dict[str, InstallationStatus] = {}
 websocket_manager = WebSocketManager()
+log_persistence = LogPersistence()
 
 # Cache for latest installation request (used for rollback after ENVCHECK failure)
 latest_request_cache: dict = {
@@ -87,6 +89,29 @@ async def get_installation_status(task_id: str):
 @router.get("/tasks")
 async def list_installation_tasks():
     return {"tasks": list(installation_tasks.values())}
+
+
+@router.get("/logs/{task_id}/full")
+async def get_full_logs(task_id: str):
+    """Fetch complete persisted logs for a task (used on page reload)."""
+    logs = await log_persistence.read_all_logs(task_id)
+    return {
+        "task_id": task_id,
+        "log_lines": logs,
+        "total_lines": len(logs),
+    }
+
+
+@router.get("/logs/{task_id}/tail")
+async def get_tail_logs(task_id: str, n: int = 50):
+    """Fetch last N lines of logs (quick recovery for slow page loads)."""
+    logs = await log_persistence.read_last_n_logs(task_id, n)
+    return {
+        "task_id": task_id,
+        "log_lines": logs,
+        "total_lines": len(logs),
+        "limit": n,
+    }
 
 
 @router.post("/test-connection")
@@ -161,6 +186,8 @@ async def append_output(task_id: str, text: str) -> None:
         lines = [line for line in text.splitlines() if line.strip()]
         task.logs.extend(lines)
     await websocket_manager.send_output(task_id, text)
+    # Persist logs to disk for recovery on page refresh/reconnect
+    await log_persistence.append_log(task_id, text)
 
 
 async def update_status(task_id: str, status: Optional[str] = None, step: Optional[str] = None, progress: Optional[int] = None) -> None:
@@ -232,6 +259,8 @@ async def deploy_fichome(request: FichomeDeploymentRequest):
     """
     Start FICHOME deployment workflow (17-step process).
     
+    Uses unified logging system (installation_tasks + log_persistence) for consistency.
+    
     Steps 1-15: FICHOME EAR/WAR deployment
     Steps 16-17: Post-deployment scripts (startofsaa.sh, checkofsaa.sh)
     
@@ -251,17 +280,19 @@ async def deploy_fichome(request: FichomeDeploymentRequest):
         if not request.db_jdbc_service:
             raise HTTPException(400, "db_jdbc_service is required")
         
-        # Create task
+        # Create task (unified with BD/ECM/SANC)
         task_id = str(uuid.uuid4())
         
-        fichome_deployment_tasks[task_id] = {
-            "status": "starting",
-            "progress": 0,
-            "logs": [],
-            "current_step": 0,
-            "total_steps": 17,
-            "created_at": datetime.utcnow().isoformat(),
-        }
+        installation_tasks[task_id] = InstallationStatus(
+            task_id=task_id,
+            status="started",
+            current_step="Initializing FICHOME deployment",
+            progress=0,
+            logs=[
+                f"[INFO] FICHOME deployment started (task {task_id[:8]})",
+                f"[INFO] Database: {request.db_jdbc_service}",
+            ],
+        )
         
         # Start async deployment
         asyncio.create_task(
@@ -288,6 +319,19 @@ async def deploy_fichome(request: FichomeDeploymentRequest):
 @router.get("/deploy-fichome/status/{task_id}")
 async def get_fichome_status(task_id: str):
     """Get FICHOME deployment task status."""
+    # Check unified installation_tasks first (now includes FICHOME)
+    if task_id in installation_tasks:
+        task = installation_tasks[task_id]
+        return {
+            "success": True,
+            "task_id": task_id,
+            "status": task.status,
+            "current_step": task.current_step,
+            "progress": task.progress,
+            "logs": task.logs[-50:],  # Return last 50 lines
+        }
+    
+    # Fallback to separate fichome_deployment_tasks for backward compatibility
     if task_id not in fichome_deployment_tasks:
         raise HTTPException(status_code=404, detail="FICHOME deployment task not found")
     
@@ -309,50 +353,54 @@ async def execute_fichome_deployment(task_id: str, request: FichomeDeploymentReq
     """
     Execute FICHOME 17-step deployment workflow asynchronously.
     
-    1. Call installer.deploy_fichome() for 17 steps
-    2. Update task status and progress
-    3. Stream logs to WebSocket
-    4. Handle errors gracefully
+    Uses unified logging system (append_output + log_persistence) for consistency with BD/ECM/SANC.
     """
-    logs: list[str] = []
-    task = fichome_deployment_tasks.get(task_id)
-    
-    if not task:
-        return
+    task = InstallationStatus(
+        task_id=task_id,
+        status="running",
+        current_step="Initializing FICHOME deployment",
+        progress=0,
+        logs=[f"[INFO] FICHOME deployment started (task {task_id[:8]})"],
+    )
+    installation_tasks[task_id] = task
     
     try:
-        task["status"] = "in_progress"
-        
-        await websocket_send(task_id, "[INFO] Initializing FICHOME deployment")
-        
+        await append_output(task_id, f"[INFO] Target: {request.host}")
+        await update_status(task_id, "running", "Initializing FICHOME deployment", 0)
+
         # Initialize SSH service and installer
         ssh_service = SSHService()
         installation_service = InstallationService(ssh_service)
-        
+
         # Define callbacks for real-time updates
-        def on_subtask_callback(message: str) -> None:
+        async def on_subtask_callback(message: str) -> None:
             """Called when entering a new step."""
-            asyncio.create_task(websocket_send(task_id, message))
-            task["logs"].append(message)
+            await append_output(task_id, message)
         
-        def on_output_callback(line: str) -> None:
+        async def on_output_callback(line: str) -> None:
             """Called for each output line."""
             if line and line.strip():
-                asyncio.create_task(websocket_send(task_id, line))
-                task["logs"].append(line)
+                await append_output(task_id, line)
                 
                 # Parse step number to update progress
                 if "[FICHOME] STEP" in line and ":" in line:
                     try:
                         step_num = int(line.split("STEP ")[1].split(":")[0])
-                        task["current_step"] = step_num
-                        task["progress"] = int((step_num / 17) * 100)
-                        asyncio.create_task(
-                            websocket_send(
-                                task_id,
-                                f"progress::{task['progress']}::{step_num}/17"
-                            )
-                        )
+                        progress = int((step_num / 17) * 100)
+                        step_names = [
+                            "Granting database privileges",
+                            "Extracting WebLogic domain configuration",
+                            "Backing up existing FICHOME files",
+                            "Rebuilding FICHOME with ant.sh",
+                            "Setting permissions on build artifacts",
+                            "Preparing WebLogic domain applications directory",
+                            "Copying and extracting EAR file",
+                            "Extracting and preparing WAR content",
+                            "Running post-deployment startup script",
+                            "Running health check validation",
+                        ]
+                        step_name = step_names[min(step_num - 1, len(step_names) - 1)] if step_num <= len(step_names) else f"Step {step_num}"
+                        await update_status(task_id, "running", step_name, progress)
                     except (ValueError, IndexError):
                         pass
         
@@ -371,28 +419,23 @@ async def execute_fichome_deployment(task_id: str, request: FichomeDeploymentReq
             atomic_schema_name=request.atomic_schema_name,
         )
         
-        logs.extend(result.get("logs", []))
-        task["logs"].extend(logs)
+        await append_output(task_id, "\n".join(result.get("logs", [])))
         
         if not result.get("success"):
-            task["status"] = "failed"
             error_msg = result.get("error") or "FICHOME deployment failed"
-            task["error"] = error_msg
-            await websocket_send(task_id, f"[ERROR] {error_msg}")
+            await append_output(task_id, f"[ERROR] {error_msg}")
+            await update_status(task_id, "failed", "FICHOME deployment failed")
             return
         
         # All 17 steps successful
-        task["status"] = "completed"
-        task["progress"] = 100
-        task["current_step"] = 17
-        
-        await websocket_send(task_id, "[SUCCESS] FICHOME deployment completed: All 17 steps successful")
+        await append_output(task_id, "[SUCCESS] FICHOME deployment completed: All 17 steps successful")
+        await update_status(task_id, "completed", "FICHOME deployment completed", 100)
         
     except Exception as exc:
         logger.exception(f"FICHOME deployment failed: {task_id}")
-        task["status"] = "failed"
-        task["error"] = str(exc)
-        await websocket_send(task_id, f"[ERROR] Exception: {str(exc)}")
+        error_msg = str(exc)
+        await append_output(task_id, f"[ERROR] Exception: {error_msg}")
+        await update_status(task_id, "failed", "FICHOME deployment failed")
 
 
 async def websocket_send(task_id: str, message: str) -> None:

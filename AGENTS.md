@@ -22,6 +22,14 @@ Frontend Form Submit  ->  POST /api/installation/start
                       ->  Viewer at /logs/{task_id} displays progress
 ```
 
+### Unified Logging System (All Modules)
+All modules (BD, ECM, SANC, FICHOME) use persistent disk-based logging:
+- **Persistence**: Logs written to `/tmp/ofsaa_logs/{task_id}.log` (via `LogPersistence` service)
+- **Recovery**: Full log history sent to frontend on WebSocket connect/reconnect
+- **API**: `/logs/{task_id}/full` and `/logs/{task_id}/tail` for manual retrieval
+- **Guarantee**: No data loss on page refresh, backend restart, or network disconnect
+- **Details**: See [LOGGING_ARCHITECTURE.md](LOGGING_ARCHITECTURE.md)
+
 ---
 
 ## Baseline Module: BD Pack (Do Not Break)
@@ -452,8 +460,9 @@ async def run_module_script(self, host, username, password, on_output_callback, 
 
 ## Module Status Summary
 
-| Module | Status | Flag Field | Kit Location |
-|--------|--------|------------|-------------|
-| BD Pack | ✅ Implemented | `install_bdpack` | `/u01/BD_Installer_Kit/OFS_BD_PACK` |
-| ECM | ✅ Implemented | `install_ecm` | `/u01/ECM_Installer_Kit/OFS_ECM_PACK` |
-| SANC | ❌ Placeholder | `install_sanc` | TBD |
+| Module | Status | Flag Field | Kit Location | Logging | Persistence |
+|--------|--------|------------|-------------|---------|------------|
+| BD Pack | ✅ Implemented | `install_bdpack` | `/u01/BD_Installer_Kit/OFS_BD_PACK` | ✅ | ✅ |
+| ECM | ✅ Implemented | `install_ecm` | `/u01/ECM_Installer_Kit/OFS_ECM_PACK` | ✅ | ✅ |
+| SANC | ⏳ Placeholder | `install_sanc` | TBD | ⏳ | ⏳ |
+| FICHOME | ✅ Implemented | N/A | `/u01/OFSAA/FICHOME` | ✅ | ✅ |
