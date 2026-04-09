@@ -244,7 +244,7 @@ export function validateEcmData(data: EcmFormData): EcmValidationResult {
   }
 
   if (!data.jdbc_service.trim()) {
-    errors.jdbc_service = 'JDBC Service/SID is required'
+    errors.jdbc_service = 'JDBC Service Name is required'
   }
 
   if (data.datafileDir && !data.datafileDir.startsWith('/')) {
@@ -336,7 +336,7 @@ export function EcmPackForm({ data, errors, onChange }: EcmPackFormProps) {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             {input('JDBC Host (DB IP)', 'jdbc_host', '192.168.0.165')}
             {input('JDBC Port', 'jdbc_port', '1521')}
-            {input('JDBC Service/SID', 'jdbc_service', 'FLEXPDB1')}
+            {input('JDBC Service Name', 'jdbc_service', 'FLEXPDB1')}
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {input('Application IP (HOSTNAME)', 'hostname', '192.168.0.41')}

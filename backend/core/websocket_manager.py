@@ -43,6 +43,7 @@ class WebSocketManager:
         status: str,
         step: Optional[str] = None,
         progress: Optional[int] = None,
+        module: Optional[str] = None,
     ) -> None:
         websocket = self.active_connections.get(task_id)
         if websocket is None:
@@ -52,6 +53,8 @@ class WebSocketManager:
             payload["step"] = step
         if progress is not None:
             payload["progress"] = progress
+        if module is not None:
+            payload["module"] = module
         await websocket.send_text(json.dumps({"type": "status", "data": payload}))
 
     async def send_historical_logs(self, task_id: str, logs: list[str]) -> None:

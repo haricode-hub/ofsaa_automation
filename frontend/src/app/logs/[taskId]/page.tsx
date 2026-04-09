@@ -11,6 +11,7 @@ type StatusPayload = {
   status: StatusType
   step?: string
   progress?: number
+  module?: 'BD_PACK' | 'ECM_PACK' | 'SANC_PACK' | 'FICHOME_DEPLOYMENT'
 }
 
 const BD_PACK_STEPS = [
@@ -142,7 +143,11 @@ export default function LogsPage() {
           if (data?.status) setStatus(data.status)
           if (data?.step) {
             setCurrentStep(data.step)
-            // Detect module change based on step name
+          }
+          // Use authoritative module from backend if available, fallback to heuristic
+          if (data?.module) {
+            setCurrentModule(data.module)
+          } else if (data?.step) {
             if (data.step.toLowerCase().includes('fichome')) {
               setCurrentModule('FICHOME_DEPLOYMENT')
             } else if (FICHOME_DEPLOYMENT_STEPS.some(s => s === data.step)) {

@@ -800,7 +800,7 @@ export function InstallationForm() {
               {/* Show JDBC Service input when a DB backup is required (BD pack or ECM taking BD backup) */}
               {((formData.install_bdpack) || (formData.install_ecm && formData.ecm_take_bd_backup)) && (
                 <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">JDBC Service/SID</label>
+                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">JDBC Service Name</label>
                   <input
                     type="text"
                     value={formData.schema_jdbc_service}
@@ -808,7 +808,7 @@ export function InstallationForm() {
                     placeholder="OFSAAPDB"
                     className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
                   />
-                  <p className="text-[10px] text-text-muted">Provide the JDBC Service/SID used for DB schema backup/restore.</p>
+                  <p className="text-[10px] text-text-muted">Provide the JDBC Service Name used for DB schema backup/restore.</p>
                 </div>
               )}
 
@@ -897,7 +897,7 @@ export function InstallationForm() {
 
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    Oracle SID
+                    Oracle Service Name
                   </label>
                   <input
                     type="text"
@@ -971,7 +971,7 @@ export function InstallationForm() {
                   </div>
                   <div className="space-y-2">
                     <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                      JDBC Service/SID
+                      JDBC Service Name
                     </label>
                     <input
                       type="text"
@@ -1686,7 +1686,7 @@ export function InstallationForm() {
                 </div>
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    JDBC Service/SID
+                    JDBC Service Name
                   </label>
                   <input
                     type="text"

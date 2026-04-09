@@ -60,6 +60,7 @@ async def start_installation(request: InstallationRequest):
             task_id=task_id,
             status="started",
             current_step="Initializing connection",
+            current_module="BD_PACK",
             progress=0,
             logs=[
                 f"[INFO] Installation started (task {task_id[:8]})",
@@ -190,7 +191,7 @@ async def append_output(task_id: str, text: str) -> None:
     await log_persistence.append_log(task_id, text)
 
 
-async def update_status(task_id: str, status: Optional[str] = None, step: Optional[str] = None, progress: Optional[int] = None) -> None:
+async def update_status(task_id: str, status: Optional[str] = None, step: Optional[str] = None, progress: Optional[int] = None, module: Optional[str] = None) -> None:
     task = installation_tasks.get(task_id)
     if task is None:
         return
@@ -200,7 +201,9 @@ async def update_status(task_id: str, status: Optional[str] = None, step: Option
         task.current_step = step
     if progress is not None:
         task.progress = progress
-    await websocket_manager.send_status(task_id, task.status, task.current_step, task.progress)
+    if module:
+        task.current_module = module
+    await websocket_manager.send_status(task_id, task.status, task.current_step, task.progress, task.current_module)
 
 
 async def _restore_bd_on_ecm_failure(
@@ -287,6 +290,7 @@ async def deploy_fichome(request: FichomeDeploymentRequest):
             task_id=task_id,
             status="started",
             current_step="Initializing FICHOME deployment",
+            current_module="FICHOME_DEPLOYMENT",
             progress=0,
             logs=[
                 f"[INFO] FICHOME deployment started (task {task_id[:8]})",
@@ -359,6 +363,7 @@ async def execute_fichome_deployment(task_id: str, request: FichomeDeploymentReq
         task_id=task_id,
         status="running",
         current_step="Initializing FICHOME deployment",
+        current_module="FICHOME_DEPLOYMENT",
         progress=0,
         logs=[f"[INFO] FICHOME deployment started (task {task_id[:8]})"],
     )
@@ -582,6 +587,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
 
         # Run BD Pack only if selected AND not resuming from checkpoint
         if request.install_bdpack and not request.resume_from_checkpoint:
+            await update_status(task_id, module="BD_PACK")
             # Clear RAM caches before BD Pack only if BD is running alone
             if not request.install_ecm and not request.install_sanc:
                 await append_output(task_id, "[INFO] Clearing filesystem caches before BD Pack...")
@@ -980,7 +986,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             # Deploy FICHOME if no other modules are selected (BD-only installation)
             if not request.install_ecm and not request.install_sanc:
                 await append_output(task_id, "\n[INFO] ==================== FICHOME DEPLOYMENT ====================")
-                await update_status(task_id, "running", "Deploying FICHOME to WebLogic domain")
+                await update_status(task_id, "running", "Deploying FICHOME to WebLogic domain", module="FICHOME_DEPLOYMENT")
                 
                 async def fichome_subtask_callback(message: str) -> None:
                     await append_output(task_id, message)
@@ -1070,6 +1076,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
 
         # ============== ECM MODULE INSTALLATION ==============
         if request.install_ecm:
+            await update_status(task_id, module="ECM_PACK")
             await append_output(task_id, "\n[INFO] ==================== ECM MODULE INSTALLATION ====================")
 
             # Clear RAM caches before ECM
@@ -1371,7 +1378,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             # Deploy FICHOME if SANC is not selected (BD+ECM but not SANC)
             if not request.install_sanc:
                 await append_output(task_id, "\n[INFO] ==================== FICHOME DEPLOYMENT ====================")
-                await update_status(task_id, "running", "Deploying FICHOME to WebLogic domain")
+                await update_status(task_id, "running", "Deploying FICHOME to WebLogic domain", module="FICHOME_DEPLOYMENT")
                 
                 async def fichome_subtask_callback(message: str) -> None:
                     await append_output(task_id, message)
@@ -1398,6 +1405,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
 
         # ============== SANC MODULE INSTALLATION ==============
         if request.install_sanc:
+            await update_status(task_id, module="SANC_PACK")
             await append_output(task_id, "\n[INFO] ==================== SANC MODULE INSTALLATION ====================")
 
             # Clear RAM caches before SANC
@@ -1602,7 +1610,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
 
             # Deploy FICHOME after all modules complete (BD+ECM+SANC) - always
             await append_output(task_id, "\n[INFO] ==================== FICHOME DEPLOYMENT ====================")
-            await update_status(task_id, "running", "Deploying FICHOME to WebLogic domain")
+            await update_status(task_id, "running", "Deploying FICHOME to WebLogic domain", module="FICHOME_DEPLOYMENT")
             
             async def fichome_subtask_callback(message: str) -> None:
                 await append_output(task_id, message)

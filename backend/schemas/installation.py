@@ -22,7 +22,7 @@ class InstallationRequest(BaseModel):
     # OFS_BD_SCHEMA_IN.xml user-driven inputs (optional)
     schema_jdbc_host: Optional[str] = Field(default=None, description="DB host for JDBC_URL")
     schema_jdbc_port: Optional[int] = Field(default=1521, description="DB port for JDBC_URL")
-    schema_jdbc_service: Optional[str] = Field(default=None, description="DB service/SID for JDBC_URL")
+    schema_jdbc_service: Optional[str] = Field(default=None, description="DB service name for JDBC_URL")
     schema_host: Optional[str] = Field(default=None, description="Value for <HOST> in OFS_BD_SCHEMA_IN.xml")
     schema_setup_env: Optional[str] = Field(default=None, description="SETUPINFO NAME (DEV/UAT/PROD etc.)")
     schema_apply_same_for_all: Optional[str] = Field(default="Y", description="PASSWORD APPLYSAMEFORALL (Y/N)")
@@ -110,7 +110,7 @@ class InstallationRequest(BaseModel):
     # OFS_ECM_SCHEMA_IN.xml fields
     ecm_schema_jdbc_host: Optional[str] = Field(default=None, description="ECM DB host for JDBC_URL")
     ecm_schema_jdbc_port: Optional[int] = Field(default=1521, description="ECM DB port for JDBC_URL")
-    ecm_schema_jdbc_service: Optional[str] = Field(default=None, description="ECM DB service/SID for JDBC_URL")
+    ecm_schema_jdbc_service: Optional[str] = Field(default=None, description="ECM DB service name for JDBC_URL")
     ecm_schema_host: Optional[str] = Field(default=None, description="ECM Application hostname")
     ecm_schema_setup_env: Optional[str] = Field(default="DEV", description="ECM SETUPINFO NAME")
     ecm_schema_prefix_schema_name: Optional[str] = Field(default="N", description="ECM PREFIX_SCHEMA_NAME (Y/N)")
@@ -179,7 +179,7 @@ class InstallationRequest(BaseModel):
     # OFS_SANC_SCHEMA_IN.xml fields (mirrors BD Pack schema inputs)
     sanc_schema_jdbc_host: Optional[str] = Field(default=None, description="SANC DB host for JDBC_URL")
     sanc_schema_jdbc_port: Optional[int] = Field(default=1521, description="SANC DB port for JDBC_URL")
-    sanc_schema_jdbc_service: Optional[str] = Field(default=None, description="SANC DB service/SID for JDBC_URL")
+    sanc_schema_jdbc_service: Optional[str] = Field(default=None, description="SANC DB service name for JDBC_URL")
     sanc_schema_host: Optional[str] = Field(default=None, description="SANC application hostname")
     sanc_schema_setup_env: Optional[str] = Field(default="DEV", description="SANC SETUPINFO NAME (DEV/UAT/PROD etc.)")
     sanc_schema_apply_same_for_all: Optional[str] = Field(default="Y", description="SANC PASSWORD APPLYSAMEFORALL (Y/N)")
@@ -233,6 +233,7 @@ class InstallationStatus(BaseModel):
     task_id: str
     status: str
     current_step: Optional[str] = None
+    current_module: Optional[str] = None
     progress: int = 0
     logs: List[str] = []
     error: Optional[str] = None

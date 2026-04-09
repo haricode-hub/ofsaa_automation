@@ -3259,7 +3259,7 @@ class InstallerService:
         """
         logs: list[str] = []
         repo_dir = Config.REPO_DIR
-        config_dir = f"{repo_dir}/ofsaa_auto_installation/configuration"
+        config_dir = f"{repo_dir}/configuration"
         
         # STEP 1a: Grant ATOMIC user privileges
         await self._call_subtask_callback(
@@ -3601,7 +3601,7 @@ class InstallerService:
         # Extract WEBLOGIC_DOMAIN_HOME value using grep and sed
         extract_domain_cmd = (
             f"grep -i 'WEBLOGIC_DOMAIN_HOME' {installconfig_path} | "
-            "sed -n 's/.*<InteractionVariable[^>]*name[\"'\\'']*WEBLOGIC_DOMAIN_HOME[\"'\\'']*[^>]*>\\([^<]*\\)<.*/\\1/ip' | "
+            "sed -n 's/.*<InteractionVariable[^>]*name=[\"'\\'']*WEBLOGIC_DOMAIN_HOME[\"'\\'']*[^>]*>\\([^<]*\\)<.*/\\1/ip' | "
             "head -n 1"
         )
         domain_result = await self.ssh_service.execute_command(host, username, password, extract_domain_cmd)
