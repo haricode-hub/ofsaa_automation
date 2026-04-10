@@ -628,7 +628,7 @@ class InstallationService:
         """Run SANC setup.sh SILENT."""
         return await self.installer.run_sanc_setup_silent(host, username, password, **kwargs)
 
-    # ============== FICHOME DEPLOYMENT METHODS ==============
+    # ============== EAR CREATION & EXPLODING METHODS ==============
 
     async def deploy_fichome(
         self,
@@ -643,8 +643,9 @@ class InstallationService:
         db_jdbc_service: Optional[str] = None,
         config_schema_name: Optional[str] = None,
         atomic_schema_name: Optional[str] = None,
+        weblogic_domain_home: Optional[str] = None,
     ) -> dict:
-        """Deploy FICHOME to WebLogic domain using 17-step workflow."""
+        """EAR Creation & Exploding: Build and deploy exploded EAR/WAR to WebLogic domain."""
         return await self.installer.deploy_fichome(
             host,
             username,
@@ -657,5 +658,12 @@ class InstallationService:
             db_jdbc_service=db_jdbc_service,
             config_schema_name=config_schema_name,
             atomic_schema_name=atomic_schema_name,
+            weblogic_domain_home=weblogic_domain_home,
         )
+
+    # ============== WEBLOGIC DATASOURCE CREATION ==============
+
+    async def create_weblogic_datasource(self, host: str, username: str, password: str, **kwargs) -> dict:
+        """Create a single WebLogic datasource via WLST."""
+        return await self.installer.create_weblogic_datasource(host, username, password, **kwargs)
 

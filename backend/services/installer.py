@@ -3247,6 +3247,7 @@ class InstallerService:
         config_schema_name: str,
         atomic_schema_name: str,
         on_subtask_callback: Optional[Callable[[str], Any]] = None,
+        on_output_callback: Optional[Callable[[str], Any]] = None,
     ) -> dict:
         """
         Grant database privileges to ATOMIC and CONFIG schema users via SQL scripts from Git.
@@ -3260,11 +3261,47 @@ class InstallerService:
         logs: list[str] = []
         repo_dir = Config.REPO_DIR
         config_dir = f"{repo_dir}/configuration"
-        
+
+        # STEP 1-pre: Unlock Oracle accounts (ORA-28000 prevention)
+        await self._call_subtask_callback(
+            on_subtask_callback,
+            "[FICHOME] : Unlocking Oracle schema accounts"
+        )
+        unlock_sql = (
+            f"ALTER USER {atomic_schema_name} ACCOUNT UNLOCK;\n"
+            f"ALTER USER {config_schema_name} ACCOUNT UNLOCK;\n"
+            "EXIT;\n"
+        )
+        sqlplus_login_unlock = (
+            f"sys/{db_sys_password}@{db_jdbc_host}:{db_jdbc_port}/{db_jdbc_service} as sysdba"
+        )
+        unlock_cmd = (
+            f"source /home/oracle/.profile >/dev/null 2>&1; "
+            f"sqlplus {shell_escape(sqlplus_login_unlock)} <<'EOUNLOCK'\n{unlock_sql}EOUNLOCK"
+        )
+        unlock_result = await self.ssh_service.execute_command(
+            host, username, password, unlock_cmd, timeout=120, get_pty=True
+        )
+        unlock_stdout = (unlock_result.get("stdout") or "").strip()
+        for line in unlock_stdout.splitlines():
+            cleaned = line.strip()
+            if cleaned:
+                log_line = f"[FICHOME] UNLOCK: {cleaned}"
+                logs.append(log_line)
+                await self._call_output_callback(on_output_callback, log_line)
+        if unlock_result.get("success"):
+            ok_msg = f"[OK] Oracle accounts unlocked: {atomic_schema_name}, {config_schema_name}"
+            logs.append(ok_msg)
+            await self._call_output_callback(on_output_callback, ok_msg)
+        else:
+            warn_msg = f"[WARN] Account unlock may have had issues (continuing): {(unlock_result.get('stderr') or '')[:120]}"
+            logs.append(warn_msg)
+            await self._call_output_callback(on_output_callback, warn_msg)
+
         # STEP 1a: Grant ATOMIC user privileges
         await self._call_subtask_callback(
             on_subtask_callback,
-            "[FICHOME] STEP 1a: Granting ATOMIC schema user privileges"
+            "[FICHOME] : Granting ATOMIC schema user privileges"
         )
         
         atomic_sql_file = f"{config_dir}/privileges_atomic_user.sql"
@@ -3276,14 +3313,15 @@ class InstallerService:
             db_jdbc_service=db_jdbc_service,
             schema_name=atomic_schema_name,
             sql_file_path=atomic_sql_file,
-            user_type="ATOMIC"
+            user_type="ATOMIC",
+            on_output_callback=on_output_callback,
         )
         logs.extend(atomic_result.get("logs", []))
         
         # STEP 1b: Grant CONFIG user privileges
         await self._call_subtask_callback(
             on_subtask_callback,
-            "[FICHOME] STEP 1b: Granting CONFIG schema user privileges"
+            "[FICHOME] : Granting CONFIG schema user privileges"
         )
         
         config_sql_file = f"{config_dir}/privileges_config_user.sql"
@@ -3295,7 +3333,8 @@ class InstallerService:
             db_jdbc_service=db_jdbc_service,
             schema_name=config_schema_name,
             sql_file_path=config_sql_file,
-            user_type="CONFIG"
+            user_type="CONFIG",
+            on_output_callback=on_output_callback,
         )
         logs.extend(config_result.get("logs", []))
         
@@ -3314,6 +3353,7 @@ class InstallerService:
         schema_name: str,
         sql_file_path: str,
         user_type: str,
+        on_output_callback: Optional[Callable[[str], Any]] = None,
     ) -> dict:
         """
         Execute privilege grant SQL script for a specific schema user.
@@ -3339,18 +3379,30 @@ class InstallerService:
             logs.append(f"[WARN] {user_type} privileges SQL file is empty: {sql_file_path}")
             return {"success": True, "logs": logs}
         
-        # Replace schema name placeholder if present
+        # Replace schema name placeholders (multiple formats)
+        # 1. Our custom placeholders
         sql_content = sql_content.replace("{SCHEMA_NAME}", schema_name)
         sql_content = sql_content.replace("${SCHEMA_NAME}", schema_name)
+        # 2. SQL*Plus substitution variables: ACCEPT <var> / &<var>
+        #    Remove ACCEPT lines (they prompt for input which doesn't work in heredoc)
+        import re
+        sql_content = re.sub(r'(?i)^ACCEPT\s+\w+\s+.*$', '', sql_content, flags=re.MULTILINE)
+        #    Replace all common SQL*Plus variable patterns with actual schema name
+        #    Handles: &database_username, &username, &schema_name (with optional & doubling and trailing dot)
+        sql_content = re.sub(r'&&?database_username\.?', schema_name, sql_content, flags=re.IGNORECASE)
+        sql_content = re.sub(r'&&?username\.?', schema_name, sql_content, flags=re.IGNORECASE)
+        sql_content = re.sub(r'&&?schema_name\.?', schema_name, sql_content, flags=re.IGNORECASE)
         
         # Build sqlplus connection string
         sqlplus_login = f"sys/{db_sys_password}@{db_jdbc_host}:{db_jdbc_port}/{db_jdbc_service} as sysdba"
         
-        # Execute SQL via sqlplus heredoc
+        # Execute SQL via sqlplus heredoc (source oracle profile for sqlplus in PATH)
         sql_body = sql_content + "\nEXIT;\n"
-        sqlplus_cmd = f"sqlplus {shell_escape(sqlplus_login)} <<'EOGRANT'\n{sql_body}EOGRANT"
+        sqlplus_cmd = f"source /home/oracle/.profile >/dev/null 2>&1; sqlplus {shell_escape(sqlplus_login)} <<'EOGRANT'\n{sql_body}EOGRANT"
         
-        logs.append(f"[FICHOME] Executing {user_type} privileges SQL for schema: {schema_name}")
+        msg = f"[FICHOME] Executing {user_type} privileges SQL for schema: {schema_name}"
+        logs.append(msg)
+        await self._call_output_callback(on_output_callback, msg)
         
         result = await self.ssh_service.execute_command(
             host, username, password, sqlplus_cmd, timeout=300, get_pty=True
@@ -3359,15 +3411,23 @@ class InstallerService:
         stdout = (result.get("stdout") or "").strip()
         stderr = (result.get("stderr") or "").strip()
         
-        # Log output (mask password in logs)
+        # Stream full sqlplus output to UI
         if stdout:
-            for line in stdout.splitlines()[:10]:  # Log first 10 lines to avoid spam
-                logs.append(f"[FICHOME] {user_type}: {line}")
+            for line in stdout.splitlines():
+                cleaned = line.strip()
+                if cleaned:
+                    log_line = f"[FICHOME] {user_type}: {cleaned}"
+                    logs.append(log_line)
+                    await self._call_output_callback(on_output_callback, log_line)
         
         if not result.get("success"):
-            logs.append(f"[WARN] {user_type} privileges grant had issues: {stderr}")
+            warn_msg = f"[WARN] {user_type} privileges grant had issues: {stderr}"
+            logs.append(warn_msg)
+            await self._call_output_callback(on_output_callback, warn_msg)
         else:
-            logs.append(f"[OK] {user_type} schema user privileges granted: {schema_name}")
+            ok_msg = f"[OK] {user_type} schema user privileges granted: {schema_name}"
+            logs.append(ok_msg)
+            await self._call_output_callback(on_output_callback, ok_msg)
         
         return {"success": True, "logs": logs}
 
@@ -3391,10 +3451,10 @@ class InstallerService:
         """
         logs: list[str] = []
         repo_dir = Config.REPO_DIR
-        source_script = f"{repo_dir}/ofsaa_auto_installation/configuration/startofsaa.sh"
+        source_script = f"{repo_dir}/configuration/startofsaa.sh"
         dest_script = "/u01/startofsaa.sh"
         
-        await self._call_subtask_callback(on_subtask_callback, "[FICHOME] STEP 16: Running startofsaa.sh")
+        await self._call_subtask_callback(on_subtask_callback, "[FICHOME] Running startofsaa.sh")
         
         try:
             # Check if source script exists
@@ -3403,7 +3463,7 @@ class InstallerService:
             
             if not check_result.get("success"):
                 error_msg = f"startofsaa.sh not found in Git repo: {source_script}"
-                logs.append(f"[ERROR] STEP 16: {error_msg}")
+                logs.append(f"[ERROR] {error_msg}")
                 return {"success": False, "logs": logs, "error": error_msg}
             
             # Copy script to /u01
@@ -3412,16 +3472,16 @@ class InstallerService:
             
             if not copy_result.get("success"):
                 error_msg = f"Failed to copy startofsaa.sh to /u01"
-                logs.append(f"[ERROR] STEP 16: {error_msg}")
+                logs.append(f"[ERROR] {error_msg}")
                 return {"success": False, "logs": logs, "error": error_msg}
             
             logs.append("[OK] startofsaa.sh copied to /u01")
             
-            # Execute as oracle user
-            exec_cmd = f"sudo -u oracle bash {dest_script}"
+            # Execute as oracle user (source profile first so $FIC_HOME is set)
+            exec_cmd = f"sudo -u oracle bash -c 'source /home/oracle/.profile && bash {dest_script}'"
             
             def handle_output(line: str) -> None:
-                logs.append(f"[FICHOME] STEP 16: {line}")
+                logs.append(f"[FICHOME] {line}")
                 if on_output_callback:
                     try:
                         result = on_output_callback(line)
@@ -3438,15 +3498,15 @@ class InstallerService:
             
             if not exec_result.get("success"):
                 error_msg = f"startofsaa.sh execution failed: {exec_result.get('stderr')}"
-                logs.append(f"[ERROR] STEP 16: {error_msg}")
+                logs.append(f"[ERROR] {error_msg}")
                 return {"success": False, "logs": logs, "error": error_msg}
             
-            logs.append("[OK] STEP 16: startofsaa.sh executed successfully")
+            logs.append("[OK] startofsaa.sh executed successfully")
             return {"success": True, "logs": logs}
         
         except Exception as e:
             error_msg = f"startofsaa.sh execution failed: {str(e)}"
-            logs.append(f"[ERROR] STEP 16: {error_msg}")
+            logs.append(f"[ERROR] : {error_msg}")
             return {"success": False, "logs": logs, "error": error_msg}
 
     async def run_checkofsaa_script(
@@ -3467,10 +3527,10 @@ class InstallerService:
         """
         logs: list[str] = []
         repo_dir = Config.REPO_DIR
-        source_script = f"{repo_dir}/ofsaa_auto_installation/configuration/checkofsaa.sh"
+        source_script = f"{repo_dir}/configuration/checkofsaa.sh"
         dest_script = "/u01/checkofsaa.sh"
         
-        await self._call_subtask_callback(on_subtask_callback, "[FICHOME] STEP 17: Running checkofsaa.sh")
+        await self._call_subtask_callback(on_subtask_callback, "[FICHOME] Running checkofsaa.sh")
         
         try:
             # Check if source script exists
@@ -3479,7 +3539,7 @@ class InstallerService:
             
             if not check_result.get("success"):
                 error_msg = f"checkofsaa.sh not found in Git repo: {source_script}"
-                logs.append(f"[ERROR] STEP 17: {error_msg}")
+                logs.append(f"[ERROR] {error_msg}")
                 return {"success": False, "logs": logs, "error": error_msg}
             
             # Copy script to /u01
@@ -3488,16 +3548,16 @@ class InstallerService:
             
             if not copy_result.get("success"):
                 error_msg = f"Failed to copy checkofsaa.sh to /u01"
-                logs.append(f"[ERROR] STEP 17: {error_msg}")
+                logs.append(f"[ERROR] {error_msg}")
                 return {"success": False, "logs": logs, "error": error_msg}
             
             logs.append("[OK] checkofsaa.sh copied to /u01")
             
-            # Execute as oracle user
-            exec_cmd = f"sudo -u oracle bash {dest_script}"
+            # Execute as oracle user (source profile first so $FIC_HOME is set)
+            exec_cmd = f"sudo -u oracle bash -c 'source /home/oracle/.profile && bash {dest_script}'"
             
             def handle_output(line: str) -> None:
-                logs.append(f"[FICHOME] STEP 17: {line}")
+                logs.append(f"[FICHOME] {line}")
                 if on_output_callback:
                     try:
                         result = on_output_callback(line)
@@ -3514,18 +3574,18 @@ class InstallerService:
             
             if not exec_result.get("success"):
                 error_msg = f"checkofsaa.sh execution failed: {exec_result.get('stderr')}"
-                logs.append(f"[ERROR] STEP 17: {error_msg}")
+                logs.append(f"[ERROR] {error_msg}")
                 return {"success": False, "logs": logs, "error": error_msg}
             
-            logs.append("[OK] STEP 17: checkofsaa.sh executed successfully")
+            logs.append("[OK] checkofsaa.sh executed successfully")
             return {"success": True, "logs": logs}
         
         except Exception as e:
             error_msg = f"checkofsaa.sh execution failed: {str(e)}"
-            logs.append(f"[ERROR] STEP 17: {error_msg}")
+            logs.append(f"[ERROR]  {error_msg}")
             return {"success": False, "logs": logs, "error": error_msg}
 
-    # ============== FICHOME DEPLOYMENT ==============
+    # ============== EAR CREATION & EXPLODING ==============
 
     async def deploy_fichome(
         self,
@@ -3540,37 +3600,40 @@ class InstallerService:
         db_jdbc_service: Optional[str] = None,
         config_schema_name: Optional[str] = None,
         atomic_schema_name: Optional[str] = None,
+        weblogic_domain_home: Optional[str] = None,
+        # STEP 5: WebLogic app deployment params
+        deploy_app_enabled: bool = False,
+        admin_url: Optional[str] = None,
+        weblogic_username: Optional[str] = None,
+        weblogic_password: Optional[str] = None,
+        wl_home: Optional[str] = None,
+        deploy_app_path: Optional[str] = None,
+        deploy_app_target_server: Optional[str] = None,
     ) -> dict:
         """
-        Deploy FICHOME.ear and FICHOME.war to WebLogic domain using 17-step workflow.
+        EAR Creation & Exploding: Build FICHOME.ear/war and create exploded deployment.
         
-        Workflow (17 Steps):
+        Workflow:
         1. Grant database privileges to ATOMIC and CONFIG schema users
-        2. Extract WEBLOGIC_DOMAIN_HOME from installconfig.xml
-        3. Navigate to FICHOME build directory (/u01/OFSAA/FICHOME/ficweb)
-        4. Backup existing EAR/WAR files in ficweb
-        5. Rebuild application using ant.sh
-        6. Set permissions on generated files (chmod 777)
-        7. Navigate to WebLogic domain directory
-        8. Create applications/FICHOME.ear directory structure
-        9. Copy EAR file to domain
-        10. Extract EAR file contents using jar command
-        11. Remove existing EAR & WAR archives
-        12. Create FICHOME.war directory
-        13. Copy new WAR file into EAR structure
-        14. Extract WAR file contents using jar command
-        15. Set final permissions (chmod 777)
-        16. Run startofsaa.sh from Git configuration
-        17. Run checkofsaa.sh from Git configuration
+        2. Run single script (backup, ant.sh build, exploded EAR/WAR creation)
+        3. Run startofsaa.sh from Git configuration
+        4. Run checkofsaa.sh from Git configuration
+        5. Deploy FICHOME.ear to WebLogic via WLST (optional)
         
-        Includes single-retry on failure and subtask progress tracking.
+        The script:
+        - Takes timestamped backups of FICHOME.ear/war in ficweb
+        - Builds with ant.sh
+        - Deletes existing EAR_DIR in domain if present
+        - Creates exploded EAR/WAR structure in domain applications
         """
         logs: list[str] = []
-        fichome_work_dir = "/u01/OFSAA/FICHOME/ficweb"
         
-        # STEP 1: Grant database privileges (non-blocking)
+        if not weblogic_domain_home:
+            return {"success": False, "logs": logs, "error": "weblogic_domain_home is required"}
+        
+        # Grant database privileges (non-blocking)
         if db_sys_password and config_schema_name and atomic_schema_name and db_jdbc_service:
-            await self._call_subtask_callback(on_subtask_callback, "[FICHOME] STEP 1: Granting database privileges")
+            await self._call_subtask_callback(on_subtask_callback, "[FICHOME] Granting database privileges")
             
             privileges_result = await self.grant_database_privileges(
                 host, username, password,
@@ -3580,247 +3643,118 @@ class InstallerService:
                 db_jdbc_service=db_jdbc_service,
                 config_schema_name=config_schema_name,
                 atomic_schema_name=atomic_schema_name,
-                on_subtask_callback=on_subtask_callback
+                on_subtask_callback=on_subtask_callback,
+                on_output_callback=on_output_callback,
             )
             logs.extend(privileges_result.get("logs", []))
         else:
-            logs.append("[INFO] STEP 1: Skipping database privileges (insufficient parameters)")
+            logs.append("[INFO] Skipping database privileges (insufficient parameters)")
         
-        # STEP 2: Extract WEBLOGIC_DOMAIN_HOME from installconfig.xml
-        await self._call_subtask_callback(on_subtask_callback, "[FICHOME] STEP 2: Extracting WebLogic domain configuration")
+        # Run EAR creation & exploding script
+        await self._call_subtask_callback(on_subtask_callback, "[FICHOME] Running EAR creation & exploding script")
         
-        installconfig_path = "/u01/Installation_Kit/BD_PACK_INSTALLATION_KIT/OFS_BD_PACK/OFS_AAI/conf/OFSAAI_InstallConfig.xml"
+        # Build the single deployment script that runs as oracle user
+        deploy_script = f"""#!/bin/bash
+set -e
+
+FICWEB="/u01/OFSAA/FICHOME/ficweb"
+DOMAIN="{weblogic_domain_home}"
+APP_DIR="${{DOMAIN}}/applications"
+EAR_DIR="${{APP_DIR}}/FICHOME.ear"
+WAR_DIR="${{EAR_DIR}}/FICHOME.war"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+cd ${{FICWEB}}
+[ -f FICHOME.ear ] && mv FICHOME.ear FICHOME.ear_bkp_${{TIMESTAMP}} && echo "Backed up FICHOME.ear -> FICHOME.ear_bkp_${{TIMESTAMP}}" || echo "No existing FICHOME.ear to backup"
+[ -f FICHOME.war ] && mv FICHOME.war FICHOME.war_bkp_${{TIMESTAMP}} && echo "Backed up FICHOME.war -> FICHOME.war_bkp_${{TIMESTAMP}}" || echo "No existing FICHOME.war to backup"
+
+echo "Building FICHOME with ant.sh"
+source /home/oracle/.profile >/dev/null 2>&1 || true
+./ant.sh
+chmod -R 777 FICHOME.war FICHOME.ear
+
+if [ -d "${{EAR_DIR}}" ]; then
+    echo "Removing existing EAR directory: ${{EAR_DIR}}"
+    rm -rf "${{EAR_DIR}}"
+fi
+
+mkdir -p ${{EAR_DIR}}
+chmod -R 777 ${{APP_DIR}}
+
+echo "Extracting EAR contents"
+cp ${{FICWEB}}/FICHOME.ear ${{EAR_DIR}}/
+cd ${{EAR_DIR}}
+jar -xvf FICHOME.ear
+rm -rf FICHOME.ear FICHOME.war
+
+echo "Extracting WAR contents"
+mkdir -p ${{WAR_DIR}}
+cp ${{FICWEB}}/FICHOME.war ${{WAR_DIR}}/
+cd ${{WAR_DIR}}
+jar -xvf FICHOME.war
+rm -f FICHOME.war
+
+chmod -R 777 ${{EAR_DIR}}
+
+echo "Exploded EAR/WAR deployment ready at: ${{EAR_DIR}}"
+"""
         
-        # Check if file exists
-        check_cfg = await self.ssh_service.execute_command(host, username, password, f"test -f {installconfig_path}")
-        if not check_cfg.get("success"):
-            error_msg = f"OFSAAI_InstallConfig.xml not found at: {installconfig_path}"
+        # Write script to remote, execute as oracle user
+        script_path = "/tmp/fichome_deploy.sh"
+        write_cmd = f"cat > {script_path} << 'EOFSCRIPT'\n{deploy_script}EOFSCRIPT\nchmod 755 {script_path}"
+        write_result = await self.ssh_service.execute_command(host, username, password, write_cmd, get_pty=True)
+        if not write_result.get("success"):
+            error_msg = f"Failed to write deployment script: {write_result.get('stderr')}"
             logs.append(f"[ERROR] {error_msg}")
             return {"success": False, "logs": logs, "error": error_msg}
         
-        # Extract WEBLOGIC_DOMAIN_HOME value using grep and sed
-        extract_domain_cmd = (
-            f"grep -i 'WEBLOGIC_DOMAIN_HOME' {installconfig_path} | "
-            "sed -n 's/.*<InteractionVariable[^>]*name=[\"'\\'']*WEBLOGIC_DOMAIN_HOME[\"'\\'']*[^>]*>\\([^<]*\\)<.*/\\1/ip' | "
-            "head -n 1"
+        # Execute as oracle user with streaming output
+        if username == "oracle":
+            exec_cmd = f"bash {script_path}"
+        else:
+            exec_cmd = f"su - oracle -c 'bash {script_path}'"
+        
+        captured_lines: list[str] = []
+        pending = ""
+        
+        async def deploy_output_collector(text: str) -> None:
+            nonlocal pending
+            if not text:
+                return
+            pending += text.replace("\r", "\n")
+            parts = pending.split("\n")
+            for line in parts[:-1]:
+                cleaned = line.strip()
+                if cleaned:
+                    captured_lines.append(cleaned)
+                    # Forward with STEP 2 prefix (matching steps 3/4 format)
+                    prefixed = f"[FICHOME] {cleaned}"
+                    logs.append(prefixed)
+                    await self._call_output_callback(on_output_callback, prefixed)
+            pending = parts[-1]
+        
+        deploy_result = await self.ssh_service.execute_interactive_command(
+            host, username, password, exec_cmd,
+            on_output_callback=deploy_output_collector,
+            timeout=1200,
         )
-        domain_result = await self.ssh_service.execute_command(host, username, password, extract_domain_cmd)
-        weblogic_domain_home = (domain_result.get("stdout") or "").strip()
+        tail = pending.strip()
+        if tail:
+            captured_lines.append(tail)
         
-        if not weblogic_domain_home:
-            error_msg = "WEBLOGIC_DOMAIN_HOME not found or empty in installconfig.xml"
-            logs.append(f"[ERROR] {error_msg}")
-            return {"success": False, "logs": logs, "error": error_msg}
+        # Cleanup script
+        await self.ssh_service.execute_command(host, username, password, f"rm -f {script_path}")
         
-        logs.append(f"[OK] STEP 2: Extracted WEBLOGIC_DOMAIN_HOME: {weblogic_domain_home}")
+        if not deploy_result.get("success"):
+            error_detail = "EAR creation & exploding script failed"
+            if captured_lines:
+                error_detail = f"Deployment script failed: {captured_lines[-1][:120]}"
+            logs.append(f"[ERROR] {error_detail}")
+            return {"success": False, "logs": logs, "error": error_detail}
         
-        # Function to execute complete deployment with retry logic
-        async def execute_deployment_with_retry() -> dict:
-            """Execute 15-step deployment workflow with single retry on failure."""
-            
-            # STEP 3: Navigate to FICHOME build directory
-            await self._call_subtask_callback(on_subtask_callback, "[FICHOME] STEP 3: Navigating to ficweb directory")
-            logs.append("[OK] STEP 3: Navigating to ficweb directory")
-            
-            # STEP 4: Backup existing EAR/WAR files in ficweb
-            await self._call_subtask_callback(on_subtask_callback, "[FICHOME] STEP 4: Backing up existing EAR/WAR")
-            
-            backup_cmd = (
-                f"cd {fichome_work_dir}; "
-                f"[ -f FICHOME.ear ] && mv FICHOME.ear FICHOME.ear_bkp || true; "
-                f"[ -f FICHOME.war ] && mv FICHOME.war FICHOME.war_bkp || true"
-            )
-            backup_result = await self.ssh_service.execute_command(host, username, password, backup_cmd, get_pty=True)
-            if backup_result.get("success"):
-                logs.append("[OK] STEP 4: Existing EAR/WAR files backed up in ficweb")
-            else:
-                logs.append(f"[WARN] STEP 4: Backup had issues: {backup_result.get('stderr')}")
-            
-            # STEP 5: Run ant.sh to rebuild application
-            await self._call_subtask_callback(on_subtask_callback, "[FICHOME] STEP 5: Building FICHOME with ant.sh")
-            
-            ant_inner_cmd = (
-                "source /home/oracle/.profile >/dev/null 2>&1; "
-                f"cd {fichome_work_dir}; "
-                "if [ -x ./ant.sh ]; then "
-                "./ant.sh; "
-                "else "
-                "echo 'ERROR: ant.sh not found or not executable'; "
-                "exit 1; "
-                "fi"
-            )
-            
-            if username == "oracle":
-                ant_cmd = f"bash -lc {shell_escape(ant_inner_cmd)}"
-            else:
-                ant_cmd = f"su - oracle -c {shell_escape('bash -lc ' + shell_escape(ant_inner_cmd))}"
-            
-            captured_lines: list[str] = []
-            pending = ""
-            
-            async def ant_output_collector(text: str) -> None:
-                nonlocal pending
-                if not text:
-                    return
-                pending += text.replace("\r", "\n")
-                parts = pending.split("\n")
-                for line in parts[:-1]:
-                    cleaned = line.strip()
-                    if cleaned:
-                        captured_lines.append(cleaned)
-                pending = parts[-1]
-                if on_output_callback:
-                    forwarded = on_output_callback(text)
-                    if inspect.isawaitable(forwarded):
-                        await forwarded
-            
-            ant_result = await self.ssh_service.execute_interactive_command(
-                host, username, password, ant_cmd,
-                on_output_callback=ant_output_collector,
-                timeout=1200,
-            )
-            tail = pending.strip()
-            if tail:
-                captured_lines.append(tail)
-            
-            if not ant_result.get("success"):
-                error_detail = "ant.sh build failed"
-                if captured_lines:
-                    error_detail = f"ant.sh build failed: {captured_lines[-1][:120]}"
-                logs.append(f"[ERROR] STEP 5: {error_detail}")
-                return {"success": False, "error": error_detail}
-            
-            logs.append("[OK] STEP 5: ant.sh completed successfully")
-            
-            # STEP 6: Set permissions on generated files
-            await self._call_subtask_callback(on_subtask_callback, "[FICHOME] STEP 6: Setting permissions on generated files")
-            
-            perms_cmd = (
-                f"cd {fichome_work_dir}; "
-                f"chmod -R 777 FICHOME.war FICHOME.ear 2>/dev/null || true"
-            )
-            perms_result = await self.ssh_service.execute_command(host, username, password, perms_cmd, get_pty=True)
-            logs.append("[OK] STEP 6: Permissions set on generated files (chmod 777)")
-            
-            # STEP 7: Navigate to WebLogic domain directory
-            await self._call_subtask_callback(on_subtask_callback, "[FICHOME] STEP 7: Navigating to WebLogic domain")
-            logs.append(f"[OK] STEP 7: Navigating to WebLogic domain: {weblogic_domain_home}")
-            
-            # STEP 8: Create applications/FICHOME.ear directory structure
-            await self._call_subtask_callback(on_subtask_callback, "[FICHOME] STEP 8: Creating applications directory")
-            
-            app_mkdir_cmd = (
-                f"mkdir -p {weblogic_domain_home}/applications/FICHOME.ear; "
-                f"chmod -R 777 {weblogic_domain_home}/applications"
-            )
-            app_mkdir_result = await self.ssh_service.execute_command(host, username, password, app_mkdir_cmd, get_pty=True)
-            if not app_mkdir_result.get("success"):
-                logs.append(f"[WARN] STEP 8: Could not create applications dir: {app_mkdir_result.get('stderr')}")
-            else:
-                logs.append("[OK] STEP 8: Applications directory structure created")
-            
-            # STEP 9: Copy EAR file to domain
-            await self._call_subtask_callback(on_subtask_callback, "[FICHOME] STEP 9: Copying EAR file to domain")
-            
-            copy_ear_cmd = f"cp {fichome_work_dir}/FICHOME.ear {weblogic_domain_home}/applications/FICHOME.ear"
-            copy_ear_result = await self.ssh_service.execute_command(host, username, password, copy_ear_cmd, get_pty=True)
-            if not copy_ear_result.get("success"):
-                error_detail = f"Failed to copy EAR file: {copy_ear_result.get('stderr')}"
-                logs.append(f"[ERROR] STEP 9: {error_detail}")
-                return {"success": False, "error": error_detail}
-            
-            logs.append("[OK] STEP 9: EAR file copied to domain")
-            
-            # STEP 10: Extract EAR file contents
-            await self._call_subtask_callback(on_subtask_callback, "[FICHOME] STEP 10: Extracting EAR file contents")
-            
-            extract_ear_cmd = (
-                f"cd {weblogic_domain_home}/applications/FICHOME.ear; "
-                f"jar -xvf FICHOME.ear"
-            )
-            extract_ear_result = await self.ssh_service.execute_command(
-                host, username, password, extract_ear_cmd, timeout=300, get_pty=True
-            )
-            if not extract_ear_result.get("success"):
-                error_detail = f"Failed to extract EAR: {extract_ear_result.get('stderr')}"
-                logs.append(f"[ERROR] STEP 10: {error_detail}")
-                return {"success": False, "error": error_detail}
-            
-            logs.append("[OK] STEP 10: EAR file extracted")
-            
-            # STEP 11: Remove existing EAR & WAR archives
-            await self._call_subtask_callback(on_subtask_callback, "[FICHOME] STEP 11: Removing archive files")
-            
-            rm_archives_cmd = (
-                f"cd {weblogic_domain_home}/applications/FICHOME.ear; "
-                f"rm -rf FICHOME.ear FICHOME.war"
-            )
-            rm_result = await self.ssh_service.execute_command(host, username, password, rm_archives_cmd, get_pty=True)
-            logs.append("[OK] STEP 11: Archive files removed")
-            
-            # STEP 12: Create FICHOME.war directory
-            await self._call_subtask_callback(on_subtask_callback, "[FICHOME] STEP 12: Creating WAR directory")
-            
-            mkdir_war_cmd = f"mkdir {weblogic_domain_home}/applications/FICHOME.ear/FICHOME.war"
-            mkdir_war_result = await self.ssh_service.execute_command(host, username, password, mkdir_war_cmd, get_pty=True)
-            logs.append("[OK] STEP 12: WAR directory created")
-            
-            # STEP 13: Copy new WAR file into EAR structure
-            await self._call_subtask_callback(on_subtask_callback, "[FICHOME] STEP 13: Copying WAR file")
-            
-            copy_war_cmd = f"cp {fichome_work_dir}/FICHOME.war {weblogic_domain_home}/applications/FICHOME.ear/FICHOME.war"
-            copy_war_result = await self.ssh_service.execute_command(host, username, password, copy_war_cmd, get_pty=True)
-            if not copy_war_result.get("success"):
-                error_detail = f"Failed to copy WAR file: {copy_war_result.get('stderr')}"
-                logs.append(f"[ERROR] STEP 13: {error_detail}")
-                return {"success": False, "error": error_detail}
-            
-            logs.append("[OK] STEP 13: WAR file copied into EAR structure")
-            
-            # STEP 14: Extract WAR file contents
-            await self._call_subtask_callback(on_subtask_callback, "[FICHOME] STEP 14: Extracting WAR file contents")
-            
-            extract_war_cmd = (
-                f"cd {weblogic_domain_home}/applications/FICHOME.ear/FICHOME.war; "
-                f"jar -xvf FICHOME.war"
-            )
-            extract_war_result = await self.ssh_service.execute_command(
-                host, username, password, extract_war_cmd, timeout=300, get_pty=True
-            )
-            if not extract_war_result.get("success"):
-                error_detail = f"Failed to extract WAR: {extract_war_result.get('stderr')}"
-                logs.append(f"[ERROR] STEP 14: {error_detail}")
-                return {"success": False, "error": error_detail}
-            
-            logs.append("[OK] STEP 14: WAR file extracted")
-            
-            # STEP 15: Set final permissions
-            await self._call_subtask_callback(on_subtask_callback, "[FICHOME] STEP 15: Setting final permissions")
-            
-            final_perms_cmd = (
-                f"cd {weblogic_domain_home}/applications; "
-                f"chmod -R 777 FICHOME.ear"
-            )
-            final_perms_result = await self.ssh_service.execute_command(host, username, password, final_perms_cmd, get_pty=True)
-            logs.append("[OK] STEP 15: Final permissions set (chmod 777)")
-            
-            return {"success": True}
+        logs.append("[OK] EAR creation & exploding completed successfully")
         
-        # Execute deployment with single retry
-        first_attempt = await execute_deployment_with_retry()
-        if not first_attempt.get("success"):
-            logs.append("[INFO] First deployment attempt failed, retrying once...")
-            second_attempt = await execute_deployment_with_retry()
-            if not second_attempt.get("success"):
-                return {
-                    "success": False,
-                    "logs": logs,
-                    "error": second_attempt.get("error") or "FICHOME deployment failed after retry",
-                }
-        
-        logs.append("[OK] FICHOME deployment completed: EAR/WAR extraction and deployment finished")
-        
-        # STEP 16: Run startofsaa.sh (BLOCKING - fail deployment if script fails)
+        # STEP 3: Run startofsaa.sh (BLOCKING)
         startofsaa_result = await self.run_startofsaa_script(
             host, username, password,
             on_output_callback=on_output_callback,
@@ -3834,7 +3768,7 @@ class InstallerService:
                 "error": startofsaa_result.get("error") or "startofsaa.sh execution failed",
             }
         
-        # STEP 17: Run checkofsaa.sh (BLOCKING - fail deployment if script fails)
+        # STEP 4: Run checkofsaa.sh (BLOCKING)
         checkofsaa_result = await self.run_checkofsaa_script(
             host, username, password,
             on_output_callback=on_output_callback,
@@ -3848,8 +3782,387 @@ class InstallerService:
                 "error": checkofsaa_result.get("error") or "checkofsaa.sh execution failed",
             }
         
-        logs.append("[OK] FICHOME deployment completed: All 17 steps successful")
+        # Deploy FICHOME.ear to WebLogic via WLST (optional)
+        if deploy_app_enabled and admin_url and weblogic_username and weblogic_password and deploy_app_path and deploy_app_target_server:
+            app_deploy_result = await self.deploy_weblogic_application(
+                host, username, password,
+                admin_url=admin_url,
+                weblogic_username=weblogic_username,
+                weblogic_password=weblogic_password,
+                wl_home=wl_home,
+                app_path=deploy_app_path,
+                target_server=deploy_app_target_server,
+                on_output_callback=on_output_callback,
+                on_subtask_callback=on_subtask_callback,
+            )
+            logs.extend(app_deploy_result.get("logs", []))
+            if not app_deploy_result.get("success"):
+                return {
+                    "success": False,
+                    "logs": logs,
+                    "error": app_deploy_result.get("error") or "WebLogic application deployment failed",
+                }
+        else:
+            logs.append("[INFO] Skipping WebLogic app deployment (not enabled or insufficient parameters)")
+
+        logs.append("[OK] Deployment completed: All steps successful")
         return {"success": True, "logs": logs}
+
+    # ============== WEBLOGIC APPLICATION DEPLOYMENT ==============
+
+    async def deploy_weblogic_application(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        admin_url: str,
+        weblogic_username: str,
+        weblogic_password: str,
+        app_path: str,
+        target_server: str,
+        wl_home: Optional[str] = None,
+        on_output_callback: Optional[Callable[[str], Any]] = None,
+        on_subtask_callback: Optional[Callable[[str], Any]] = None,
+    ) -> dict:
+        """
+        Deploy FICHOME.ear application to WebLogic server via WLST.
+        
+        Connects to WebLogic admin, undeploys existing app if present, then deploys new EAR.
+        """
+        logs: list[str] = []
+        app_name = "FICHOME"
+
+        await self._call_subtask_callback(on_subtask_callback, "[FICHOME] Deploying application to WebLogic")
+
+        # Auto-discover WLST using find command: find /u01 -name wlst.sh | grep -i wlserver
+        find_cmd = "find /u01 -name wlst.sh 2>/dev/null | grep -i wlserver | head -1"
+        find_result = await self.ssh_service.execute_command(host, username, password, find_cmd, timeout=30)
+        if not find_result.get("success"):
+            error_msg = f"Failed to find WLST: {find_result.get('stderr')}"
+            logs.append(f"[ERROR] {error_msg}")
+            return {"success": False, "logs": logs, "error": error_msg}
+        
+        wlst_path = find_result.get("stdout", "").strip()
+        if not wlst_path:
+            error_msg = "WLST not found in /u01 (find /u01 -name wlst.sh returned no results)"
+            logs.append(f"[ERROR] {error_msg}")
+            return {"success": False, "logs": logs, "error": error_msg}
+        
+        logs.append(f"[INFO] WLST auto-discovered at: {wlst_path}")
+
+        # Build WLST Python script
+        wlst_script = f"""# WebLogic WLST Application Deployment Script
+appName = '{app_name}'
+appPath = '{app_path}'
+targetServer = '{target_server}'
+
+print('Connecting to WebLogic at {admin_url}...')
+connect('{weblogic_username}', '{weblogic_password}', '{admin_url}')
+
+edit()
+startEdit()
+
+# Check if the application is already deployed
+apps = cmo.getAppDeployments()
+appExists = False
+
+for app in apps:
+    if app.getName() == appName:
+        appExists = True
+        print('Existing deployment found: ' + appName)
+        break
+
+# Stop and undeploy if the application exists
+if appExists:
+    try:
+        print('Stopping application: ' + appName)
+        stopApplication(appName)
+    except:
+        print('Application may already be stopped.')
+
+    print('Undeploying existing application: ' + appName)
+    undeploy(appName, targets=targetServer)
+
+# Deploy the new application
+print('Deploying application: ' + appName)
+deploy(
+    appName=appName,
+    path=appPath,
+    targets=targetServer
+)
+
+save()
+activate()
+
+print('Application ' + appName + ' deployed successfully to ' + targetServer)
+
+disconnect()
+exit()
+"""
+
+        # Write WLST script to remote, then execute
+        script_path = "/tmp/fichome_app_deploy.py"
+        wrapper_script = f"""#!/bin/bash
+set -e
+cat > {script_path} << 'WLSTEOF'
+{wlst_script}WLSTEOF
+
+WLST="{wlst_path}"
+echo "Executing WLST from: $WLST"
+"$WLST" {script_path}
+RET=$?
+rm -f {script_path}
+exit $RET
+"""
+
+        wrapper_path = "/tmp/fichome_app_deploy.sh"
+        write_cmd = f"cat > {wrapper_path} << 'EOFSCRIPT'\n{wrapper_script}EOFSCRIPT\nchmod 755 {wrapper_path}"
+        write_result = await self.ssh_service.execute_command(host, username, password, write_cmd, get_pty=True)
+        if not write_result.get("success"):
+            error_msg = f"Failed to write WLST deployment script: {write_result.get('stderr')}"
+            logs.append(f"[ERROR] {error_msg}")
+            return {"success": False, "logs": logs, "error": error_msg}
+
+        # Execute (as current SSH user, not oracle — WLST needs WebLogic env)
+        exec_cmd = f"bash {wrapper_path}"
+
+        captured_lines: list[str] = []
+        pending = ""
+
+        async def wlst_output_collector(text: str) -> None:
+            nonlocal pending
+            if not text:
+                return
+            pending += text.replace("\r", "\n")
+            parts = pending.split("\n")
+            for line in parts[:-1]:
+                cleaned = line.strip()
+                if cleaned:
+                    captured_lines.append(cleaned)
+                    prefixed = f"[FICHOME] {cleaned}"
+                    logs.append(prefixed)
+                    await self._call_output_callback(on_output_callback, prefixed)
+            pending = parts[-1]
+
+        deploy_result = await self.ssh_service.execute_interactive_command(
+            host, username, password, exec_cmd,
+            on_output_callback=wlst_output_collector,
+            timeout=1800,
+        )
+        tail = pending.strip()
+        if tail:
+            captured_lines.append(tail)
+
+        # Cleanup
+        await self.ssh_service.execute_command(host, username, password, f"rm -f {wrapper_path}")
+
+        if not deploy_result.get("success"):
+            error_detail = "WebLogic application deployment failed"
+            if captured_lines:
+                error_detail = f"WLST deployment failed: {captured_lines[-1][:120]}"
+            logs.append(f"[ERROR] {error_detail}")
+            return {"success": False, "logs": logs, "error": error_detail}
+
+        logs.append("[OK] Application deployed to WebLogic successfully")
+        return {"success": True, "logs": logs}
+
+    # ============== WEBLOGIC DATASOURCE CREATION ==============
+
+    async def create_weblogic_datasource(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        admin_url: str,
+        weblogic_username: str,
+        weblogic_password: str,
+        ds_name: str,
+        jndi_name: str,
+        db_url: str,
+        db_user: str,
+        db_password: str,
+        targets: list[str],
+        wl_home: Optional[str] = None,
+        on_output_callback: Optional[Callable[[str], Any]] = None,
+        on_subtask_callback: Optional[Callable[[str], Any]] = None,
+    ) -> dict:
+
+        logs: list[str] = []
+
+        await self._call_subtask_callback(
+            on_subtask_callback, f"[DATASOURCE] Creating datasource: {ds_name}"
+        )
+
+        targets_csv = ",".join(t.strip() for t in targets)
+
+        script_content = f"""#!/bin/bash
+set -e
+
+source /home/oracle/.profile >/dev/null 2>&1 || true
+
+WLST=$(find /u01 -name wlst.sh 2>/dev/null | grep -i wlserver | head -1)
+if [ -z "$WLST" ]; then
+    echo "ERROR: WLST not found via find /u01 -name wlst.sh | grep -i wlserver"
+    exit 1
+fi
+echo "Using WLST: $WLST"
+
+TMP_WLST="/tmp/create_ds_{ds_name}_$$.py"
+
+cat <<'WLSTEOF' > "$TMP_WLST"
+from java.lang import String
+import jarray
+from javax.management import ObjectName
+
+adminUrl  = '{admin_url}'
+username  = '{weblogic_username}'
+password  = '{weblogic_password}'
+
+dsName   = '{ds_name}'
+jndiName = '{jndi_name}'
+
+dbUrl      = '{db_url}'
+dbUser     = '{db_user}'
+dbPassword = '{db_password}'
+driver     = 'oracle.jdbc.OracleDriver'
+
+targets = '{targets_csv}'.split(',')
+
+print('Connecting to WebLogic...')
+connect(username, password, adminUrl)
+
+edit()
+startEdit()
+
+cd('/JDBCSystemResources')
+
+# Delete existing datasource if present (clean fix)
+if dsName in ls(returnMap='true'):
+    print('Deleting existing datasource: ' + dsName)
+    delete(dsName, 'JDBCSystemResource')
+    cd('/JDBCSystemResources')
+
+# Create datasource
+print('Creating datasource: ' + dsName)
+cd('/')
+cmo.createJDBCSystemResource(dsName)
+
+cd('/JDBCSystemResources/' + dsName + '/JDBCResource/' + dsName)
+
+# JNDI
+cd('JDBCDataSourceParams/' + dsName)
+set('JNDINames', jarray.array([String(jndiName)], String))
+
+# Driver params (FIXED PATH)
+cd('/JDBCSystemResources/' + dsName +
+   '/JDBCResource/' + dsName +
+   '/JDBCDriverParams/NO_NAME_0')
+
+set('Url', dbUrl)
+set('DriverName', driver)
+cmo.setPassword(dbPassword)
+
+# Username property (FIXED PATH)
+cd('/JDBCSystemResources/' + dsName +
+   '/JDBCResource/' + dsName +
+   '/JDBCDriverParams/NO_NAME_0/Properties/NO_NAME_0')
+
+try:
+    cmo.createProperty('user')
+except:
+    pass
+
+cd('Properties/user')
+set('Value', dbUser)
+
+# Pool params (FIXED PATH)
+cd('/JDBCSystemResources/' + dsName +
+   '/JDBCResource/' + dsName +
+   '/JDBCConnectionPoolParams/NO_NAME_0')
+
+set('InitialCapacity', 1)
+set('MaxCapacity', 10)
+set('TestTableName', 'SQL ISVALID')
+
+# Targeting
+cd('/JDBCSystemResources/' + dsName)
+
+targetList = []
+for t in targets:
+    t = t.strip()
+    print('Targeting datasource to: ' + t)
+    targetList.append(ObjectName('com.bea:Name=' + t + ',Type=Server'))
+
+set('Targets', jarray.array(targetList, ObjectName))
+
+save()
+activate()
+
+print('Datasource created successfully.')
+
+# Test datasource
+domainRuntime()
+for t in targets:
+    try:
+        print('Testing datasource on ' + t)
+        cd('/ServerRuntimes/' + t +
+           '/JDBCServiceRuntime/' + t +
+           '/JDBCDataSourceRuntimeMBeans/' + dsName)
+        print('Test result: ' + str(cmo.testPool()))
+    except:
+        print('Test failed on ' + t)
+
+disconnect()
+exit()
+WLSTEOF
+
+echo "Executing WLST..."
+"$WLST" "$TMP_WLST"
+
+rm -f "$TMP_WLST"
+echo "Datasource {ds_name} completed."
+"""
+
+        script_path = f"/tmp/create_ds_{ds_name}.sh"
+
+        write_cmd = f"""cat > {script_path} << 'EOF'
+{script_content}
+EOF
+chmod 755 {script_path}
+"""
+
+        write_result = await self.ssh_service.execute_command(
+            host, username, password, write_cmd, get_pty=True
+        )
+
+        if not write_result.get("success"):
+            return {"success": False, "logs": ["Script write failed"]}
+
+        exec_cmd = (
+            f"bash {script_path}"
+            if username == "oracle"
+            else f"su - oracle -c 'bash {script_path}'"
+        )
+
+        result = await self.ssh_service.execute_interactive_command(
+            host,
+            username,
+            password,
+            exec_cmd,
+            on_output_callback=on_output_callback,
+            timeout=600,
+        )
+
+        await self.ssh_service.execute_command(
+            host, username, password, f"rm -f {script_path}"
+        )
+
+        if not result.get("success"):
+            return {"success": False, "logs": ["Datasource creation failed"]}
+
+        return {"success": True, "logs": [f"Datasource {ds_name} created successfully"]}
+
+    # ============== CALLBACK HELPERS ==============
 
     async def _call_subtask_callback(
         self,
@@ -3863,4 +4176,18 @@ class InstallerService:
                 if inspect.isawaitable(result):
                     await result
             except Exception:
-                pass  # Silently ignore callback errors
+                pass
+
+    async def _call_output_callback(
+        self,
+        callback: Optional[Callable[[str], Any]],
+        message: str,
+    ) -> None:
+        """Helper to call output callback safely."""
+        if callback is not None:
+            try:
+                result = callback(message)
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                pass

@@ -1,10 +1,21 @@
 'use client'
 
+import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { BackgroundMatrix } from '@/components/BackgroundMatrix'
 import { InstallationForm } from '@/components/InstallationForm'
+import { DeploymentForm } from '@/components/DeploymentForm'
+
+const TABS = [
+  { id: 'installation', label: 'Installation' },
+  { id: 'deployment', label: 'Deployment' },
+] as const
+
+type TabId = (typeof TABS)[number]['id']
 
 export default function HomePage() {
+  const [activeTab, setActiveTab] = useState<TabId>('installation')
+
   return (
     <div className="relative min-h-screen bg-bg-primary">
       <BackgroundMatrix />
@@ -45,9 +56,27 @@ export default function HomePage() {
               </p>
             </motion.div>
 
-            {/* Installation Form */}
-            <div className="max-h-none lg:max-h-[62vh] overflow-visible lg:overflow-y-auto lg:pr-2 scrollbar-thin scrollbar-track-gray-900 scrollbar-thumb-gray-700">
-              <InstallationForm />
+            {/* Tab Selector */}
+            <div className="flex items-center justify-center gap-1 mb-6 p-1 rounded-lg bg-bg-primary/50 border border-border/40 max-w-xs mx-auto">
+              {TABS.map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`flex-1 px-4 py-1.5 rounded-md text-xs font-bold uppercase tracking-wider transition-all duration-200 ${
+                    activeTab === tab.id
+                      ? 'bg-white text-black shadow-sm'
+                      : 'text-text-muted hover:text-text-primary'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Tabbed Content */}
+            <div className="max-h-none lg:max-h-[58vh] overflow-visible lg:overflow-y-auto lg:pr-2 scrollbar-thin scrollbar-track-gray-900 scrollbar-thumb-gray-700">
+              {activeTab === 'installation' && <InstallationForm />}
+              {activeTab === 'deployment' && <DeploymentForm />}
             </div>
 
             {/* Footer */}

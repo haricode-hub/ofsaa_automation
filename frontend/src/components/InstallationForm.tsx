@@ -15,6 +15,8 @@ import {
 } from '@heroicons/react/24/outline'
 import { EcmPackPage } from '@/components/EcmPackPage'
 import { EcmFormData } from '@/components/EcmPackForm'
+import { SancPackPage } from '@/components/SancPackPage'
+import { SancFormData } from '@/components/SancPackForm'
 
 interface InstallationData {
   host: string
@@ -100,25 +102,6 @@ interface InstallationData {
   aai_sftp_user_id: string
   // SANC module flag
   install_sanc: boolean
-  // SANC schema inputs (OFS_SANC_SCHEMA_IN.xml)
-  sanc_schema_jdbc_host: string
-  sanc_schema_jdbc_port: string
-  sanc_schema_jdbc_service: string
-  sanc_schema_host: string
-  sanc_schema_setup_env: string
-  sanc_schema_apply_same_for_all: string
-  sanc_schema_default_password: string
-  sanc_schema_datafile_dir: string
-  sanc_schema_tablespace_autoextend: string
-  sanc_schema_external_directory_value: string
-  sanc_schema_config_schema_name: string
-  sanc_schema_atomic_schema_name: string
-  // SANC CS/TFLT SWIFTINFO
-  sanc_cs_swiftinfo: string
-  sanc_tflt_swiftinfo: string
-  // SANC OFSAAI_InstallConfig.xml inputs (auto-populated from BD)
-  sanc_aai_weblogic_domain_home: string
-  sanc_aai_webapp_context_path: string
   
   installation_mode: 'fresh' | 'addon'
   install_bdpack: boolean
@@ -249,24 +232,8 @@ export function InstallationForm() {
     aai_weblogic_domain_home: '/u01/Oracle/Middleware/Oracle_Home/user_projects/domains/DEMO_OFSAA_DOMAIN',
     aai_ftspshare_path: '/u01/OFSAA/FTPSHARE',
     aai_sftp_user_id: 'oracle',
-    // SANC defaults (mirror BD schema semantics)
+    // SANC defaults
     install_sanc: false,
-    sanc_schema_jdbc_host: '',
-    sanc_schema_jdbc_port: '1521',
-    sanc_schema_jdbc_service: '',
-    sanc_schema_host: '',
-    sanc_schema_setup_env: 'DEV',
-    sanc_schema_apply_same_for_all: 'Y',
-    sanc_schema_default_password: '',
-    sanc_schema_datafile_dir: '/u01/app/oracle/oradata/OFSAA/OFSAADB',
-    sanc_schema_tablespace_autoextend: 'OFF',
-    sanc_schema_external_directory_value: '/u01/OFSAA/FICHOME/bdf/inbox',
-    sanc_schema_config_schema_name: 'OFSCONFIG',
-    sanc_schema_atomic_schema_name: 'OFSATOMIC',
-    sanc_cs_swiftinfo: '',
-    sanc_tflt_swiftinfo: '',
-    sanc_aai_weblogic_domain_home: '',
-    sanc_aai_webapp_context_path: '',
     installation_mode: 'fresh',
     install_bdpack: false,
     install_ecm: false,
@@ -281,6 +248,8 @@ export function InstallationForm() {
   const [ecmConfig, setEcmConfig] = useState<EcmFormData | null>(null)
   const [isEcmValid, setIsEcmValid] = useState(true)
   const [ecmSubmitError, setEcmSubmitError] = useState('')
+  const [sancConfig, setSancConfig] = useState<SancFormData | null>(null)
+  const [isSancValid, setIsSancValid] = useState(true)
 
   useEffect(() => {
     try {
@@ -289,12 +258,16 @@ export function InstallationForm() {
       const parsed = JSON.parse(raw) as {
         formData?: Partial<InstallationData>
         ecmConfig?: EcmFormData | null
+        sancConfig?: SancFormData | null
       }
       if (parsed.formData) {
         setFormData(prev => ({ ...prev, ...parsed.formData }))
       }
       if (parsed.ecmConfig !== undefined) {
         setEcmConfig(parsed.ecmConfig)
+      }
+      if (parsed.sancConfig !== undefined) {
+        setSancConfig(parsed.sancConfig)
       }
     } catch {
       // Ignore local storage parse errors
@@ -308,50 +281,22 @@ export function InstallationForm() {
         JSON.stringify({
           formData,
           ecmConfig,
+          sancConfig,
         })
       )
     } catch {
       // Ignore local storage write errors
     }
-  }, [formData, ecmConfig])
-
-  // Auto-populate SANC fields from BD Pack
-  useEffect(() => {
-    setFormData(prev => {
-      const next = { ...prev }
-      // WEBLOGIC_DOMAIN_HOME
-      if (formData.aai_weblogic_domain_home) {
-        next.sanc_aai_weblogic_domain_home = formData.aai_weblogic_domain_home
-      }
-      // WEBAPP_CONTEXT_PATH
-      if (formData.aai_webapp_context_path) {
-        next.sanc_aai_webapp_context_path = formData.aai_webapp_context_path
-      }
-      // Datafile Base Dir
-      if (formData.schema_datafile_dir) {
-        next.sanc_schema_datafile_dir = formData.schema_datafile_dir
-      }
-      // Config Schema Name
-      if (formData.schema_config_schema_name) {
-        next.sanc_schema_config_schema_name = formData.schema_config_schema_name
-      }
-      // Atomic Schema Name
-      if (formData.schema_atomic_schema_name) {
-        next.sanc_schema_atomic_schema_name = formData.schema_atomic_schema_name
-      }
-      return next
-    })
-  }, [
-    formData.aai_weblogic_domain_home,
-    formData.aai_webapp_context_path,
-    formData.schema_datafile_dir,
-    formData.schema_config_schema_name,
-    formData.schema_atomic_schema_name
-  ])
+  }, [formData, ecmConfig, sancConfig])
 
   const handleEcmChange = useCallback((data: EcmFormData, valid: boolean) => {
     setEcmConfig(data)
     setIsEcmValid(valid)
+  }, [])
+
+  const handleSancChange = useCallback((data: SancFormData, valid: boolean) => {
+    setSancConfig(data)
+    setIsSancValid(valid)
   }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -460,21 +405,6 @@ export function InstallationForm() {
           aai_weblogic_domain_home: formData.aai_weblogic_domain_home,
           aai_ftspshare_path: formData.aai_ftspshare_path,
           aai_sftp_user_id: formData.aai_sftp_user_id,
-          // SANC schema + properties
-          sanc_schema_jdbc_host: formData.sanc_schema_jdbc_host,
-          sanc_schema_jdbc_port: formData.sanc_schema_jdbc_port ? Number(formData.sanc_schema_jdbc_port) : null,
-          sanc_schema_jdbc_service: formData.sanc_schema_jdbc_service,
-          sanc_schema_host: (formData.sanc_schema_host || formData.host),
-          sanc_schema_setup_env: formData.sanc_schema_setup_env,
-          sanc_schema_apply_same_for_all: formData.sanc_schema_apply_same_for_all,
-          sanc_schema_default_password: formData.sanc_schema_default_password,
-          sanc_schema_datafile_dir: formData.sanc_schema_datafile_dir,
-          sanc_schema_tablespace_autoextend: formData.sanc_schema_tablespace_autoextend,
-          sanc_schema_external_directory_value: formData.sanc_schema_external_directory_value,
-          sanc_schema_config_schema_name: formData.sanc_schema_config_schema_name,
-          sanc_schema_atomic_schema_name: formData.sanc_schema_atomic_schema_name,
-          sanc_cs_swiftinfo: formData.sanc_cs_swiftinfo,
-          sanc_tflt_swiftinfo: formData.sanc_tflt_swiftinfo,
           installation_mode: formData.installation_mode,
           install_bdpack: formData.install_bdpack,
           install_ecm: formData.install_ecm,
@@ -551,6 +481,48 @@ export function InstallationForm() {
             ecm_aai_weblogic_domain_home: ecmConfig.aai_weblogic_domain_home,
             ecm_aai_ftspshare_path: ecmConfig.aai_ftspshare_path,
             ecm_aai_sftp_user_id: ecmConfig.aai_sftp_user_id
+          } : {}),
+          // Flatten SANC config fields for backend
+          ...(formData.install_sanc && sancConfig ? {
+            sanc_schema_jdbc_host: sancConfig.jdbc_host,
+            sanc_schema_jdbc_port: sancConfig.jdbc_port ? Number(sancConfig.jdbc_port) : 1521,
+            sanc_schema_jdbc_service: sancConfig.jdbc_service,
+            sanc_schema_host: sancConfig.hostname || formData.host,
+            sanc_schema_setup_env: sancConfig.setupInfoName,
+            sanc_schema_apply_same_for_all: sancConfig.applySameForAll,
+            sanc_schema_default_password: sancConfig.schemaPassword,
+            sanc_schema_datafile_dir: sancConfig.datafileDir,
+            sanc_schema_tablespace_autoextend: sancConfig.tablespaceAutoextend,
+            sanc_schema_external_directory_value: sancConfig.externalDirectoryValue,
+            sanc_schema_config_schema_name: sancConfig.configSchemaName,
+            sanc_schema_atomic_schema_name: sancConfig.atomicSchemaName,
+            sanc_cs_swiftinfo: sancConfig.cs_swiftinfo,
+            sanc_tflt_swiftinfo: sancConfig.tflt_swiftinfo,
+            sanc_aai_webappservertype: sancConfig.aai_webappservertype,
+            sanc_aai_dbserver_ip: sancConfig.aai_dbserver_ip,
+            sanc_aai_oracle_service_name: sancConfig.aai_oracle_service_name,
+            sanc_aai_abs_driver_path: sancConfig.aai_abs_driver_path,
+            sanc_aai_olap_server_implementation: sancConfig.aai_olap_server_implementation,
+            sanc_aai_sftp_enable: sancConfig.aai_sftp_enable,
+            sanc_aai_file_transfer_port: sancConfig.aai_file_transfer_port,
+            sanc_aai_javaport: sancConfig.aai_javaport,
+            sanc_aai_nativeport: sancConfig.aai_nativeport,
+            sanc_aai_agentport: sancConfig.aai_agentport,
+            sanc_aai_iccport: sancConfig.aai_iccport,
+            sanc_aai_iccnativeport: sancConfig.aai_iccnativeport,
+            sanc_aai_olapport: sancConfig.aai_olapport,
+            sanc_aai_msgport: sancConfig.aai_msgport,
+            sanc_aai_routerport: sancConfig.aai_routerport,
+            sanc_aai_amport: sancConfig.aai_amport,
+            sanc_aai_https_enable: sancConfig.aai_https_enable,
+            sanc_aai_web_server_ip: sancConfig.aai_web_server_ip,
+            sanc_aai_web_server_port: sancConfig.aai_web_server_port,
+            sanc_aai_context_name: sancConfig.aai_context_name,
+            sanc_aai_webapp_context_path: sancConfig.aai_webapp_context_path,
+            sanc_aai_web_local_path: sancConfig.aai_web_local_path,
+            sanc_aai_weblogic_domain_home: sancConfig.aai_weblogic_domain_home,
+            sanc_aai_ftspshare_path: sancConfig.aai_ftspshare_path,
+            sanc_aai_sftp_user_id: sancConfig.aai_sftp_user_id
           } : {})
         })
       })
@@ -584,7 +556,7 @@ export function InstallationForm() {
       const updated = { ...prev, [field]: value }
 
       // ── Group 1: DB IP  (bidirectional: any DB-IP field fills the rest) ──
-      const dbIpFields: Array<keyof InstallationData> = ['aai_dbserver_ip', 'schema_jdbc_host', 'db_ssh_host', 'sanc_schema_jdbc_host']
+      const dbIpFields: Array<keyof InstallationData> = ['aai_dbserver_ip', 'schema_jdbc_host', 'db_ssh_host']
       if (dbIpFields.includes(field) && value) {
         for (const f of dbIpFields) {
           if (f !== field) updated[f] = value as never
@@ -592,7 +564,7 @@ export function InstallationForm() {
       }
 
       // ── Group 2: Oracle Service  (bidirectional) ──
-      const serviceFields: Array<keyof InstallationData> = ['aai_oracle_service_name', 'schema_jdbc_service', 'sanc_schema_jdbc_service']
+      const serviceFields: Array<keyof InstallationData> = ['aai_oracle_service_name', 'schema_jdbc_service']
       if (serviceFields.includes(field) && value) {
         for (const f of serviceFields) {
           if (f !== field) updated[f] = value as never
@@ -600,7 +572,7 @@ export function InstallationForm() {
       }
 
       // ── Group 3: Target / App Host  (bidirectional) ──
-      const hostFields: Array<keyof InstallationData> = ['host', 'schema_host', 'prop_smtp_host', 'aai_web_server_ip', 'sanc_schema_host']
+      const hostFields: Array<keyof InstallationData> = ['host', 'schema_host', 'prop_smtp_host', 'aai_web_server_ip']
       if (hostFields.includes(field) && value) {
         for (const f of hostFields) {
           if (f !== field) updated[f] = value as never
@@ -1631,353 +1603,43 @@ export function InstallationForm() {
         )}
         {ecmSubmitError && <p className="text-xs text-error">{ecmSubmitError}</p>}
 
-        {/* SANC Pack Configuration (match ECM style) */}
+        {/* SANC Pack Configuration */}
         {formData.install_sanc && (
-        <motion.div
-          className="rounded-xl border border-border bg-bg-secondary/40 p-4 lg:p-5"
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.58 }}
-        >
-          <div className="text-sm font-bold text-text-primary uppercase tracking-wider">SANC PACK CONFIGURATION</div>
-          <div className="text-xs text-text-muted mb-3">
-            Database & Host, Schema & Password, Tablespaces, CS/TFLT SWIFTINFO review.
-          </div>
-          <details open className="group">
-            <summary className="list-none cursor-pointer select-none flex items-center justify-between gap-3">
-              <div>
-                <div className="text-sm font-bold text-text-primary uppercase tracking-wider">
-                  SANC Schema & SWIFTINFO
-                </div>
-                <div className="text-xs text-text-muted mt-1">
-                  OFS_SANC_SCHEMA_IN.xml and CS/TFLT SWIFTINFO properties.
-                </div>
-              </div>
-              <div className="text-xs font-mono text-text-muted group-open:hidden">OPEN</div>
-              <div className="text-xs font-mono text-text-muted hidden group-open:block">CLOSE</div>
-            </summary>
-
-            <div className="mt-5 space-y-4">
-              <div className="space-y-2">
-                <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                  JDBC Host (DB)
-                </label>
-                <input
-                  type="text"
-                  value={formData.sanc_schema_jdbc_host}
-                  onChange={handleInputChange('sanc_schema_jdbc_host')}
-                  placeholder="192.168.3.42"
-                  className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    JDBC Port
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.sanc_schema_jdbc_port}
-                    onChange={handleInputChange('sanc_schema_jdbc_port')}
-                    placeholder="1521"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    JDBC Service Name
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.sanc_schema_jdbc_service}
-                    onChange={handleInputChange('sanc_schema_jdbc_service')}
-                    placeholder="FLEXPDB1"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                  Application IP (HOST Tag Value)
-                </label>
-                <input
-                  type="text"
-                  value={formData.sanc_schema_host || formData.host}
-                  onChange={handleInputChange('sanc_schema_host')}
-                  placeholder="192.168.3.41"
-                  className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    SETUPINFO Name
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.sanc_schema_setup_env}
-                    onChange={handleInputChange('sanc_schema_setup_env')}
-                    placeholder="DEV"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    ApplySameForAll (Y/N)
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.sanc_schema_apply_same_for_all}
-                    onChange={handleInputChange('sanc_schema_apply_same_for_all')}
-                    placeholder="Y"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                  Default Schema Password
-                </label>
-                <input
-                  type="password"
-                  value={formData.sanc_schema_default_password}
-                  onChange={handleInputChange('sanc_schema_default_password')}
-                  placeholder="Password1"
-                  className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    DATAFILE Base Dir
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.sanc_schema_datafile_dir}
-                    onChange={handleInputChange('sanc_schema_datafile_dir')}
-                    placeholder="/u01/app/oracle/oradata/OFSAA/OFSAADB"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    AUTOEXTEND (ON/OFF)
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.sanc_schema_tablespace_autoextend}
-                    onChange={handleInputChange('sanc_schema_tablespace_autoextend')}
-                    placeholder="OFF"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                  External Directory Value
-                </label>
-                <input
-                  type="text"
-                  value={formData.sanc_schema_external_directory_value}
-                  onChange={handleInputChange('sanc_schema_external_directory_value')}
-                  placeholder="/u01/OFSAA/FICHOME/bdf/inbox"
-                  className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    CONFIG Schema Name
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.sanc_schema_config_schema_name}
-                    onChange={handleInputChange('sanc_schema_config_schema_name')}
-                    placeholder="OFSCONFIG"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    ATOMIC Schema Name
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.sanc_schema_atomic_schema_name}
-                    onChange={handleInputChange('sanc_schema_atomic_schema_name')}
-                    placeholder="OFSATOMIC"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  />
-                </div>
-              </div>
-
-              <div className="border-t border-border pt-4 space-y-4">
-                <div className="text-xs font-bold text-text-primary uppercase tracking-wider">SANC SWIFTINFO (default.properties_CS / _TFLT)</div>
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">CS SWIFTINFO</label>
-                    <input
-                      type="text"
-                      value={formData.sanc_cs_swiftinfo}
-                      onChange={handleInputChange('sanc_cs_swiftinfo')}
-                      placeholder="SWIFT_CS_INFO"
-                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">TFLT SWIFTINFO</label>
-                    <input
-                      type="text"
-                      value={formData.sanc_tflt_swiftinfo}
-                      onChange={handleInputChange('sanc_tflt_swiftinfo')}
-                      placeholder="SWIFT_TFLT_INFO"
-                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-          </details>
-        </motion.div>
-        )}
-
-        {/* OFSAAI Install Config Section - SANC only (BD Pack groups its own) */}
-        {!formData.install_bdpack && formData.install_sanc && (
-        <motion.div
-          className="rounded-xl border border-border bg-bg-secondary/40 p-4 lg:p-5"
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.6 }}
-        >
-          <details className="group">
-            <summary className="list-none cursor-pointer select-none flex items-center justify-between gap-3">
-              <div>
-                <div className="text-sm font-bold text-text-primary uppercase tracking-wider">
-                  OFSAAI Install (OFSAAI_InstallConfig.xml)
-                </div>
-                <div className="text-xs text-text-muted mt-1">
-                  Web server, DB, SFTP and port configuration.
-                </div>
-              </div>
-              <div className="text-xs font-mono text-text-muted group-open:hidden">OPEN</div>
-              <div className="text-xs font-mono text-text-muted hidden group-open:block">CLOSE</div>
-            </summary>
-
-            <div className="mt-5 space-y-5">
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">WEBAPPSERVERTYPE</label>
-                  <input type="text" value={formData.aai_webappservertype} onChange={handleInputChange('aai_webappservertype')} placeholder="3" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">DBSERVER_IP</label>
-                  <input type="text" value={formData.aai_dbserver_ip} onChange={handleInputChange('aai_dbserver_ip')} placeholder="192.168.3.42" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">ORACLE SERVICE</label>
-                  <input type="text" value={formData.aai_oracle_service_name} onChange={handleInputChange('aai_oracle_service_name')} placeholder="OFSAAPDB" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">ABS_DRIVER_PATH</label>
-                  <input type="text" value={formData.aai_abs_driver_path} onChange={handleInputChange('aai_abs_driver_path')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">WEB_SERVER_IP</label>
-                  <input type="text" value={formData.aai_web_server_ip} onChange={handleInputChange('aai_web_server_ip')} placeholder="192.168.3.41" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">HTTPS_ENABLE</label>
-                  <input type="text" value={formData.aai_https_enable} onChange={handleInputChange('aai_https_enable')} placeholder="1" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">WEB_SERVER_PORT</label>
-                  <input type="text" value={formData.aai_web_server_port} onChange={handleInputChange('aai_web_server_port')} placeholder="7002" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">CONTEXT_NAME</label>
-                  <input type="text" value={formData.aai_context_name} onChange={handleInputChange('aai_context_name')} placeholder="FICHOME" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">OLAP_IMPL</label>
-                  <input type="text" value={formData.aai_olap_server_implementation} onChange={handleInputChange('aai_olap_server_implementation')} placeholder="0" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-xs font-bold text-text-primary uppercase tracking-wider">WEBAPP_CONTEXT_PATH</label>
-                <input type="text" value={formData.aai_webapp_context_path} onChange={handleInputChange('aai_webapp_context_path')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">WEB_LOCAL_PATH</label>
-                  <input type="text" value={formData.aai_web_local_path} onChange={handleInputChange('aai_web_local_path')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">WEBLOGIC_DOMAIN_HOME</label>
-                  <input type="text" value={formData.aai_weblogic_domain_home} onChange={handleInputChange('aai_weblogic_domain_home')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-                {[
-                  ['JAVAPORT', 'aai_javaport'],
-                  ['NATIVEPORT', 'aai_nativeport'],
-                  ['AGENTPORT', 'aai_agentport'],
-                  ['ICCPORT', 'aai_iccport'],
-                  ['ICCNATIVE', 'aai_iccnativeport'],
-                  ['OLAPPORT', 'aai_olapport'],
-                  ['MSGPORT', 'aai_msgport'],
-                  ['ROUTERPORT', 'aai_routerport'],
-                  ['AMPORT', 'aai_amport']
-                ].map(([label, field]) => (
-                  <div key={label} className="space-y-2">
-                    <label className="text-[10px] font-bold text-text-primary uppercase tracking-wider">{label}</label>
-                    <input
-                      type="text"
-                      value={(formData as any)[field]}
-                      onChange={handleInputChange(field as any)}
-                      className="w-full bg-bg-secondary border border-border rounded-lg px-3 py-2 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                    />
-                  </div>
-                ))}
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">SFTP_ENABLE</label>
-                  <input type="text" value={formData.aai_sftp_enable} onChange={handleInputChange('aai_sftp_enable')} placeholder="1" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">FILE_TRANSFER_PORT</label>
-                  <input type="text" value={formData.aai_file_transfer_port} onChange={handleInputChange('aai_file_transfer_port')} placeholder="22" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">OFSAAI_SFTP_USER_ID</label>
-                  <input type="text" value={formData.aai_sftp_user_id} onChange={handleInputChange('aai_sftp_user_id')} placeholder="oracle" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-xs font-bold text-text-primary uppercase tracking-wider">OFSAAI_FTPSHARE_PATH</label>
-                <input type="text" value={formData.aai_ftspshare_path} onChange={handleInputChange('aai_ftspshare_path')} className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
-              </div>
-            </div>
-          </details>
-        </motion.div>
+        <SancPackPage
+          enabled={formData.install_sanc}
+          host={formData.host}
+          configSchemaName={formData.schema_config_schema_name}
+          atomicSchemaName={formData.schema_atomic_schema_name}
+          schemaDatafileDir={formData.schema_datafile_dir}
+          aaiConfig={{
+            aai_webappservertype: formData.aai_webappservertype,
+            aai_dbserver_ip: formData.aai_dbserver_ip,
+            aai_oracle_service_name: formData.aai_oracle_service_name,
+            aai_abs_driver_path: formData.aai_abs_driver_path,
+            aai_olap_server_implementation: formData.aai_olap_server_implementation,
+            aai_sftp_enable: formData.aai_sftp_enable,
+            aai_file_transfer_port: formData.aai_file_transfer_port,
+            aai_javaport: formData.aai_javaport,
+            aai_nativeport: formData.aai_nativeport,
+            aai_agentport: formData.aai_agentport,
+            aai_iccport: formData.aai_iccport,
+            aai_iccnativeport: formData.aai_iccnativeport,
+            aai_olapport: formData.aai_olapport,
+            aai_msgport: formData.aai_msgport,
+            aai_routerport: formData.aai_routerport,
+            aai_amport: formData.aai_amport,
+            aai_https_enable: formData.aai_https_enable,
+            aai_web_server_ip: formData.aai_web_server_ip,
+            aai_web_server_port: formData.aai_web_server_port,
+            aai_context_name: formData.aai_context_name,
+            aai_webapp_context_path: formData.aai_webapp_context_path,
+            aai_web_local_path: formData.aai_web_local_path,
+            aai_weblogic_domain_home: formData.aai_weblogic_domain_home,
+            aai_ftspshare_path: formData.aai_ftspshare_path,
+            aai_sftp_user_id: formData.aai_sftp_user_id
+          }}
+          onChange={handleSancChange}
+        />
         )}
 
         {/* Submit Button */}

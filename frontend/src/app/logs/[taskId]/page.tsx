@@ -11,7 +11,7 @@ type StatusPayload = {
   status: StatusType
   step?: string
   progress?: number
-  module?: 'BD_PACK' | 'ECM_PACK' | 'SANC_PACK' | 'FICHOME_DEPLOYMENT'
+  module?: 'BD_PACK' | 'ECM_PACK' | 'SANC_PACK' | 'FICHOME_DEPLOYMENT' | 'EAR_CREATION' | 'DATASOURCE_CREATION'
 }
 
 const BD_PACK_STEPS = [
@@ -56,6 +56,22 @@ const FICHOME_DEPLOYMENT_STEPS = [
   'Running health check validation'
 ]
 
+const EAR_CREATION_STEPS = [
+  'Initializing EAR creation & exploding',
+  'Granting database privileges',
+  'Running EAR creation & exploding script',
+  'Running startofsaa.sh',
+  'Running checkofsaa.sh',
+  'Deploying application to WebLogic',
+  'EAR creation & exploding completed'
+  // Dynamic datasource steps (e.g. "Creating ANALYST") are appended at runtime
+]
+
+const DATASOURCE_CREATION_STEPS = [
+  'Initializing datasource creation'
+  // Dynamic steps like "Creating ANALYST" are added at runtime
+]
+
 export default function LogsPage() {
   const params = useParams()
   const router = useRouter()
@@ -70,7 +86,9 @@ export default function LogsPage() {
   const [outputLines, setOutputLines] = useState<string[]>([])
   const [autoFollowOutput, setAutoFollowOutput] = useState(true)
   const [redirectCountdown, setRedirectCountdown] = useState<number>(redirectDelaySec)
-  const [currentModule, setCurrentModule] = useState<'BD_PACK' | 'ECM_PACK' | 'SANC_PACK' | 'FICHOME_DEPLOYMENT'>('BD_PACK')
+  const [currentModule, setCurrentModule] = useState<'BD_PACK' | 'ECM_PACK' | 'SANC_PACK' | 'FICHOME_DEPLOYMENT' | 'EAR_CREATION' | 'DATASOURCE_CREATION'>('BD_PACK')
+  const [dynamicDsSteps, setDynamicDsSteps] = useState<string[]>([...DATASOURCE_CREATION_STEPS])
+  const [dynamicEarSteps, setDynamicEarSteps] = useState<string[]>([...EAR_CREATION_STEPS])
   const socketRef = useRef<WebSocket | null>(null)
   const outputEndRef = useRef<HTMLDivElement>(null)
   const outputContainerRef = useRef<HTMLDivElement>(null)
@@ -80,13 +98,17 @@ export default function LogsPage() {
     if (currentModule === 'ECM_PACK') return ECM_PACK_STEPS
     if (currentModule === 'SANC_PACK') return SANC_PACK_STEPS
     if (currentModule === 'FICHOME_DEPLOYMENT') return FICHOME_DEPLOYMENT_STEPS
+    if (currentModule === 'EAR_CREATION') return dynamicEarSteps
+    if (currentModule === 'DATASOURCE_CREATION') return dynamicDsSteps
     return BD_PACK_STEPS
-  }, [currentModule])
+  }, [currentModule, dynamicDsSteps, dynamicEarSteps])
 
   const moduleLabel = useMemo(() => {
     if (currentModule === 'ECM_PACK') return 'ECM Pack'
     if (currentModule === 'SANC_PACK') return 'SANC Pack'
     if (currentModule === 'FICHOME_DEPLOYMENT') return 'FICHOME Deployment'
+    if (currentModule === 'EAR_CREATION') return 'Deployment'
+    if (currentModule === 'DATASOURCE_CREATION') return 'Datasource Creation'
     return 'BD Pack'
   }, [currentModule])
 
@@ -152,6 +174,8 @@ export default function LogsPage() {
               setCurrentModule('FICHOME_DEPLOYMENT')
             } else if (FICHOME_DEPLOYMENT_STEPS.some(s => s === data.step)) {
               setCurrentModule('FICHOME_DEPLOYMENT')
+            } else if (EAR_CREATION_STEPS.some(s => s === data.step)) {
+              setCurrentModule('EAR_CREATION')
             } else if (data.step.toLowerCase().includes('sanc')) {
               setCurrentModule('SANC_PACK')
             } else if (SANC_PACK_STEPS.some(s => s === data.step)) {
@@ -162,6 +186,31 @@ export default function LogsPage() {
               setCurrentModule('ECM_PACK')
             } else if (BD_PACK_STEPS.some(s => s === data.step)) {
               setCurrentModule('BD_PACK')
+            }
+          }
+          // For datasource creation, dynamically add step names (e.g. "Creating ANALYST")
+          if (data?.module === 'DATASOURCE_CREATION' && data?.step) {
+            setDynamicDsSteps(prev => {
+              if (prev.includes(data.step!)) return prev
+              return [...prev, data.step!]
+            })
+          }
+          // For EAR_CREATION module, dynamically add datasource steps (e.g. "Creating ANALYST")
+          if (data?.module === 'EAR_CREATION' && data?.step) {
+            const step = data.step
+            // Add datasource steps that aren't in the base EAR list
+            if (step.startsWith('Creating ') || step === 'Initializing datasource creation' || step === 'Deployment completed' || step.startsWith('Completed with')) {
+              setDynamicEarSteps(prev => {
+                if (prev.includes(step)) return prev
+                // Insert before the last "completed" step, or append
+                const completedIdx = prev.indexOf('EAR creation & exploding completed')
+                if (completedIdx >= 0) {
+                  const updated = [...prev]
+                  updated.splice(completedIdx + 1, 0, step)
+                  return updated
+                }
+                return [...prev, step]
+              })
             }
           }
           if (typeof data?.progress === 'number') setProgress(data.progress)
@@ -183,8 +232,14 @@ export default function LogsPage() {
   }, [taskId])
 
   useEffect(() => {
-    if (autoFollowOutput) {
-      outputEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    // Only auto-scroll if user is at the bottom (autoFollowOutput is true)
+    if (autoFollowOutput && outputContainerRef.current) {
+      // Defer scroll until DOM is updated
+      requestAnimationFrame(() => {
+        if (outputContainerRef.current) {
+          outputContainerRef.current.scrollTop = outputContainerRef.current.scrollHeight
+        }
+      })
     }
   }, [outputLines, autoFollowOutput])
 
@@ -206,7 +261,7 @@ export default function LogsPage() {
   const handleOutputScroll = () => {
     const el = outputContainerRef.current
     if (!el) return
-    const threshold = 24
+    const threshold = 80
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= threshold
     setAutoFollowOutput(atBottom)
   }

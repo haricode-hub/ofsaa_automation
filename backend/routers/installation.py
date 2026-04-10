@@ -14,6 +14,8 @@ from schemas.installation import (
     InstallationStatus,
     FichomeDeploymentRequest,
     FichomeDeploymentResponse,
+    DatasourceCreationRequest,
+    DatasourceCreationResponse,
 )
 from services.installation_service import InstallationService
 from services.ssh_service import SSHService
@@ -252,7 +254,7 @@ async def _restore_bd_on_ecm_failure(
     await trace("BD state restore process completed")
 
 
-# ============== FICHOME DEPLOYMENT ==============
+# ============== EAR CREATION & EXPLODING ==============
 
 fichome_deployment_tasks: dict[str, dict] = {}
 
@@ -260,12 +262,13 @@ fichome_deployment_tasks: dict[str, dict] = {}
 @router.post("/deploy-fichome", response_model=FichomeDeploymentResponse)
 async def deploy_fichome(request: FichomeDeploymentRequest):
     """
-    Start FICHOME deployment workflow (17-step process).
+    Start EAR Creation & Exploding workflow.
     
-    Uses unified logging system (installation_tasks + log_persistence) for consistency.
-    
-    Steps 1-15: FICHOME EAR/WAR deployment
-    Steps 16-17: Post-deployment scripts (startofsaa.sh, checkofsaa.sh)
+    Steps:
+    1. Grant database privileges (ATOMIC + CONFIG schema users)
+    2. Run EAR creation & exploding script (backup, ant.sh build, exploded EAR/WAR)
+    3. Run startofsaa.sh
+    4. Run checkofsaa.sh
     
     Returns task_id for polling status and WebSocket connection.
     """
@@ -283,17 +286,20 @@ async def deploy_fichome(request: FichomeDeploymentRequest):
         if not request.db_jdbc_service:
             raise HTTPException(400, "db_jdbc_service is required")
         
+        if not request.weblogic_domain_home:
+            raise HTTPException(400, "weblogic_domain_home is required")
+        
         # Create task (unified with BD/ECM/SANC)
         task_id = str(uuid.uuid4())
         
         installation_tasks[task_id] = InstallationStatus(
             task_id=task_id,
             status="started",
-            current_step="Initializing FICHOME deployment",
-            current_module="FICHOME_DEPLOYMENT",
+            current_step="Initializing EAR creation & exploding",
+            current_module="EAR_CREATION",
             progress=0,
             logs=[
-                f"[INFO] FICHOME deployment started (task {task_id[:8]})",
+                f"[INFO] EAR creation & exploding started (task {task_id[:8]})",
                 f"[INFO] Database: {request.db_jdbc_service}",
             ],
         )
@@ -309,20 +315,20 @@ async def deploy_fichome(request: FichomeDeploymentRequest):
         return FichomeDeploymentResponse(
             success=True,
             task_id=task_id,
-            message="FICHOME deployment started (17-step workflow)",
+            message="EAR creation & exploding started",
             estimated_duration="15 minutes",
         )
     
     except HTTPException:
         raise
     except Exception as exc:
-        logger.exception("Failed to start FICHOME deployment")
+        logger.exception("Failed to start EAR creation & exploding")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/deploy-fichome/status/{task_id}")
 async def get_fichome_status(task_id: str):
-    """Get FICHOME deployment task status."""
+    """Get EAR creation & exploding task status."""
     # Check unified installation_tasks first (now includes FICHOME)
     if task_id in installation_tasks:
         task = installation_tasks[task_id]
@@ -337,7 +343,7 @@ async def get_fichome_status(task_id: str):
     
     # Fallback to separate fichome_deployment_tasks for backward compatibility
     if task_id not in fichome_deployment_tasks:
-        raise HTTPException(status_code=404, detail="FICHOME deployment task not found")
+        raise HTTPException(status_code=404, detail="EAR creation task not found")
     
     task = fichome_deployment_tasks[task_id]
     return {
@@ -351,65 +357,73 @@ async def get_fichome_status(task_id: str):
     }
 
 
-# ============== FICHOME ASYNC EXECUTION ==============
+# ============== EAR CREATION ASYNC EXECUTION ==============
 
 async def execute_fichome_deployment(task_id: str, request: FichomeDeploymentRequest) -> None:
     """
-    Execute FICHOME 17-step deployment workflow asynchronously.
+    Execute EAR Creation & Exploding workflow asynchronously.
     
     Uses unified logging system (append_output + log_persistence) for consistency with BD/ECM/SANC.
     """
     task = InstallationStatus(
         task_id=task_id,
         status="running",
-        current_step="Initializing FICHOME deployment",
-        current_module="FICHOME_DEPLOYMENT",
+        current_step="Initializing EAR creation & exploding",
+        current_module="EAR_CREATION",
         progress=0,
-        logs=[f"[INFO] FICHOME deployment started (task {task_id[:8]})"],
+        logs=[f"[INFO] EAR creation & exploding started (task {task_id[:8]})"],
     )
     installation_tasks[task_id] = task
     
     try:
         await append_output(task_id, f"[INFO] Target: {request.host}")
-        await update_status(task_id, "running", "Initializing FICHOME deployment", 0)
+        await append_output(task_id, f"[INFO] WebLogic Domain: {request.weblogic_domain_home}")
+        await update_status(task_id, "running", "Initializing EAR creation & exploding", 0)
 
         # Initialize SSH service and installer
         ssh_service = SSHService()
         installation_service = InstallationService(ssh_service)
 
+        # Test SSH connection first (same pattern as main installation)
+        connection: dict = {"success": False, "error": "SSH connection failed"}
+        for attempt in range(1, 4):
+            await append_output(task_id, f"[INFO] SSH connection attempt {attempt}/3")
+            connection = await ssh_service.test_connection(request.host, request.username, request.password)
+            if connection.get("success"):
+                break
+            if attempt < 3:
+                await append_output(task_id, "[WARN] SSH connection failed. Retrying...")
+                await asyncio.sleep(1)
+
+        if not connection.get("success"):
+            error_msg = connection.get("error", "SSH connection failed after 3 attempts")
+            await append_output(task_id, f"[ERROR] {error_msg}")
+            await update_status(task_id, "failed", "SSH connection failed")
+            return
+        await append_output(task_id, "[OK] SSH connection established")
+
         # Define callbacks for real-time updates
         async def on_subtask_callback(message: str) -> None:
             """Called when entering a new step."""
             await append_output(task_id, message)
+            # Update progress based on step (detect by message content to update status/progress)
+            if "Granting database privileges" in message:
+                await update_status(task_id, "running", "Granting database privileges", 10)
+            elif "Running EAR creation & exploding script" in message:
+                await update_status(task_id, "running", "Running EAR creation & exploding script", 30)
+            elif "Running startofsaa.sh" in message:
+                await update_status(task_id, "running", "Running startofsaa.sh", 70)
+            elif "Running checkofsaa.sh" in message:
+                await update_status(task_id, "running", "Running checkofsaa.sh", 80)
+            elif "Deploying application to WebLogic" in message:
+                await update_status(task_id, "running", "Deploying application to WebLogic", 85)
         
         async def on_output_callback(line: str) -> None:
             """Called for each output line."""
             if line and line.strip():
                 await append_output(task_id, line)
-                
-                # Parse step number to update progress
-                if "[FICHOME] STEP" in line and ":" in line:
-                    try:
-                        step_num = int(line.split("STEP ")[1].split(":")[0])
-                        progress = int((step_num / 17) * 100)
-                        step_names = [
-                            "Granting database privileges",
-                            "Extracting WebLogic domain configuration",
-                            "Backing up existing FICHOME files",
-                            "Rebuilding FICHOME with ant.sh",
-                            "Setting permissions on build artifacts",
-                            "Preparing WebLogic domain applications directory",
-                            "Copying and extracting EAR file",
-                            "Extracting and preparing WAR content",
-                            "Running post-deployment startup script",
-                            "Running health check validation",
-                        ]
-                        step_name = step_names[min(step_num - 1, len(step_names) - 1)] if step_num <= len(step_names) else f"Step {step_num}"
-                        await update_status(task_id, "running", step_name, progress)
-                    except (ValueError, IndexError):
-                        pass
         
-        # Call installer service for 17-step deployment
+        # Call installer service for deployment
         result = await installation_service.installer.deploy_fichome(
             host=request.host,
             username=request.username,
@@ -422,25 +436,252 @@ async def execute_fichome_deployment(task_id: str, request: FichomeDeploymentReq
             db_jdbc_service=request.db_jdbc_service,
             config_schema_name=request.config_schema_name,
             atomic_schema_name=request.atomic_schema_name,
+            weblogic_domain_home=request.weblogic_domain_home,
+            deploy_app_enabled=request.deploy_app_enabled,
+            admin_url=request.admin_url,
+            weblogic_username=request.weblogic_username,
+            weblogic_password=request.weblogic_password,
+            wl_home=request.wl_home,
+            deploy_app_path=request.deploy_app_path,
+            deploy_app_target_server=request.deploy_app_target_server,
         )
         
         await append_output(task_id, "\n".join(result.get("logs", [])))
         
         if not result.get("success"):
-            error_msg = result.get("error") or "FICHOME deployment failed"
+            error_msg = result.get("error") or "EAR creation & exploding failed"
             await append_output(task_id, f"[ERROR] {error_msg}")
-            await update_status(task_id, "failed", "FICHOME deployment failed")
+            await update_status(task_id, "failed", "EAR creation & exploding failed")
             return
         
-        # All 17 steps successful
-        await append_output(task_id, "[SUCCESS] FICHOME deployment completed: All 17 steps successful")
-        await update_status(task_id, "completed", "FICHOME deployment completed", 100)
+        # EAR steps successful
+        await append_output(task_id, "[SUCCESS] EAR creation & exploding completed successfully")
+
+        # ── Datasource creation (runs AFTER EAR, same task) ──
+        if request.ds_enabled and request.datasources:
+            await append_output(task_id, "\n[INFO] ===== DATASOURCE CREATION =====")
+            await append_output(task_id, f"[INFO] WebLogic Admin: {request.admin_url}")
+            await append_output(task_id, f"[INFO] Total datasources: {len(request.datasources)}")
+            await update_status(task_id, "running", "Initializing datasource creation", 90)
+
+            total = len(request.datasources)
+            failed_ds: list[str] = []
+
+            for idx, ds in enumerate(request.datasources, 1):
+                ds_label = f"[{idx}/{total}] {ds.ds_name}"
+                # Progress 90-99 for datasources
+                progress = 90 + int((idx / total) * 9)
+
+                await append_output(task_id, f"\n[INFO] ===== {ds_label} =====")
+                await update_status(task_id, "running", f"Creating {ds.ds_name}", progress)
+
+                async def on_ds_output(line: str) -> None:
+                    if line and line.strip():
+                        await append_output(task_id, line)
+
+                async def on_ds_subtask(message: str) -> None:
+                    await append_output(task_id, message)
+
+                ds_result = await installation_service.installer.create_weblogic_datasource(
+                    host=request.host,
+                    username=request.username,
+                    password=request.password,
+                    admin_url=request.admin_url,
+                    weblogic_username=request.weblogic_username,
+                    weblogic_password=request.weblogic_password,
+                    ds_name=ds.ds_name,
+                    jndi_name=ds.jndi_name,
+                    db_url=ds.db_url,
+                    db_user=ds.db_user,
+                    db_password=ds.db_password,
+                    targets=ds.targets,
+                    wl_home=request.wl_home,
+                    on_output_callback=on_ds_output,
+                    on_subtask_callback=on_ds_subtask,
+                )
+
+                await append_output(task_id, "\n".join(ds_result.get("logs", [])))
+
+                if not ds_result.get("success"):
+                    failed_ds.append(ds.ds_name)
+                    await append_output(task_id, f"[ERROR] {ds.ds_name} failed: {ds_result.get('error')}")
+                else:
+                    await append_output(task_id, f"[OK] {ds.ds_name} created successfully")
+
+            # Datasource summary
+            if failed_ds:
+                await append_output(task_id, f"\n[WARN] Failed datasources: {', '.join(failed_ds)}")
+                await update_status(task_id, "completed", f"Deployment completed with {len(failed_ds)} DS failures", 100)
+            else:
+                await append_output(task_id, f"\n[SUCCESS] All {total} datasources created successfully")
+                await update_status(task_id, "completed", "Deployment completed", 100)
+        else:
+            await update_status(task_id, "completed", "EAR creation & exploding completed", 100)
         
     except Exception as exc:
-        logger.exception(f"FICHOME deployment failed: {task_id}")
+        logger.exception(f"EAR creation & exploding failed: {task_id}")
         error_msg = str(exc)
         await append_output(task_id, f"[ERROR] Exception: {error_msg}")
-        await update_status(task_id, "failed", "FICHOME deployment failed")
+        await update_status(task_id, "failed", "EAR creation & exploding failed")
+
+
+# ============== WEBLOGIC DATASOURCE CREATION ==============
+
+@router.post("/create-datasources", response_model=DatasourceCreationResponse)
+async def create_datasources(request: DatasourceCreationRequest):
+    """
+    Create WebLogic datasources via WLST.
+
+    Processes each datasource sequentially — one WLST call per datasource.
+    Returns task_id for WebSocket progress tracking.
+    """
+    try:
+        if not request.datasources:
+            raise HTTPException(400, "At least one datasource is required")
+
+        task_id = str(uuid.uuid4())
+
+        installation_tasks[task_id] = InstallationStatus(
+            task_id=task_id,
+            status="started",
+            current_step="Initializing datasource creation",
+            current_module="DATASOURCE_CREATION",
+            progress=0,
+            logs=[
+                f"[INFO] Datasource creation started (task {task_id[:8]})",
+                f"[INFO] WebLogic: {request.admin_url}",
+                f"[INFO] Datasources: {len(request.datasources)}",
+            ],
+        )
+
+        asyncio.create_task(
+            execute_datasource_creation(task_id=task_id, request=request)
+        )
+
+        return DatasourceCreationResponse(
+            success=True,
+            task_id=task_id,
+            message=f"Datasource creation started ({len(request.datasources)} datasources)",
+            total_datasources=len(request.datasources),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to start datasource creation")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/create-datasources/status/{task_id}")
+async def get_datasource_status(task_id: str):
+    """Get datasource creation task status."""
+    if task_id in installation_tasks:
+        task = installation_tasks[task_id]
+        return {
+            "success": True,
+            "task_id": task_id,
+            "status": task.status,
+            "current_step": task.current_step,
+            "progress": task.progress,
+            "logs": task.logs[-50:],
+        }
+    raise HTTPException(status_code=404, detail="Datasource creation task not found")
+
+
+async def execute_datasource_creation(task_id: str, request: DatasourceCreationRequest) -> None:
+    """Execute datasource creation workflow — one WLST call per datasource."""
+    task = InstallationStatus(
+        task_id=task_id,
+        status="running",
+        current_step="Initializing datasource creation",
+        current_module="DATASOURCE_CREATION",
+        progress=0,
+        logs=[f"[INFO] Datasource creation started (task {task_id[:8]})"],
+    )
+    installation_tasks[task_id] = task
+
+    try:
+        await append_output(task_id, f"[INFO] Target: {request.host}")
+        await append_output(task_id, f"[INFO] WebLogic Admin: {request.admin_url}")
+        await append_output(task_id, f"[INFO] Total datasources: {len(request.datasources)}")
+        await update_status(task_id, "running", "Initializing datasource creation", 0)
+
+        ssh_service = SSHService()
+        installation_service = InstallationService(ssh_service)
+
+        # Test SSH connection first (same pattern as main installation)
+        connection: dict = {"success": False, "error": "SSH connection failed"}
+        for attempt in range(1, 4):
+            await append_output(task_id, f"[INFO] SSH connection attempt {attempt}/3")
+            connection = await ssh_service.test_connection(request.host, request.username, request.password)
+            if connection.get("success"):
+                break
+            if attempt < 3:
+                await append_output(task_id, "[WARN] SSH connection failed. Retrying...")
+                await asyncio.sleep(1)
+
+        if not connection.get("success"):
+            error_msg = connection.get("error", "SSH connection failed after 3 attempts")
+            await append_output(task_id, f"[ERROR] {error_msg}")
+            await update_status(task_id, "failed", "SSH connection failed")
+            return
+        await append_output(task_id, "[OK] SSH connection established")
+
+        total = len(request.datasources)
+        failed_ds: list[str] = []
+
+        for idx, ds in enumerate(request.datasources, 1):
+            ds_label = f"[{idx}/{total}] {ds.ds_name}"
+            progress = int(((idx - 1) / total) * 100)
+
+            await append_output(task_id, f"\n[INFO] ===== {ds_label} =====")
+            await update_status(task_id, "running", f"Creating {ds.ds_name}", progress)
+
+            async def on_output(line: str) -> None:
+                if line and line.strip():
+                    await append_output(task_id, line)
+
+            async def on_subtask(message: str) -> None:
+                await append_output(task_id, message)
+
+            result = await installation_service.installer.create_weblogic_datasource(
+                host=request.host,
+                username=request.username,
+                password=request.password,
+                admin_url=request.admin_url,
+                weblogic_username=request.weblogic_username,
+                weblogic_password=request.weblogic_password,
+                ds_name=ds.ds_name,
+                jndi_name=ds.jndi_name,
+                db_url=ds.db_url,
+                db_user=ds.db_user,
+                db_password=ds.db_password,
+                targets=ds.targets,
+                wl_home=request.wl_home,
+                on_output_callback=on_output,
+                on_subtask_callback=on_subtask,
+            )
+
+            await append_output(task_id, "\n".join(result.get("logs", [])))
+
+            if not result.get("success"):
+                failed_ds.append(ds.ds_name)
+                await append_output(task_id, f"[ERROR] {ds.ds_name} failed: {result.get('error')}")
+            else:
+                await append_output(task_id, f"[OK] {ds.ds_name} created successfully")
+
+        # Summary
+        if failed_ds:
+            await append_output(task_id, f"\n[WARN] Failed datasources: {', '.join(failed_ds)}")
+            await update_status(task_id, "completed", f"Completed with {len(failed_ds)} failures", 100)
+        else:
+            await append_output(task_id, f"\n[SUCCESS] All {total} datasources created successfully")
+            await update_status(task_id, "completed", "All datasources created", 100)
+
+    except Exception as exc:
+        logger.exception(f"Datasource creation failed: {task_id}")
+        await append_output(task_id, f"[ERROR] Exception: {str(exc)}")
+        await update_status(task_id, "failed", "Datasource creation failed")
 
 
 async def websocket_send(task_id: str, message: str) -> None:
