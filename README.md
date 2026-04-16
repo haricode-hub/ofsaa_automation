@@ -4,13 +4,36 @@ Complete automation system for Oracle Financial Services products (OFSAA BD Pack
 
 ## Quick Start
 
+### Server Setup (5 steps)
+
+```bash
+# 1. Clone the repo
+git clone <repo-url> ofsaa-automation && cd ofsaa-automation
+
+# 2. Configure environment
+cp backend/.env.example backend/.env
+#    Edit backend/.env → set ALLOWED_ORIGIN, Git credentials, etc.
+
+# 3. Install backend deps
+cd backend && uv sync && cd ..
+
+# 4. Install frontend deps & build
+cd frontend && bun install && bun run build && cd ..
+
+# 5. Start with PM2
+#    Edit ecosystem.config.js → set SERVER_IP, BACKEND_PORT, FRONTEND_PORT
+pm2 start ecosystem.config.js
+```
+
+Open: `http://<SERVER_IP>:3000`
+
 ### Local Development
 
 **Terminal 1 — Backend:**
 ```bash
 cd backend
 uv sync
-uv run python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+uv run python main.py
 ```
 
 **Terminal 2 — Frontend:**
@@ -52,7 +75,7 @@ vi backend/.env
 
 **Key values in `backend/.env`:**
 ```dotenv
-ALLOWED_ORIGIN=http://<SERVER_IP>
+ALLOWED_ORIGIN=http://<SERVER_IP>:3000   # CORS (empty = allow all for dev)
 OFSAA_REPO_URL=https://github.com/yourorg/ofsaa-repo.git
 OFSAA_REPO_DIR=/u01/OFSAA_REPO
 OFSAA_GIT_USERNAME=your_git_username
@@ -74,8 +97,13 @@ cd backend && uv sync && cd ..
 cd frontend && bun install && bun run build && cd ..
 ```
 
-**4. Update ecosystem.config.js with your server IP:**
-Edit `ecosystem.config.js` and replace `192.168.0.166` with your server IP in both `NEXT_PUBLIC_API_URL` and `ALLOWED_ORIGIN`.
+**4. Update ecosystem.config.js with your server IP and ports:**
+Edit `ecosystem.config.js` — update the three constants at the top:
+```js
+const SERVER_IP = '<YOUR_SERVER_IP>';
+const BACKEND_PORT = 8000;
+const FRONTEND_PORT = 3000;
+```
 
 **5. Open firewall ports:**
 ```bash
@@ -122,14 +150,14 @@ pm2 stop all            # Stop both
 pm2 delete all          # Remove from PM2
 ```
 
-### Changing Server IP
+### Changing Server IP or Ports
 ```bash
-# 1. Update frontend production env
-echo "NEXT_PUBLIC_API_URL=http://<NEW_IP>:8000" > frontend/.env.production
+# 1. Update ecosystem.config.js → SERVER_IP, BACKEND_PORT, FRONTEND_PORT
 
-# 2. Update backend/.env → ALLOWED_ORIGIN=http://<NEW_IP>
+# 2. Update backend/.env → ALLOWED_ORIGIN=http://<NEW_IP>:<FRONTEND_PORT>
 
-# 3. Update ecosystem.config.js → both NEXT_PUBLIC_API_URL and ALLOWED_ORIGIN
+# 3. Update frontend production env
+echo "NEXT_PUBLIC_API_URL=http://<NEW_IP>:<BACKEND_PORT>" > frontend/.env.production
 
 # 4. Rebuild and restart
 cd frontend && bun run build && cd ..
@@ -230,24 +258,33 @@ When BD osc.sh fails, automatic cleanup:
 
 ```
 ├── backend/                    # FastAPI Python backend
-│   ├── main.py                 # Application entry point + WebSocket
+│   ├── main.py                 # App entry point, CORS, WebSocket, routers
 │   ├── pyproject.toml          # UV project config (deps)
-│   ├── start.bat               # Windows start script
-│   ├── .env                    # Environment variables
+│   ├── .env.example            # Environment variable template
+│   ├── core/
+│   │   ├── config.py           # Env vars, step names, default paths
+│   │   ├── task_manager.py     # Shared state (tasks, ws, logs)
+│   │   ├── dependencies.py     # FastAPI DI helpers
+│   │   ├── prompt_helpers.py   # Reusable prompt callback factories
+│   │   └── websocket_manager.py # WS connection manager
 │   ├── routers/
-│   │   └── installation.py     # API routes, task orchestration
+│   │   ├── installation.py     # BD/ECM/SANC installation endpoints
+│   │   ├── deployment.py       # FICHOME deployment endpoints
+│   │   └── datasource.py      # WebLogic datasource endpoints
 │   ├── schemas/
-│   │   └── installation.py     # Pydantic models
+│   │   └── installation.py     # Pydantic request/response models
 │   └── services/
-│       ├── installation_service.py  # Service composition
+│       ├── installation_service.py  # Orchestrator facade
 │       ├── installer.py             # Git ops, XML patching, scripts
-│       ├── recovery_service.py      # Backup, restore, cleanup
-│       ├── ssh_service.py           # SSH + interactive command handling
+│       ├── recovery_service.py      # Backup/restore coordination
+│       ├── bd_backup.py             # Oracle Data Pump export (expdp)
+│       ├── bd_restore.py            # Oracle Data Pump import (impdp)
+│       ├── ssh_service.py           # Paramiko SSH wrapper
 │       └── ...                      # java, packages, profile, etc.
 │
 ├── frontend/                   # Next.js React frontend
 │   ├── src/app/
-│   │   ├── page.tsx            # Main page (InstallationForm)
+│   │   ├── page.tsx            # Main page (Installation | Deployment tabs)
 │   │   └── logs/[taskId]/      # Real-time log viewer + step tracker
 │   └── src/components/
 │       ├── InstallationForm.tsx # BD Pack form
@@ -310,7 +347,7 @@ When BD osc.sh fails, automatic cleanup:
 
 ## Troubleshooting
 
-- **Port conflict**: Ensure ports 3000 and 8000 are free, or update configs accordingly
+- **Port conflict**: Update `BACKEND_PORT` / `FRONTEND_PORT` in `ecosystem.config.js`
 - **Bun not available**: Use `npm install` / `npm run dev` as fallback
 - **SSH failures**: Verify credentials, network connectivity, and firewall rules (port 22)
-- **API docs**: Visit `http://<host>:8000/docs` for the interactive Swagger UI
+- **API docs**: Visit `http://<host>:<backend_port>/docs` for the interactive Swagger UI

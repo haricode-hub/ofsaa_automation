@@ -277,10 +277,6 @@ class InstallationService:
 
     # ============== BACKUP / RESTORE METHODS ==============
 
-    async def ensure_backup_restore_scripts(self, host: str, username: str, password: str) -> dict:
-        """Ensure Git-controlled backup/restore scripts exist on target."""
-        return await self.recovery.ensure_backup_restore_scripts(host, username, password)
-
     async def backup_application(self, host: str, username: str, password: str, *, backup_tag: str = "BD") -> dict:
         """Create application tar backup with dated filename."""
         return await self.recovery.backup_application(host, username, password, backup_tag=backup_tag)
@@ -326,14 +322,18 @@ class InstallationService:
         self, host: str, username: str, password: str,
         *, db_sys_password: str, db_jdbc_service: str,
         db_oracle_sid: str = "OFSAADB",
+        schema_config_schema_name: Optional[str] = None,
+        schema_atomic_schema_name: Optional[str] = None,
         db_ssh_host: Optional[str] = None, db_ssh_username: Optional[str] = None, db_ssh_password: Optional[str] = None,
     ) -> dict:
-        """Restore DB schemas using Git-controlled script."""
+        """Restore DB schemas using Data Pump (impdp)."""
         return await self.recovery.restore_db_schemas(
             host, username, password,
             db_sys_password=db_sys_password,
             db_jdbc_service=db_jdbc_service,
             db_oracle_sid=db_oracle_sid,
+            schema_config_schema_name=schema_config_schema_name,
+            schema_atomic_schema_name=schema_atomic_schema_name,
             db_ssh_host=db_ssh_host,
             db_ssh_username=db_ssh_username,
             db_ssh_password=db_ssh_password,
@@ -342,17 +342,19 @@ class InstallationService:
     async def full_restore_to_bd_state(
         self, host: str, username: str, password: str,
         *, db_sys_password: str, db_jdbc_service: str,
-        db_oracle_sid: str = "ORCL",
+        db_oracle_sid: str = "OFSAADB",
+        schema_config_schema_name: Optional[str] = None,
+        schema_atomic_schema_name: Optional[str] = None,
         db_ssh_host: Optional[str] = None, db_ssh_username: Optional[str] = None, db_ssh_password: Optional[str] = None,
     ) -> dict:
         """Full restore to BD state: rm OFSAA -> restore tar -> restore DB schemas."""
-        # recovery.full_restore_to_bd_state currently restores app then calls restore_db_schemas
-        # which accepts db_ssh_* args; pass them through
         return await self.recovery.full_restore_to_bd_state(
             host, username, password,
             db_sys_password=db_sys_password,
             db_jdbc_service=db_jdbc_service,
             db_oracle_sid=db_oracle_sid,
+            schema_config_schema_name=schema_config_schema_name,
+            schema_atomic_schema_name=schema_atomic_schema_name,
             db_ssh_host=db_ssh_host,
             db_ssh_username=db_ssh_username,
             db_ssh_password=db_ssh_password,
@@ -662,6 +664,10 @@ class InstallationService:
         )
 
     # ============== WEBLOGIC DATASOURCE CREATION ==============
+
+    async def create_datasources_and_deploy_app(self, host: str, username: str, password: str, **kwargs) -> dict:
+        """Create all datasources + deploy app in a single WLST session."""
+        return await self.installer.create_datasources_and_deploy_app(host, username, password, **kwargs)
 
     async def create_weblogic_datasource(self, host: str, username: str, password: str, **kwargs) -> dict:
         """Create a single WebLogic datasource via WLST."""

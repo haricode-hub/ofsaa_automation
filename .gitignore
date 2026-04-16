@@ -18,6 +18,10 @@ CLAUDE_CONCISE.md
 *.docx
 *.pdf
 
+# Internal folders
+db_checks/
+guides/
+
 # Node.js Dependencies
 node_modules/
 npm-debug.log*

@@ -1,13 +1,20 @@
+// PM2 process configuration for OFSAA Installation Automation
+// Set SERVER_IP, BACKEND_PORT, FRONTEND_PORT as environment variables, or edit defaults below.
+
+const SERVER_IP = process.env.SERVER_IP || '192.168.0.166';
+const BACKEND_PORT = process.env.BACKEND_PORT || 8000;
+const FRONTEND_PORT = process.env.FRONTEND_PORT || 3000;
+
 module.exports = {
   apps: [
     {
-      name: 'frontend',
+      name: 'ofsaa-frontend',
       script: 'bun',
-      args: 'run start -- -H 0.0.0.0 -p 3000',
+      args: `run start -- -H 0.0.0.0 -p ${FRONTEND_PORT}`,
       cwd: './frontend',
       env: {
         NODE_ENV: 'production',
-        NEXT_PUBLIC_API_URL: 'http://192.168.0.166:8000',
+        NEXT_PUBLIC_API_URL: `http://${SERVER_IP}:${BACKEND_PORT}`,
       },
       instances: 1,
       exec_mode: 'fork',
@@ -19,14 +26,14 @@ module.exports = {
       min_uptime: '10s',
     },
     {
-      name: 'backend',
+      name: 'ofsaa-backend',
       script: 'uv',
-      args: 'run python -m uvicorn main:app --host 0.0.0.0 --port 8000',
+      args: `run python -m uvicorn main:app --host 0.0.0.0 --port ${BACKEND_PORT}`,
       cwd: './backend',
       interpreter: 'none',
       env: {
         PYTHONUNBUFFERED: '1',
-        ALLOWED_ORIGIN: 'http://192.168.0.166',
+        ALLOWED_ORIGIN: `http://${SERVER_IP}:${FRONTEND_PORT}`,
       },
       instances: 1,
       exec_mode: 'fork',

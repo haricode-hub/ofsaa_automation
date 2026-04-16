@@ -62,8 +62,8 @@ const EAR_CREATION_STEPS = [
   'Running EAR creation & exploding script',
   'Running startofsaa.sh',
   'Running checkofsaa.sh',
-  'Deploying application to WebLogic',
-  'EAR creation & exploding completed'
+  'Datasources + App Deployment',
+  'Deployment completed'
   // Dynamic datasource steps (e.g. "Creating ANALYST") are appended at runtime
 ]
 

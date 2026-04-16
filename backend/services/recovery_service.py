@@ -1,11 +1,13 @@
 """Recovery service for OSC.SH and setup.sh failures, plus backup/restore."""
 
 import logging
-from typing import Optional
+from typing import Optional, Callable, Awaitable
 
 from core.config import Config
 from services.ssh_service import SSHService
 from services.utils import shell_escape
+from services.bd_backup import BDBackupService
+from services.bd_restore import BDRestoreService
 
 
 logger = logging.getLogger(__name__)
@@ -16,6 +18,8 @@ class RecoveryService:
 
     def __init__(self, ssh_service: SSHService) -> None:
         self.ssh_service = ssh_service
+        self.bd_backup = BDBackupService(ssh_service)
+        self.bd_restore = BDRestoreService(ssh_service)
 
     # ------------------------------------------------------------------
     # Sqlplus connection helper
@@ -318,196 +322,38 @@ class RecoveryService:
         db_ssh_host: Optional[str] = None,
         db_ssh_username: Optional[str] = None,
         db_ssh_password: Optional[str] = None,
+        backup_tag: str = "BD",
+        on_log: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> dict:
-        """Run DB schema backup: backup_ofs_schemas.sh system <DB_PASS> <SERVICE> <SCHEMAS>"""
-        logs = ["[BACKUP] Starting DB schema backup..."]
-        repo_dir = Config.REPO_DIR
-        backup_dir = f"{repo_dir}/backup_Restore"
-
-        # Auto-detect ORACLE_HOME on the DB host
-        target_ssh_host = db_ssh_host or host
-        target_ssh_username = db_ssh_username or username
-        target_ssh_password = db_ssh_password or password
-        oracle_home = await self._detect_oracle_home(target_ssh_host, target_ssh_username, target_ssh_password)
-        logs.append(f"[BACKUP] Detected ORACLE_HOME: {oracle_home}")
-
-        # Build SCHEMAS export from UI schema names
+        """Run DB schema backup using Data Pump (expdp) + metadata capture."""
+        # Build schemas string from UI fields
         schemas = []
         if schema_atomic_schema_name:
             schemas.append(schema_atomic_schema_name)
         else:
-            schemas.append("OFSATOMIC")  # fallback default
-        
+            schemas.append("OFSATOMIC")
         if schema_config_schema_name:
             schemas.append(schema_config_schema_name)
         else:
-            schemas.append("OFSCONFIG")  # fallback default
-        
-        schemas_export = ",".join(schemas)  # e.g., "OFSATOMIC1,OFSCONFIG1"
-        logs.append(f"[BACKUP] Schema names from UI: {schemas_export}")
+            schemas.append("OFSCONFIG")
+        schemas_str = ",".join(schemas)
 
-        # Ensure scripts exist on the application/repo host first
-        scripts_result = await self.ensure_backup_restore_scripts(host, username, password)
-        logs.extend(scripts_result.get("logs", []))
-        if not scripts_result.get("success"):
-            return {"success": False, "logs": logs, "error": "Backup scripts not available on repo host"}
+        # Resolve DB host SSH credentials
+        target_host = db_ssh_host or host
+        target_user = db_ssh_username or username
+        target_pass = db_ssh_password or password
 
-        # Patch the backup script in the git repo with the provided SYS password and service
-        try:
-            # Read original script
-            read_repo_cmd = f"cat {backup_dir}/backup_ofs_schemas.sh"
-            read_repo_result = await self.ssh_service.execute_command(host, username, password, read_repo_cmd)
-            orig_script = read_repo_result.get("stdout") or ""
-
-            # Check if exports are already present to avoid duplicates
-            if "export DB_USER=" not in orig_script or "export DB_PASS=" not in orig_script:
-                # Prepend exports matching the expected names in backup_ofs_schemas.sh
-                # Script expects: export DB_USER=system, export DB_PASS=, export SERVICE=, export SCHEMAS=, export ORACLE_HOME=
-                patched_script = (
-                    f"export DB_USER=system\n"
-                    + f"export DB_PASS={db_sys_password}\n"
-                    + f"export SERVICE={db_jdbc_service}\n"
-                    + f"export SCHEMAS={schemas_export}\n"
-                    + f"export ORACLE_HOME={oracle_home}\n"
-                    + orig_script
-                )
-                
-                # Write patched script back into the git repo (overwrite)
-                write_repo_cmd = f"cat > {backup_dir}/backup_ofs_schemas.sh <<'EOFSCRIPT'\n{patched_script}\nEOFSCRIPT"
-                await self.ssh_service.execute_command(host, username, password, write_repo_cmd)
-                await self.ssh_service.execute_command(host, username, password, f"chmod +x {backup_dir}/backup_ofs_schemas.sh")
-                logs.append("[BACKUP] Patched backup_ofs_schemas.sh in git repo with provided DB values (password masked)")
-            else:
-                # Update existing exports in place
-                import re
-                updated_script = orig_script
-                updated_script = re.sub(r'export DB_PASS=.*', f'export DB_PASS={db_sys_password}', updated_script)
-                updated_script = re.sub(r'export SERVICE=.*', f'export SERVICE={db_jdbc_service}', updated_script)
-                updated_script = re.sub(r'export SCHEMAS=.*', f'export SCHEMAS={schemas_export}', updated_script)
-                updated_script = re.sub(r'export ORACLE_HOME=.*', f'export ORACLE_HOME={oracle_home}', updated_script)
-                
-                write_repo_cmd = f"cat > {backup_dir}/backup_ofs_schemas.sh <<'EOFSCRIPT'\n{updated_script}\nEOFSCRIPT"
-                await self.ssh_service.execute_command(host, username, password, write_repo_cmd)
-                await self.ssh_service.execute_command(host, username, password, f"chmod +x {backup_dir}/backup_ofs_schemas.sh")
-                logs.append("[BACKUP] Updated existing exports in backup_ofs_schemas.sh (password masked)")
-            # Commit and push the updated script into Git so the repo reflects the change
-            try:
-                git_username = Config.GIT_USERNAME
-                git_password = Config.GIT_PASSWORD
-                git_url = Config.REPO_URL
-                
-                # Build authenticated git URL if credentials are available
-                if git_username and git_password and git_url:
-                    # Extract base URL and add credentials
-                    if "://" in git_url:
-                        protocol, rest = git_url.split("://", 1)
-                        # Properly escape special characters in password
-                        escaped_password = git_password.replace('@', '%40').replace(':', '%3A')
-                        auth_url = f"{protocol}://{git_username}:{escaped_password}@{rest}"
-                    else:
-                        auth_url = git_url
-                    
-                    git_commit_cmds = (
-                        f"cd {repo_dir} && "
-                        f"git add {backup_dir}/backup_ofs_schemas.sh && "
-                        f"git commit -m 'Update backup_ofs_schemas.sh with DB export values for automated backup' || true && "
-                        f"git remote set-url origin '{auth_url}' && "
-                        f"git push origin main || true"
-                    )
-                else:
-                    # Fallback without credentials
-                    git_commit_cmds = (
-                        f"cd {repo_dir} && git add {backup_dir}/backup_ofs_schemas.sh && "
-                        f"git commit -m 'Update backup_ofs_schemas.sh with DB export values for automated backup' || true && "
-                        f"git push || true"
-                    )
-                
-                git_push_result = await self.ssh_service.execute_command(host, username, password, git_commit_cmds, timeout=120)
-                git_out = (git_push_result.get("stdout") or "").strip()
-                git_err = (git_push_result.get("stderr") or "").strip()
-                if git_out:
-                    logs.append(f"[BACKUP] Git push output: {git_out}")
-                if git_err and "fatal: could not read Username" not in git_err:
-                    logs.append(f"[BACKUP] Git push stderr: {git_err}")
-            except Exception as e:
-                logs.append(f"[BACKUP] WARNING: Failed to commit/push patched script to Git: {e}")
-        except Exception as exc:  # pragma: no cover - defensive
-            logs.append(f"[BACKUP] WARNING: Failed to patch script in repo: {exc}")
-
-        # target_ssh_host/username/password already resolved above (for ORACLE_HOME detection)
-        logs.append(f"[BACKUP] Preparing to run backup on DB host {target_ssh_host}")
-
-        # Read script content from repo host
-        cat_cmd = f"cat {backup_dir}/backup_ofs_schemas.sh"
-        read_result = await self.ssh_service.execute_command(host, username, password, cat_cmd)
-        script_content = read_result.get("stdout") or ""
-        if not script_content:
-            logs.append("[BACKUP] ERROR: Failed to read backup script from repo host")
-            return {"success": False, "logs": logs, "error": "Failed to read backup script from repo host"}
-
-        # Write script to /u01/backup on DB host with proper line endings
-        remote_dir = "/u01/backup"
-        mkdir_cmd = f"mkdir -p {remote_dir} && chmod 700 {remote_dir}"
-        await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, mkdir_cmd)
-        
-        # Ensure script has proper Unix line endings and fix any shell option issues
-        clean_script = script_content.replace('\r\n', '\n').replace('\r', '\n')
-        # Fix potential pipefail issues by ensuring proper shell options
-        if 'set -euo pipefail' in clean_script:
-            clean_script = clean_script.replace('set -euo pipefail', 'set -eo pipefail')
-        
-        write_cmd = f"cat > {remote_dir}/backup_ofs_schemas.sh <<'EOFSCRIPT'\n{clean_script}\nEOFSCRIPT"
-        await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, write_cmd)
-        await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, f"chmod +x {remote_dir}/backup_ofs_schemas.sh")
-
-        # Execute the script on DB host with proper environment variable handling
-        # Create a wrapper script that explicitly sets and exports the variables
-        wrapper_script = f"""#!/bin/bash
-set -e
-echo "Setting environment variables for backup..."
-export DB_USER="system"
-export DB_PASS="{db_sys_password}"
-export SERVICE="{db_jdbc_service}"
-export ORACLE_SID="{db_oracle_sid}"
-echo "DB_USER=$DB_USER"
-echo "SERVICE=$SERVICE"
-echo "ORACLE_SID=$ORACLE_SID"
-echo "DB_PASS is set: $([ -n "$DB_PASS" ] && echo "yes" || echo "no")"
-cd {remote_dir}
-echo "Executing backup script..."
-# Set Oracle environment (auto-detected from /etc/oratab)
-export ORACLE_HOME={oracle_home}
-export PATH=$ORACLE_HOME/bin:$PATH
-export LD_LIBRARY_PATH=$ORACLE_HOME/lib:$LD_LIBRARY_PATH
-echo "Oracle environment set: ORACLE_HOME=$ORACLE_HOME"
-bash ./backup_ofs_schemas.sh
-"""
-        
-        # Write wrapper script to DB host
-        wrapper_cmd = f"cat > {remote_dir}/run_backup.sh <<'EOFWRAPPER'\n{wrapper_script}\nEOFWRAPPER"
-        await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, wrapper_cmd)
-        await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, f"chmod +x {remote_dir}/run_backup.sh")
-        
-        backup_cmd = f"cd {remote_dir} && bash ./run_backup.sh"
-        logs.append(f"[BACKUP] Running on DB host: {backup_cmd} (with environment wrapper)")
-        backup_result = await self.ssh_service.execute_command(
-            target_ssh_host, target_ssh_username, target_ssh_password, backup_cmd, timeout=3600
+        return await self.bd_backup.run_backup(
+            db_ssh_host=target_host,
+            db_ssh_username=target_user,
+            db_ssh_password=target_pass,
+            db_sys_password=db_sys_password,
+            pdb_name=db_jdbc_service,
+            schemas=schemas_str,
+            oracle_sid=db_oracle_sid,
+            backup_tag=backup_tag,
+            on_log=on_log,
         )
-
-        stdout = (backup_result.get("stdout") or "").strip()
-        stderr = (backup_result.get("stderr") or "").strip()
-
-        if stdout:
-            # Log output but mask password
-            for line in stdout.splitlines():
-                logs.append(f"[BACKUP] {line}")
-
-        if not backup_result.get("success"):
-            logs.append(f"[BACKUP] ERROR: DB schema backup failed: {stderr}")
-            return {"success": False, "logs": logs, "error": f"DB schema backup failed: {stderr}"}
-
-        logs.append("[BACKUP] DB schema backup completed successfully")
-        return {"success": True, "logs": logs}
 
     # ------------------------------------------------------------------
     # Verify backup availability
@@ -687,229 +533,43 @@ bash ./backup_ofs_schemas.sh
         db_sys_password: str,
         db_jdbc_service: str,
         db_oracle_sid: str = "OFSAADB",
+        schema_config_schema_name: Optional[str] = None,
+        schema_atomic_schema_name: Optional[str] = None,
         db_ssh_host: Optional[str] = None,
         db_ssh_username: Optional[str] = None,
         db_ssh_password: Optional[str] = None,
-        backup_dump_dir: str = "/u01/backup",
+        backup_tag: str = "BD",
+        on_log: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> dict:
-        """Run DB schema restore using restore_ofs_schemas.sh from Git.
+        """Run DB schema restore using Data Pump (impdp) + metadata replay."""
+        # Build schemas string from UI fields
+        schemas = []
+        if schema_atomic_schema_name:
+            schemas.append(schema_atomic_schema_name)
+        else:
+            schemas.append("OFSATOMIC")
+        if schema_config_schema_name:
+            schemas.append(schema_config_schema_name)
+        else:
+            schemas.append("OFSCONFIG")
+        schemas_str = ",".join(schemas)
 
-        Follows the same flow as backup_db_schemas:
-        1. Read restore script from git repo
-        2. Patch env vars (DB_USER, DB_PASS, SERVICE, DUMPFILE) into the script
-        3. Commit/push patched script to git
-        4. Discover .dmp file on DB host from backup_dump_dir
-        5. Copy patched script to DB host
-        6. Run via wrapper script with all env vars
-        """
-        import re as _re
-        import os as _os
+        # Resolve DB host SSH credentials
+        target_host = db_ssh_host or host
+        target_user = db_ssh_username or username
+        target_pass = db_ssh_password or password
 
-        logs = ["[RESTORE] Starting DB schema restore..."]
-        repo_dir = Config.REPO_DIR
-        backup_dir = f"{repo_dir}/backup_Restore"
-
-        # Ensure scripts exist on the repo/app host first
-        scripts_result = await self.ensure_backup_restore_scripts(host, username, password)
-        logs.extend(scripts_result.get("logs", []))
-        if not scripts_result.get("success"):
-            return {"success": False, "logs": logs, "error": "Restore scripts not available on repo host"}
-
-        # Determine where to execute the restore: prefer explicit db_ssh_host
-        target_ssh_host = db_ssh_host or host
-        target_ssh_username = db_ssh_username or username
-        target_ssh_password = db_ssh_password or password
-
-        # Auto-detect ORACLE_HOME on the DB host
-        oracle_home = await self._detect_oracle_home(target_ssh_host, target_ssh_username, target_ssh_password)
-        logs.append(f"[RESTORE] Detected ORACLE_HOME: {oracle_home}")
-
-        # ------------------------------------------------------------------
-        # Step 1: Discover the .dmp file on the DB server
-        # ------------------------------------------------------------------
-        logs.append(f"[RESTORE] Looking for .dmp dump file in {backup_dump_dir} on DB host {target_ssh_host} ...")
-        find_dmp_cmd = f"ls -1t {backup_dump_dir}/*.dmp 2>/dev/null | head -1"
-        find_result = await self.ssh_service.execute_command(
-            target_ssh_host, target_ssh_username, target_ssh_password, find_dmp_cmd
+        return await self.bd_restore.run_restore(
+            db_ssh_host=target_host,
+            db_ssh_username=target_user,
+            db_ssh_password=target_pass,
+            db_sys_password=db_sys_password,
+            pdb_name=db_jdbc_service,
+            schemas=schemas_str,
+            oracle_sid=db_oracle_sid,
+            backup_tag=backup_tag,
+            on_log=on_log,
         )
-        dmp_path = (find_result.get("stdout") or "").strip()
-
-        if not dmp_path:
-            logs.append(f"[RESTORE] ERROR: No .dmp file found in {backup_dump_dir} on DB host {target_ssh_host}")
-            return {"success": False, "logs": logs, "error": f"No .dmp dump file found in {backup_dump_dir}"}
-
-        dmp_filename = _os.path.basename(dmp_path)
-        logs.append(f"[RESTORE] Found dump file: {dmp_filename} (full path: {dmp_path})")
-
-        # ------------------------------------------------------------------
-        # Step 2: Patch restore script in git repo (same as backup flow)
-        # ------------------------------------------------------------------
-        try:
-            read_repo_cmd = f"cat {backup_dir}/restore_ofs_schemas.sh"
-            read_repo_result = await self.ssh_service.execute_command(host, username, password, read_repo_cmd)
-            orig_script = read_repo_result.get("stdout") or ""
-            if not orig_script:
-                logs.append("[RESTORE] ERROR: Failed to read restore script from repo host")
-                return {"success": False, "logs": logs, "error": "Failed to read restore script from repo host"}
-
-            if "export DB_USER=" not in orig_script or "export DB_PASS=" not in orig_script:
-                # Exports not present yet — prepend them
-                patched_script = (
-                    f"export DB_USER=system\n"
-                    f"export DB_PASS={db_sys_password}\n"
-                    f"export SERVICE={db_jdbc_service}\n"
-                    f"export DUMPFILE={dmp_filename}\n"
-                    f"export ORACLE_HOME={oracle_home}\n"
-                    + orig_script
-                )
-                write_repo_cmd = f"cat > {backup_dir}/restore_ofs_schemas.sh <<'EOFSCRIPT'\n{patched_script}\nEOFSCRIPT"
-                await self.ssh_service.execute_command(host, username, password, write_repo_cmd)
-                await self.ssh_service.execute_command(host, username, password, f"chmod +x {backup_dir}/restore_ofs_schemas.sh")
-                logs.append("[RESTORE] Patched restore_ofs_schemas.sh in git repo with provided DB values (password masked)")
-            else:
-                # Update existing exports in place
-                updated_script = orig_script
-                updated_script = _re.sub(r'export DB_PASS=.*', f'export DB_PASS={db_sys_password}', updated_script)
-                updated_script = _re.sub(r'export SERVICE=.*', f'export SERVICE={db_jdbc_service}', updated_script)
-                updated_script = _re.sub(r'export DUMPFILE=.*', f'export DUMPFILE={dmp_filename}', updated_script)
-                updated_script = _re.sub(r'export ORACLE_HOME=.*', f'export ORACLE_HOME={oracle_home}', updated_script)
-
-                write_repo_cmd = f"cat > {backup_dir}/restore_ofs_schemas.sh <<'EOFSCRIPT'\n{updated_script}\nEOFSCRIPT"
-                await self.ssh_service.execute_command(host, username, password, write_repo_cmd)
-                await self.ssh_service.execute_command(host, username, password, f"chmod +x {backup_dir}/restore_ofs_schemas.sh")
-                logs.append("[RESTORE] Updated existing exports in restore_ofs_schemas.sh (password masked)")
-
-            # Commit and push the updated script into Git
-            try:
-                git_username = Config.GIT_USERNAME
-                git_password = Config.GIT_PASSWORD
-                git_url = Config.REPO_URL
-
-                if git_username and git_password and git_url:
-                    if "://" in git_url:
-                        protocol, rest = git_url.split("://", 1)
-                        escaped_password = git_password.replace('@', '%40').replace(':', '%3A')
-                        auth_url = f"{protocol}://{git_username}:{escaped_password}@{rest}"
-                    else:
-                        auth_url = git_url
-
-                    git_commit_cmds = (
-                        f"cd {repo_dir} && "
-                        f"git add {backup_dir}/restore_ofs_schemas.sh && "
-                        f"git commit -m 'Update restore_ofs_schemas.sh with DB export values for automated restore' || true && "
-                        f"git remote set-url origin '{auth_url}' && "
-                        f"git push origin main || true"
-                    )
-                else:
-                    git_commit_cmds = (
-                        f"cd {repo_dir} && git add {backup_dir}/restore_ofs_schemas.sh && "
-                        f"git commit -m 'Update restore_ofs_schemas.sh with DB export values for automated restore' || true && "
-                        f"git push || true"
-                    )
-
-                git_push_result = await self.ssh_service.execute_command(host, username, password, git_commit_cmds, timeout=120)
-                git_out = (git_push_result.get("stdout") or "").strip()
-                git_err = (git_push_result.get("stderr") or "").strip()
-                if git_out:
-                    logs.append(f"[RESTORE] Git push output: {git_out}")
-                if git_err and "fatal: could not read Username" not in git_err:
-                    logs.append(f"[RESTORE] Git push stderr: {git_err}")
-            except Exception as e:
-                logs.append(f"[RESTORE] WARNING: Failed to commit/push patched script to Git: {e}")
-        except Exception as exc:
-            logs.append(f"[RESTORE] WARNING: Failed to patch script in repo: {exc}")
-
-        # ------------------------------------------------------------------
-        # Step 3: Copy patched script to DB host
-        # ------------------------------------------------------------------
-        logs.append(f"[RESTORE] Preparing to run restore on DB host {target_ssh_host}")
-
-        # Re-read the (now patched) script from repo host
-        cat_cmd = f"cat {backup_dir}/restore_ofs_schemas.sh"
-        read_result = await self.ssh_service.execute_command(host, username, password, cat_cmd)
-        script_content = read_result.get("stdout") or ""
-        if not script_content:
-            logs.append("[RESTORE] ERROR: Failed to read patched restore script from repo host")
-            return {"success": False, "logs": logs, "error": "Failed to read patched restore script from repo host"}
-
-        remote_dir = "/u01/backup"
-        mkdir_cmd = f"mkdir -p {remote_dir} && chmod 700 {remote_dir}"
-        await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, mkdir_cmd)
-
-        # Clean line endings
-        clean_script = script_content.replace('\r\n', '\n').replace('\r', '\n')
-        if 'set -euo pipefail' in clean_script:
-            clean_script = clean_script.replace('set -euo pipefail', 'set -eo pipefail')
-
-        write_cmd = f"cat > {remote_dir}/restore_ofs_schemas.sh <<'EOFSCRIPT'\n{clean_script}\nEOFSCRIPT"
-        await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, write_cmd)
-        await self.ssh_service.execute_command(
-            target_ssh_host, target_ssh_username, target_ssh_password,
-            f"chmod +x {remote_dir}/restore_ofs_schemas.sh",
-        )
-
-        # ------------------------------------------------------------------
-        # Step 4: Create wrapper script (same pattern as backup)
-        # ------------------------------------------------------------------
-        wrapper_script = f"""#!/bin/bash
-set -e
-echo "=== DB Schema Restore ==="
-echo "Setting environment variables for restore..."
-export DB_USER="system"
-export DB_PASS="{db_sys_password}"
-export SERVICE="{db_jdbc_service}"
-export DUMPFILE="{dmp_filename}"
-export ORACLE_SID="{db_oracle_sid}"
-echo "DB_USER=$DB_USER"
-echo "SERVICE=$SERVICE"
-echo "DUMPFILE=$DUMPFILE"
-echo "ORACLE_SID=$ORACLE_SID"
-echo "DB_PASS is set: $([ -n \"$DB_PASS\" ] && echo \"yes\" || echo \"no\")"
-cd {remote_dir}
-echo "Executing restore script..."
-# Set Oracle environment (auto-detected from /etc/oratab)
-export ORACLE_HOME={oracle_home}
-export PATH=$ORACLE_HOME/bin:$PATH
-export LD_LIBRARY_PATH=$ORACLE_HOME/lib:$LD_LIBRARY_PATH
-echo "Oracle environment set: ORACLE_HOME=$ORACLE_HOME"
-bash ./restore_ofs_schemas.sh
-"""
-
-        wrapper_cmd = f"cat > {remote_dir}/run_restore.sh <<'EOFWRAPPER'\n{wrapper_script}\nEOFWRAPPER"
-        await self.ssh_service.execute_command(target_ssh_host, target_ssh_username, target_ssh_password, wrapper_cmd)
-        await self.ssh_service.execute_command(
-            target_ssh_host, target_ssh_username, target_ssh_password,
-            f"chmod +x {remote_dir}/run_restore.sh",
-        )
-
-        # ------------------------------------------------------------------
-        # Step 5: Execute via wrapper
-        # ------------------------------------------------------------------
-        restore_cmd = f"cd {remote_dir} && bash ./run_restore.sh"
-        logs.append(
-            f"[RESTORE] Running on DB host {target_ssh_host}: {restore_cmd} "
-            f"(DB_USER=system, SERVICE={db_jdbc_service}, DUMPFILE={dmp_filename})"
-        )
-        restore_result = await self.ssh_service.execute_command(
-            target_ssh_host, target_ssh_username, target_ssh_password,
-            restore_cmd, timeout=3600,
-        )
-
-        stdout = (restore_result.get("stdout") or "").strip()
-        stderr = (restore_result.get("stderr") or "").strip()
-
-        if stdout:
-            for line in stdout.splitlines():
-                logs.append(f"[RESTORE] {line}")
-
-        if not restore_result.get("success"):
-            if stderr:
-                logs.append(f"[RESTORE] STDERR: {stderr}")
-            logs.append("[RESTORE] ERROR: DB schema restore failed")
-            return {"success": False, "logs": logs, "error": f"DB schema restore failed: {stderr}"}
-
-        logs.append("[RESTORE] DB schema restore completed successfully")
-        return {"success": True, "logs": logs}
 
     async def full_restore_to_bd_state(
         self,
@@ -919,7 +579,9 @@ bash ./restore_ofs_schemas.sh
         *,
         db_sys_password: str,
         db_jdbc_service: str,
-        db_oracle_sid: str = "ORCL",
+        db_oracle_sid: str = "OFSAADB",
+        schema_config_schema_name: Optional[str] = None,
+        schema_atomic_schema_name: Optional[str] = None,
         db_ssh_host: Optional[str] = None,
         db_ssh_username: Optional[str] = None,
         db_ssh_password: Optional[str] = None,
@@ -954,6 +616,8 @@ bash ./restore_ofs_schemas.sh
             db_sys_password=db_sys_password,
             db_jdbc_service=db_jdbc_service,
             db_oracle_sid=db_oracle_sid,
+            schema_config_schema_name=schema_config_schema_name,
+            schema_atomic_schema_name=schema_atomic_schema_name,
             db_ssh_host=db_ssh_host,
             db_ssh_username=db_ssh_username,
             db_ssh_password=db_ssh_password,

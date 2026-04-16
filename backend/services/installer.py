@@ -3802,9 +3802,6 @@ echo "Exploded EAR/WAR deployment ready at: ${{EAR_DIR}}"
                     "logs": logs,
                     "error": app_deploy_result.get("error") or "WebLogic application deployment failed",
                 }
-        else:
-            logs.append("[INFO] Skipping WebLogic app deployment (not enabled or insufficient parameters)")
-
         logs.append("[OK] Deployment completed: All steps successful")
         return {"success": True, "logs": logs}
 
@@ -3966,7 +3963,433 @@ exit $RET
         logs.append("[OK] Application deployed to WebLogic successfully")
         return {"success": True, "logs": logs}
 
-    # ============== WEBLOGIC DATASOURCE CREATION ==============
+    # ============== COMBINED DATASOURCE + APP DEPLOYMENT (SINGLE WLST SESSION) ==============
+
+    async def create_datasources_and_deploy_app(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        admin_url: str,
+        weblogic_username: str,
+        weblogic_password: str,
+        datasources: list[dict] | None = None,
+        deploy_app_enabled: bool = False,
+        deploy_app_path: str | None = None,
+        deploy_app_target_server: str | None = None,
+        wl_home: str | None = None,
+        on_output_callback: Optional[Callable[[str], Any]] = None,
+        on_subtask_callback: Optional[Callable[[str], Any]] = None,
+    ) -> dict:
+        """
+        Create all datasources AND deploy FICHOME.ear in a SINGLE WLST session.
+        
+        - Connects to WebLogic once
+        - Deletes + recreates each datasource (idempotent)
+        - Tests all datasource connection pools
+        - Undeploys + deploys FICHOME.ear (if enabled)
+        - Disconnects once
+        
+        Much faster than running separate WLST sessions per datasource.
+        """
+        logs: list[str] = []
+        ds_list = datasources or []
+
+        await self._call_subtask_callback(
+            on_subtask_callback,
+            f"[WLST] Creating {len(ds_list)} datasource(s)"
+            + (" + deploying FICHOME" if deploy_app_enabled else "")
+            + " in single WLST session"
+        )
+
+        # ── Build datasource definitions block for WLST Python ──
+        ds_defs = "datasources = [\n"
+        for ds in ds_list:
+            targets = ds.get("targets", [])
+            if isinstance(targets, str):
+                targets = [t.strip() for t in targets.split(",") if t.strip()]
+            targets_str = ", ".join(f"'{t}'" for t in targets)
+            ds_defs += f"""    {{
+        'dsName': '{ds["ds_name"]}',
+        'jndiName': '{ds["jndi_name"]}',
+        'dbUrl': '{ds["db_url"]}',
+        'dbUser': '{ds["db_user"]}',
+        'dbPassword': '{ds["db_password"]}',
+        'targets': [{targets_str}]
+    }},
+"""
+        ds_defs += "]\n"
+
+        # ── Build app deployment block ──
+        deploy_block = ""
+        if deploy_app_enabled and deploy_app_path and deploy_app_target_server:
+            deploy_block = f"""
+# ================================================================
+# APPLICATION DEPLOYMENT: FICHOME
+# ================================================================
+print('')
+print('===== APPLICATION DEPLOYMENT =====')
+
+appName = 'FICHOME'
+appPath = '{deploy_app_path}'
+targetServer = '{deploy_app_target_server}'
+
+# ---- STEP 1: Force remove any existing FICHOME deployment ----
+print('Checking for existing ' + appName + ' deployment...')
+try:
+    domainConfig()
+    cd('/AppDeployments')
+    existingApps = ls(returnMap='true')
+    if appName in existingApps:
+        print('Found existing ' + appName + '. Removing it...')
+except:
+    print('Could not list deployments, will try force undeploy anyway.')
+
+# Always try to stop + undeploy regardless of detection
+try:
+    stopApplication(appName, block='true')
+    print('Stopped ' + appName + '.')
+except:
+    pass
+
+try:
+    undeploy(appName, block='true')
+    print('Undeployed ' + appName + ' successfully.')
+except:
+    print('No existing ' + appName + ' to undeploy (clean state).')
+
+# ---- STEP 2: Deploy (same as manual working script) ----
+print('Deploying: ' + appName + ' -> ' + targetServer)
+print('Path: ' + appPath)
+
+deployFailed = False
+try:
+    edit()
+    startEdit()
+    deploy(appName=appName, path=appPath, targets=targetServer)
+    save()
+    activate()
+    print('Application ' + appName + ' deployed successfully to ' + targetServer)
+except Exception, e:
+    errMsg = str(e)
+    try:
+        cancelEdit('y')
+    except:
+        pass
+    print('WARNING: Deployment issue: ' + errMsg)
+    print('Check WebLogic Console -> Deployments for actual status.')
+"""
+
+        # ── Build complete WLST Python script ──
+        # Two-phase approach: Phase 1 deletes all existing DS + activates (cleans ghost refs),
+        # Phase 2 creates fresh DS + activates (clean config.xml, no orphans)
+        wlst_script = f"""from java.lang import String
+import jarray
+from java.lang import Thread
+from javax.management import ObjectName
+import traceback
+
+adminUrl  = '{admin_url}'
+username  = '{weblogic_username}'
+password  = '{weblogic_password}'
+
+{ds_defs}
+
+dsNames = [ds['dsName'] for ds in datasources]
+
+# ================================================================
+# CONNECT
+# ================================================================
+print('Connecting to WebLogic at ' + adminUrl + '...')
+connect(username, password, adminUrl)
+
+# ================================================================
+# CANCEL ANY STALE EDIT SESSION
+# ================================================================
+try:
+    edit()
+    cancelEdit('y')
+    print('Cancelled stale edit session.')
+except:
+    print('No stale edit session to cancel.')
+
+# ================================================================
+# PHASE 1: DELETE ALL EXISTING DATASOURCES
+# ================================================================
+if len(datasources) > 0:
+    print('')
+    print('===== PHASE 1: DELETE EXISTING DATASOURCES =====')
+    edit()
+    startEdit()
+
+    cd('/JDBCSystemResources')
+    existing = ls(returnMap='true')
+    deleteCount = 0
+
+    for dsName in dsNames:
+        if dsName in existing:
+            print('Deleting datasource: ' + dsName)
+            delete(dsName, 'JDBCSystemResource')
+            cd('/JDBCSystemResources')
+            deleteCount += 1
+        else:
+            print('Datasource ' + dsName + ' does not exist, skip delete.')
+
+    if deleteCount > 0:
+        save()
+        activate()
+        print('Phase 1 complete: Deleted ' + str(deleteCount) + ' datasource(s) and activated.')
+    else:
+        print('No existing datasources to delete.')
+        cancelEdit('y')
+
+    # ================================================================
+    # PHASE 2: CREATE FRESH DATASOURCES
+    # ================================================================
+    print('')
+    print('===== PHASE 2: CREATE FRESH DATASOURCES =====')
+    edit()
+    startEdit()
+
+    for ds in datasources:
+        dsName   = ds['dsName']
+        jndiName = ds['jndiName']
+        dbUrl    = ds['dbUrl']
+        dbUser   = ds['dbUser']
+        dbPassword = ds['dbPassword']
+        targets  = ds['targets']
+
+        print('')
+        print('--- Creating datasource: ' + dsName + ' ---')
+        cd('/')
+        cmo.createJDBCSystemResource(dsName)
+
+        cd('/JDBCSystemResources/' + dsName + '/JDBCResource/' + dsName)
+        cmo.setName(dsName)
+
+        # JNDI
+        cd('/JDBCSystemResources/' + dsName + '/JDBCResource/' + dsName + '/JDBCDataSourceParams/' + dsName)
+        set('JNDINames', jarray.array([String(jndiName)], String))
+
+        # Driver params
+        cd('/JDBCSystemResources/' + dsName +
+           '/JDBCResource/' + dsName +
+           '/JDBCDriverParams/' + dsName)
+        set('Url', dbUrl)
+        set('DriverName', 'oracle.jdbc.OracleDriver')
+        cmo.setPassword(dbPassword)
+
+        # Username property
+        cd('/JDBCSystemResources/' + dsName +
+           '/JDBCResource/' + dsName +
+           '/JDBCDriverParams/' + dsName + '/Properties/' + dsName)
+        try:
+            cmo.createProperty('user')
+        except:
+            pass
+        cd('Properties/user')
+        set('Value', dbUser)
+
+        # Connection pool
+        cd('/JDBCSystemResources/' + dsName +
+           '/JDBCResource/' + dsName +
+           '/JDBCConnectionPoolParams/' + dsName)
+        set('InitialCapacity', 0)
+        set('MaxCapacity', 10)
+        set('TestTableName', 'SQL ISVALID')
+
+        # Target assignment
+        cd('/JDBCSystemResources/' + dsName)
+        targetList = []
+        for t in targets:
+            t = t.strip()
+            if not t:
+                continue
+            print('  Targeting: ' + t)
+            serverMBean = getMBean('/Servers/' + t)
+            if serverMBean is not None:
+                targetList.append(serverMBean.getObjectName())
+            else:
+                print('  WARNING: Server ' + t + ' not found, skipping')
+        if len(targetList) > 0:
+            set('Targets', jarray.array(targetList, ObjectName))
+        else:
+            print('  WARNING: No valid targets found for ' + dsName)
+
+        print('Datasource ' + dsName + ' configured.')
+
+    save()
+    activate()
+    print('')
+    print('Phase 2 complete: All datasources created and activated.')
+
+    # ================================================================
+    # TEST DATASOURCE POOLS
+    # ================================================================
+    print('')
+    print('Waiting 10 seconds for MBean registration...')
+    Thread.sleep(10000)
+
+    print('')
+    print('===== TESTING DATASOURCE CONNECTIONS =====')
+    serverConfig()
+    domainRuntime()
+
+    runningSrv = []
+    try:
+        cd('/ServerRuntimes')
+        rawList = ls(returnMap='true')
+        for item in rawList:
+            runningSrv.append(str(item))
+        print('Running servers: ' + str(runningSrv))
+    except Exception, e:
+        print('WARNING: Could not list ServerRuntimes: ' + str(e))
+
+    passCount = 0
+    failCount = 0
+    skipCount = 0
+
+    for ds in datasources:
+        dsName  = ds['dsName']
+        targets = ds['targets']
+
+        for targetServer in targets:
+            targetServer = targetServer.strip()
+            label = dsName + ' on ' + targetServer
+
+            if targetServer not in runningSrv:
+                print('SKIP  - ' + label + ' (server not running)')
+                skipCount += 1
+                continue
+
+            try:
+                cd('/ServerRuntimes/' + targetServer +
+                   '/JDBCServiceRuntime/' + targetServer +
+                   '/JDBCDataSourceRuntimeMBeans/' + dsName)
+                cmo.testPool()
+                print('OK    - ' + label)
+                passCount += 1
+            except Exception, e:
+                print('FAIL  - ' + label + ': ' + str(e))
+                failCount += 1
+
+    print('')
+    print('--- Test Summary ---')
+    print('Passed : ' + str(passCount))
+    print('Failed : ' + str(failCount))
+    print('Skipped: ' + str(skipCount))
+{deploy_block}
+# ================================================================
+# DISCONNECT
+# ================================================================
+print('')
+print('Disconnecting from WebLogic...')
+disconnect()
+exit()
+"""
+
+        # ── Write WLST script to remote and execute ──
+        script_path = "/tmp/wlst_ds_deploy_$$.py"
+        wrapper_script = f"""#!/bin/bash
+set -e
+
+source /home/oracle/.profile >/dev/null 2>&1 || true
+
+WLST=$(find /u01 -name wlst.sh 2>/dev/null | grep -i wlserver | head -1)
+if [ -z "$WLST" ]; then
+    echo "ERROR: wlst.sh not found under /u01"
+    exit 1
+fi
+echo "Using WLST: $WLST"
+
+TMP_WLST="/tmp/wlst_combined_$$.py"
+
+cat <<'WLSTEOF' > "$TMP_WLST"
+{wlst_script}
+WLSTEOF
+
+echo "Executing combined WLST script..."
+"$WLST" "$TMP_WLST"
+RET=$?
+
+rm -f "$TMP_WLST"
+exit $RET
+"""
+
+        wrapper_path = "/tmp/wlst_combined_deploy.sh"
+        write_cmd = f"cat > {wrapper_path} << 'EOFSCRIPT'\n{wrapper_script}EOFSCRIPT\nchmod 755 {wrapper_path}"
+
+        write_result = await self.ssh_service.execute_command(
+            host, username, password, write_cmd, get_pty=True
+        )
+        if not write_result.get("success"):
+            error_msg = f"Failed to write WLST script: {write_result.get('stderr')}"
+            logs.append(f"[ERROR] {error_msg}")
+            return {"success": False, "logs": logs, "error": error_msg}
+
+        # Execute as oracle user
+        exec_cmd = (
+            f"bash {wrapper_path}"
+            if username == "oracle"
+            else f"su - oracle -c 'bash {wrapper_path}'"
+        )
+
+        captured_lines: list[str] = []
+        pending = ""
+
+        async def wlst_output_collector(text: str) -> None:
+            nonlocal pending
+            if not text:
+                return
+            pending += text.replace("\r", "\n")
+            parts = pending.split("\n")
+            for line in parts[:-1]:
+                cleaned = line.strip()
+                if cleaned:
+                    captured_lines.append(cleaned)
+                    prefixed = f"[WLST] {cleaned}"
+                    logs.append(prefixed)
+                    await self._call_output_callback(on_output_callback, prefixed)
+            pending = parts[-1]
+
+        result = await self.ssh_service.execute_interactive_command(
+            host, username, password, exec_cmd,
+            on_output_callback=wlst_output_collector,
+            timeout=1800,
+        )
+        tail = pending.strip()
+        if tail:
+            captured_lines.append(tail)
+
+        # Cleanup
+        await self.ssh_service.execute_command(
+            host, username, password, f"rm -f {wrapper_path}"
+        )
+
+        if not result.get("success"):
+            error_detail = "WLST combined datasource/deploy failed"
+            if captured_lines:
+                error_detail = f"WLST failed: {captured_lines[-1][:120]}"
+            logs.append(f"[ERROR] {error_detail}")
+            return {"success": False, "logs": logs, "error": error_detail}
+
+        # Check captured output for deploy failure markers
+        deploy_failed = any("DEPLOY_FAILED:" in line for line in captured_lines)
+        if deploy_failed:
+            error_detail = "FICHOME deployment failed"
+            for line in captured_lines:
+                if "DEPLOY_FAILED:" in line:
+                    error_detail = line
+                    break
+            logs.append(f"[ERROR] {error_detail}")
+            return {"success": False, "logs": logs, "error": error_detail}
+
+        logs.append("[OK] All datasources created"
+                     + (" and FICHOME deployed" if deploy_app_enabled else "")
+                     + " successfully")
+        return {"success": True, "logs": logs}
+
+    # ============== WEBLOGIC DATASOURCE CREATION (SINGLE) ==============
 
     async def create_weblogic_datasource(
         self,
@@ -4031,41 +4454,61 @@ targets = '{targets_csv}'.split(',')
 print('Connecting to WebLogic...')
 connect(username, password, adminUrl)
 
+# Cancel any stale edit session
+try:
+    edit()
+    cancelEdit('y')
+    print('Cancelled stale edit session.')
+except:
+    print('No stale edit session to cancel.')
+
+# Phase 1: Delete existing datasource
+print('')
+print('===== PHASE 1: DELETE EXISTING DATASOURCE =====')
 edit()
 startEdit()
 
 cd('/JDBCSystemResources')
-
-# Delete existing datasource if present (clean fix)
 if dsName in ls(returnMap='true'):
     print('Deleting existing datasource: ' + dsName)
     delete(dsName, 'JDBCSystemResource')
-    cd('/JDBCSystemResources')
+    save()
+    activate()
+    print('Phase 1 complete: Deleted ' + dsName)
+else:
+    print('Datasource ' + dsName + ' does not exist, skip delete.')
+    cancelEdit('y')
 
-# Create datasource
+# Phase 2: Create fresh datasource
+print('')
+print('===== PHASE 2: CREATE FRESH DATASOURCE =====')
+edit()
+startEdit()
+
 print('Creating datasource: ' + dsName)
 cd('/')
 cmo.createJDBCSystemResource(dsName)
 
 cd('/JDBCSystemResources/' + dsName + '/JDBCResource/' + dsName)
+cmo.setName(dsName)
 
 # JNDI
-cd('JDBCDataSourceParams/' + dsName)
+cd('/JDBCSystemResources/' + dsName + '/JDBCResource/' + dsName + '/JDBCDataSourceParams/' + dsName)
 set('JNDINames', jarray.array([String(jndiName)], String))
 
-# Driver params (FIXED PATH)
+# Driver params
 cd('/JDBCSystemResources/' + dsName +
    '/JDBCResource/' + dsName +
-   '/JDBCDriverParams/NO_NAME_0')
+   '/JDBCDriverParams/' + dsName)
 
 set('Url', dbUrl)
 set('DriverName', driver)
 cmo.setPassword(dbPassword)
 
-# Username property (FIXED PATH)
+# Username property
 cd('/JDBCSystemResources/' + dsName +
    '/JDBCResource/' + dsName +
-   '/JDBCDriverParams/NO_NAME_0/Properties/NO_NAME_0')
+   '/JDBCDriverParams/' + dsName + '/Properties/' + dsName)
 
 try:
     cmo.createProperty('user')
@@ -4075,12 +4518,12 @@ except:
 cd('Properties/user')
 set('Value', dbUser)
 
-# Pool params (FIXED PATH)
+# Pool params
 cd('/JDBCSystemResources/' + dsName +
    '/JDBCResource/' + dsName +
-   '/JDBCConnectionPoolParams/NO_NAME_0')
+   '/JDBCConnectionPoolParams/' + dsName)
 
-set('InitialCapacity', 1)
+set('InitialCapacity', 0)
 set('MaxCapacity', 10)
 set('TestTableName', 'SQL ISVALID')
 
@@ -4090,10 +4533,19 @@ cd('/JDBCSystemResources/' + dsName)
 targetList = []
 for t in targets:
     t = t.strip()
+    if not t:
+        continue
     print('Targeting datasource to: ' + t)
-    targetList.append(ObjectName('com.bea:Name=' + t + ',Type=Server'))
+    serverMBean = getMBean('/Servers/' + t)
+    if serverMBean is not None:
+        targetList.append(serverMBean.getObjectName())
+    else:
+        print('WARNING: Server ' + t + ' not found, skipping')
 
-set('Targets', jarray.array(targetList, ObjectName))
+if len(targetList) > 0:
+    set('Targets', jarray.array(targetList, ObjectName))
+else:
+    print('WARNING: No valid targets found')
 
 save()
 activate()

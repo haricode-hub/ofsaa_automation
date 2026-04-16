@@ -1,468 +1,378 @@
 # AGENTS.md
 
 ## Purpose
-This repository implements **OFSAA Installation Automation** with a stable **BD Pack module** as the baseline. When adding new modules (ECM, SANC, future packs), do not break existing BD Pack behavior, API contracts, or file layout.
+This repository implements **OFSAA Installation Automation** — a full-stack web application that automates Oracle Financial Services (OFSAA) installation, configuration, and WebLogic deployment on remote Linux servers via SSH.
+
+**Modules**: BD Pack (baseline), ECM Pack, SANC Pack, FICHOME Deployment, WebLogic Datasource/App Deployment.
 
 ---
 
-## Architecture Overview
+## Technology Stack
 
-### Technology Stack
-- **Backend**: FastAPI (Python 3.x) with async support, managed by **uv** (sync/run)
-- **Frontend**: Next.js 14 + React + TypeScript + Tailwind CSS
-- **Communication**: WebSocket for real-time logs and SSH via Paramiko
-- **State Management**: In-memory task tracking with WebSocket broadcast
-
-### High-Level Flow
-```
-Frontend Form Submit  ->  POST /api/installation/start
-                      ->  Creates task_id, spawns async installation process
-                      ->  WebSocket /ws/{task_id} streams logs/status
-                      ->  10-step installation workflow executes
-                      ->  Viewer at /logs/{task_id} displays progress
-```
-
-### Unified Logging System (All Modules)
-All modules (BD, ECM, SANC, FICHOME) use persistent disk-based logging:
-- **Persistence**: Logs written to `/tmp/ofsaa_logs/{task_id}.log` (via `LogPersistence` service)
-- **Recovery**: Full log history sent to frontend on WebSocket connect/reconnect
-- **API**: `/logs/{task_id}/full` and `/logs/{task_id}/tail` for manual retrieval
-- **Guarantee**: No data loss on page refresh, backend restart, or network disconnect
-- **Details**: See [LOGGING_ARCHITECTURE.md](LOGGING_ARCHITECTURE.md)
+| Layer | Technology | Details |
+|-------|-----------|---------|
+| **Backend** | FastAPI (Python 3.8+) | Async, Paramiko SSH, WebSocket streaming |
+| **Frontend** | Next.js 15 + React 19 + TypeScript | Tailwind CSS, Framer Motion, Heroicons |
+| **Communication** | WebSocket `/ws/{task_id}` | Real-time logs, status, interactive prompts |
+| **Package Mgmt** | `uv` (Python), `npm` (Node) | Backend: `uv sync && uv run uvicorn`, Frontend: `npm run dev` |
+| **Deployment** | PM2 via `ecosystem.config.js` | Both backend and frontend managed by PM2 |
+| **SSH** | Paramiko | Interactive commands, keep-alive, prompt detection |
+| **Logging** | Disk-persistent `/tmp/ofsaa_logs/{task_id}.log` | Full recovery on reconnect/restart |
 
 ---
 
-## Baseline Module: BD Pack (Do Not Break)
+## High-Level Architecture
 
-### Module Identity
-- **Module name**: `BD Pack`
-- **Backend entry API**: `/api/installation/*`
-- **Module flag field**: `install_bdpack: bool`
-
-### Key Files
-| Layer | File | Responsibility |
-|-------|------|----------------|
-| Router | `backend/routers/installation.py` | API endpoints, task orchestration |
-| Schema | `backend/schemas/installation.py` | Pydantic models for request/response |
-| Orchestrator | `backend/services/installation_service.py` | Workflow step composition |
-| Installer | `backend/services/installer.py` | Git clone, XML/properties patching, osc.sh, setup.sh |
-| SSH | `backend/services/ssh_service.py` | Remote command execution |
-| UI Form | `frontend/src/components/InstallationForm.tsx` | Main installation form |
-
-### Installation Steps (10 Steps)
-```python
-STEP_NAMES = [
-    "Creating oracle user and oinstall group",      # Step 1
-    "Creating mount point /u01",                    # Step 2
-    "Installing KSH and git",                       # Step 3
-    "Creating .profile file",                       # Step 4
-    "Installing Java and updating profile",         # Step 5
-    "Creating OFSAA directory structure",           # Step 6
-    "Checking Oracle client and updating profile",  # Step 7
-    "Setting up OFSAA installer and running environment check", # Step 8
-    "Applying config XMLs/properties and running osc.sh",       # Step 9
-    "Installing BD PACK with /setup.sh SILENT",                 # Step 10
-]
 ```
-
-### Config Files Patched (BD Pack)
-| File | Kit Location | Description |
-|------|--------------|-------------|
-| `OFS_BD_SCHEMA_IN.xml` | `schema_creator/conf/` | JDBC, schema names, tablespaces |
-| `OFS_BD_PACK.xml` | `conf/` | Application enable flags |
-| `default.properties` | `OFS_AML/conf/` | Silent installer properties |
-| `OFSAAI_InstallConfig.xml` | `OFS_AAI/conf/` | Web server, ports, SFTP config |
+Frontend Form Submit -> POST /api/installation/start (or /deploy-fichome, /create-datasources)
+                     -> Backend creates task_id, spawns async process
+                     -> Returns { task_id } immediately
+                     -> Frontend navigates to /logs/{taskId}
+                     -> Opens WebSocket /ws/{task_id}
+                     -> Backend sends historical logs on connect (disk recovery)
+                     -> Live streaming: output, status, progress, prompts
+                     -> Interactive prompts: user responds via WebSocket
+                     -> Completion: status=completed or status=failed
+```
 
 ---
 
-## Current Code Structure
+## Project Structure
 
-### Backend (`backend/`)
 ```
 backend/
-├── main.py                     # FastAPI app bootstrap, WebSocket endpoint
-├── core/
-│   ├── config.py               # Config class with env vars, step names
-│   ├── logging.py              # Logging setup
-│   └── websocket_manager.py    # WebSocket connection manager
-├── routers/
-│   └── installation.py         # API routes, task workflow orchestration
-├── schemas/
-│   └── installation.py         # Pydantic models (InstallationRequest, etc.)
-└── services/
-    ├── installation_service.py # Service composition (delegates to sub-services)
-    ├── installer.py            # Git operations, XML patching, script execution
-    ├── ssh_service.py          # SSH connection and command execution
-    ├── recovery_service.py     # Cleanup after failures
-    ├── validation.py           # Directory/file checks
-    ├── java.py                 # Java installation
-    ├── packages.py             # Package installation (ksh, git)
-    ├── profile.py              # .profile creation/updates
-    ├── mount_point.py          # /u01 mount point setup
-    ├── oracle_client.py        # Oracle client detection
-    ├── oracle_user_setup.py    # Oracle user/group creation
-    └── utils.py                # Shell escape, helpers
-```
+  main.py                         # FastAPI app, WebSocket /ws/{task_id}, CORS
+  pyproject.toml                  # Python deps (fastapi, paramiko, etc.)
+  .env.example                    # Environment variable template
+  core/
+    config.py                     # Env vars, step names, default paths
+    logging.py                    # Logger setup, timing context manager
+    websocket_manager.py          # WS connection manager, input queues
+  routers/
+    installation.py               # All API endpoints + async task orchestration
+  schemas/
+    installation.py               # Pydantic models (Request/Response/Status)
+  services/
+    installation_service.py       # Orchestrator - delegates to all sub-services
+    installer.py                  # Core: Git ops, XML patching, script execution,
+                                  #   BD/ECM/SANC modules, FICHOME deploy, WLST
+    ssh_service.py                # Paramiko SSH wrapper (exec, interactive, keepalive)
+    recovery_service.py           # Backup/restore, schema drop, failure cleanup
+    log_persistence.py            # Disk-based log persistence per task
+    validation.py                 # Pre-checks (user, group, dir, file, package)
+    oracle_user_setup.py          # Create oracle user + oinstall group
+    mount_point.py                # Create /u01 mount point
+    packages.py                   # Install ksh, git, unzip
+    profile.py                    # Create/update /home/oracle/.profile
+    java.py                       # Java installation from repo
+    oracle_client.py              # Oracle client detection + profile update
+    utils.py                      # shell_escape(), sed_escape()
 
-### Frontend (`frontend/`)
-```
 frontend/
-├── src/
-│   ├── app/
-│   │   ├── layout.tsx          # Root layout
-│   │   ├── page.tsx            # Home page (renders InstallationForm)
-│   │   ├── globals.css         # Tailwind globals
-│   │   └── logs/[taskId]/page.tsx  # Real-time log viewer
-│   └── components/
-│       ├── InstallationForm.tsx     # Main BD Pack installation form
-│       ├── EcmPackForm.tsx          # ECM configuration form fields
-│       ├── EcmPackPage.tsx          # ECM section wrapper
-│       ├── EcmPackPreview.tsx       # ECM review component
-│       └── BackgroundMatrix.tsx     # Background animation
+  package.json                    # Node deps (next, react, tailwind, framer-motion)
+  src/
+    app/
+      layout.tsx                  # Root layout ("OFSAA Installation Portal")
+      page.tsx                    # Home - tabbed: Installation | Deployment
+      globals.css                 # Tailwind globals + custom theme
+      logs/[taskId]/page.tsx      # Real-time log viewer with step tracking
+    components/
+      InstallationForm.tsx        # BD + ECM + SANC installation form (~800 lines)
+      DeploymentForm.tsx          # EAR + Datasources + App Deploy form (~500 lines)
+      DatasourceForm.tsx          # Standalone datasource creation form
+      EcmPackForm.tsx             # ECM config fields (~500 lines)
+      EcmPackPage.tsx             # ECM wrapper with BD->ECM field sync
+      EcmPackPreview.tsx          # ECM default.properties preview/download
+      SancPackForm.tsx            # SANC config fields (~500 lines)
+      SancPackPage.tsx            # SANC wrapper with BD->SANC field sync
+      OracleClientTerraformForm.tsx  # Oracle Client via Terraform
+      BackgroundMatrix.tsx        # Animated dot matrix background
+    lib/
+      api.ts                      # getApiUrl(), getWebSocketUrl()
 ```
 
 ---
 
-## API Contract
+## API Endpoints
 
-### Endpoints
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | `/api/installation/start` | Start installation, returns task_id |
-| GET | `/api/installation/status/{task_id}` | Get task status/progress |
-| GET | `/api/installation/tasks` | List all tasks |
-| POST | `/api/installation/test-connection` | Test SSH connectivity |
-| GET | `/api/installation/rollback` | Get cached request for retry |
-| GET | `/api/installation/checkpoint` | Get BD Pack checkpoint status |
-| DELETE | `/api/installation/checkpoint` | Clear BD Pack checkpoint |
-| WS | `/ws/{task_id}` | Real-time logs/status/prompts |
-
-### Checkpoint / Backup-Restore System
-The system uses a **backup/restore** approach (not simple checkpointing):
-
-**Workflow (BD + ECM):**
-1. BD Pack installs (steps 1–10)
-2. After BD success → **automatic backup**: app tar + DB schema backup
-3. ECM installs (steps 1–4)
-4. If ECM fails → **automatic restore to BD state**: rm OFSAA → tar extract → DB restore
-5. User retries ECM only with `resume_from_checkpoint: true`
-6. After successful ECM → checkpoint/backup auto-cleared
-
-**BD osc.sh Failure:**
-- Kill Java processes
-- Drop schemas/tablespaces via `sqlplus "sys/<db_sys_password>@<host>:<port>/<service> as sysdba"`
-- Clear system cache
-- Full BD reinstall required
-
-**Backup Scripts (Git-Controlled):**
-- Located in `<REPO_DIR>/backup_Restore/`
-- `backup_ofs_schemas.sh system <DB_PASS> <SERVICE>` — DB backup
-- `restore_ofs_schemas.sh system <DB_PASS> <SERVICE>` — DB restore
-- Scripts are never created/edited locally — always pulled from Git
-- DB password and service come from UI fields
-
-**Request Fields:**
-```python
-resume_from_checkpoint: bool = False  # Skip BD Pack, retry ECM from BD backup
-db_sys_password: Optional[str]        # Oracle SYS password for sqlplus connections
-```
-
-**Example - Resume ECM after failure:**
-```json
-{
-  "host": "1.2.3.4",
-  "username": "root",
-  "password": "secret",
-  "install_bdpack": true,
-  "install_ecm": true,
-  "resume_from_checkpoint": true,
-  "db_sys_password": "Welcome#123",
-  "schema_jdbc_service": "FLEXPDB1",
-  "ecm_schema_jdbc_host": "db.example.com"
-}
-```
-
-### Request Schema (InstallationRequest) - Key Fields
-```python
-# Core connection
-host: str                       # Target server IP
-username: str                   # SSH username (typically root)
-password: str                   # SSH password
-
-# Database SYS password (for backup/restore/cleanup sqlplus operations)
-db_sys_password: Optional[str]  # Oracle SYS password from UI
-
-# Profile variables
-fic_home: Optional[str]         # FIC_HOME path
-java_home: Optional[str]        # Custom JAVA_HOME
-oracle_sid: Optional[str]       # Oracle SID
-
-# Schema config (OFS_BD_SCHEMA_IN.xml)
-schema_jdbc_host: Optional[str]
-schema_jdbc_port: Optional[int]
-schema_jdbc_service: Optional[str]
-schema_default_password: Optional[str]
-schema_config_schema_name: Optional[str]
-schema_atomic_schema_name: Optional[str]
-# ... more schema fields
-
-# Pack apps (OFS_BD_PACK.xml)
-pack_app_enable: Optional[Dict[str, bool]]  # APP_ID -> enabled
-
-# Properties (default.properties)
-prop_base_country: Optional[str]
-prop_default_jurisdiction: Optional[str]
-# ... more property fields
-
-# OFSAAI config (OFSAAI_InstallConfig.xml)
-aai_webappservertype: Optional[str]
-aai_dbserver_ip: Optional[str]
-# ... more AAI fields
-
-# Module flags
-installation_mode: Optional[str]  # "fresh" | "addon"
-install_bdpack: bool              # BD Pack installation
-install_ecm: bool                 # ECM module flag (prepared)
-install_sanc: Optional[bool]      # SANC module flag (placeholder)
-```
+| Method | Path | Purpose | Request Schema |
+|--------|------|---------|---------------|
+| POST | `/api/installation/start` | Start BD/ECM/SANC installation | `InstallationRequest` |
+| GET | `/api/installation/status/{task_id}` | Get task status/progress | - |
+| GET | `/api/installation/tasks` | List all tasks | - |
+| GET | `/api/installation/logs/{task_id}/full` | Full log download | - |
+| GET | `/api/installation/logs/{task_id}/tail` | Last N log lines | - |
+| POST | `/api/installation/test-connection` | Test SSH connectivity | `{host, username, password}` |
+| GET | `/api/installation/rollback` | Get cached request for retry | - |
+| GET | `/api/installation/checkpoint` | Get BD Pack checkpoint status | - |
+| DELETE | `/api/installation/checkpoint` | Clear BD Pack checkpoint | - |
+| POST | `/api/installation/deploy-fichome` | EAR build + datasources + app deploy | `FichomeDeploymentRequest` |
+| GET | `/api/installation/deploy-fichome/status/{task_id}` | Deployment task status | - |
+| POST | `/api/installation/create-datasources` | Create WebLogic datasources | `DatasourceCreationRequest` |
+| GET | `/api/installation/create-datasources/status/{task_id}` | DS creation status | - |
+| WS | `/ws/{task_id}` | Real-time logs, status, prompts | - |
 
 ---
 
-## ECM Module (IMPLEMENTED)
+## Module Details
 
-### Module Identity
-- **Module name**: `ECM Pack`
-- **Module flag field**: `install_ecm: bool`
-- **Kit Location**: `/u01/ECM_Installer_Kit/OFS_ECM_PACK`
-- **Repo Folder**: `ECM_PACK`
+### BD Pack (Baseline - Do Not Break)
 
-### ECM Installation Flow (4 Steps - Runs After BD Pack)
-```python
-# ECM skips steps 1-8 (oracle user, mount, packages, profile, Java, directories, Oracle client, envCheck)
-# ECM runs after BD Pack completes:
+**Flag**: `install_bdpack: bool`
+**Kit Location**: `/u01/BD_Installer_Kit/OFS_BD_PACK`
 
-ECM_STEP_1: "Downloading and extracting ECM installer kit"  # Progress: 82%
-ECM_STEP_2: "Setting ECM kit permissions"                    # Progress: 85%
-ECM_STEP_3: "Applying ECM configuration files"               # Progress: 88%
-ECM_STEP_4a: "Running ECM schema creator (osc.sh)"           # Progress: 92%
-ECM_STEP_4b: "Running ECM setup (setup.sh SILENT)"           # Progress: 96%
-```
+**10-Step Installation**:
+| Step | Name | Progress |
+|------|------|----------|
+| 1 | Creating oracle user and oinstall group | 10% |
+| 2 | Creating mount point /u01 | 20% |
+| 3 | Installing KSH and git | 30% |
+| 4 | Creating .profile file | 40% |
+| 5 | Installing Java and updating profile | 50% |
+| 6 | Creating OFSAA directory structure | 60% |
+| 7 | Checking Oracle client and updating profile | 70% |
+| 8 | Setting up OFSAA installer and running environment check | 80% |
+| 9 | Applying config XMLs/properties and running osc.sh | 90% |
+| 10 | Installing BD PACK with setup.sh SILENT | 100% |
 
-### Config Files Patched (ECM)
-| File | Kit Location | Description |
-|------|--------------|-------------|
-| `OFS_ECM_SCHEMA_IN.xml` | `schema_creator/conf/` | JDBC, schema names, tablespaces |
-| `default.properties` | `OFS_NGECM/conf/` | Silent installer properties |
-| `OFSAAI_InstallConfig.xml` | `OFS_AAI/conf/` | Web server, ports, SFTP config |
-
-### ECM Backend Methods (installer.py)
-```python
-# Download/Extract
-download_and_extract_ecm_installer()     # Extract to /u01/ECM_Installer_Kit/OFS_ECM_PACK
-set_ecm_permissions()                     # Set kit permissions
-
-# Config Patching
-apply_ecm_config_files_from_repo()        # Orchestrates all patches
-_patch_ofs_ecm_schema_in_repo()           # Patch OFS_ECM_SCHEMA_IN.xml
-_patch_ecm_default_properties_repo()      # Patch default.properties
-_patch_ecm_ofsaai_install_config_repo()   # Patch OFSAAI_InstallConfig.xml
-
-# Script Execution
-run_ecm_osc_schema_creator()              # Run osc.sh -s
-run_ecm_setup_silent()                    # Run setup.sh SILENT
-```
-
-### ECM Schema Fields (InstallationRequest)
-```python
-# OFS_ECM_SCHEMA_IN.xml params (prefix: ecm_schema_)
-ecm_schema_jdbc_host, ecm_schema_jdbc_port, ecm_schema_jdbc_service
-ecm_schema_host, ecm_schema_setup_env, ecm_schema_prefix_schema_name
-ecm_schema_apply_same_for_all, ecm_schema_default_password
-ecm_schema_datafile_dir, ecm_schema_config_schema_name, ecm_schema_atomic_schema_name
-
-# default.properties params (prefix: ecm_prop_)
-ecm_prop_base_country, ecm_prop_default_jurisdiction, ecm_prop_smtp_host
-ecm_prop_web_service_user, ecm_prop_web_service_password, ecm_prop_nls_length_semantics
-ecm_prop_analyst_data_source, ecm_prop_miner_data_source, ecm_prop_configure_obiee
-ecm_prop_fsdf_upload_model, ecm_prop_amlsource, ecm_prop_kycsource, ecm_prop_cssource
-ecm_prop_externalsystemsource, ecm_prop_tbamlsource, ecm_prop_fatcasource
-ecm_prop_ofsecm_datasrcname, ecm_prop_comn_gateway_ds
-ecm_prop_t2jurl, ecm_prop_j2turl, ecm_prop_cmngtwyurl, ecm_prop_bdurl
-ecm_prop_ofss_wls_url, ecm_prop_aai_url, ecm_prop_cs_url, ecm_prop_arachnys_nns_service_url
-
-# OFSAAI_InstallConfig.xml params (prefix: ecm_aai_)
-ecm_aai_webappservertype, ecm_aai_dbserver_ip, ecm_aai_oracle_service_name
-ecm_aai_abs_driver_path, ecm_aai_olap_server_implementation, ecm_aai_sftp_enable
-# ... all port and path configs
-```
-
-### ECM Frontend Components
-- `EcmPackForm.tsx` - Form fields for ECM configuration
-- `EcmPackPage.tsx` - Wrapper that shows when `install_ecm` is enabled
-- `EcmPackPreview.tsx` - Preview/review component
-- `EcmFormData` interface - TypeScript types for all ECM fields
+**Config Files Patched**:
+- `OFS_BD_SCHEMA_IN.xml` (schema_creator/conf/) via `_patch_ofs_bd_schema_in_repo()`
+- `OFS_BD_PACK.xml` (conf/) via `_patch_ofs_bd_pack_xml_repo()`
+- `default.properties` (OFS_AML/conf/) via `_patch_default_properties_repo()`
+- `OFSAAI_InstallConfig.xml` (OFS_AAI/conf/) via `_patch_ofsaai_install_config_repo()`
 
 ---
 
-## Extension Pattern for New Modules (e.g., SANC)
+### ECM Pack (Implemented)
 
-Follow the ECM implementation pattern when adding new modules:
+**Flag**: `install_ecm: bool`
+**Kit Location**: `/u01/ECM_Installer_Kit/OFS_ECM_PACK`
 
-### Step 1: Schema Changes (`backend/schemas/installation.py`)
-```python
-# Add module-specific fields (prefix with module name)
-sanc_schema_jdbc_host: Optional[str] = Field(default=None)
-sanc_schema_jdbc_port: Optional[int] = Field(default=1521)
-sanc_prop_some_field: Optional[str] = Field(default=None)
-# ... etc
-```
+**4-Step Installation** (runs after BD Pack):
+1. Downloading and extracting ECM installer kit (82%)
+2. Setting ECM kit permissions (85%)
+3. Applying ECM configuration files (88%)
+4. Running osc.sh (92%) + setup.sh SILENT (96%)
 
-### Step 2: Installer Methods (`backend/services/installer.py`)
-```python
-# Add methods following ECM pattern:
-async def download_and_extract_sanc_installer(...)
-async def set_sanc_permissions(...)
-async def apply_sanc_config_files_from_repo(...)
-async def _patch_ofs_sanc_schema_in_repo(...)
-async def run_sanc_osc_schema_creator(...)
-async def run_sanc_setup_silent(...)
-```
-
-### Step 3: Service Layer (`backend/services/installation_service.py`)
-```python
-# Add wrapper methods delegating to installer
-async def download_and_extract_sanc_installer(self, ...) -> dict:
-    return await self.installer.download_and_extract_sanc_installer(...)
-```
-
-### Step 4: Router Changes (`backend/routers/installation.py`)
-```python
-# Add after BD Pack/ECM steps:
-if request.install_sanc:
-    await append_output(task_id, "[INFO] ===== SANC MODULE =====")
-    # ... SANC installation steps
-```
-
-### Step 5: Frontend Components
-```typescript
-// Create SancPackForm.tsx, SancPackPage.tsx, SancPackPreview.tsx
-// Update InstallationForm.tsx to include SANC section
-```
+**Config Files**: `OFS_ECM_SCHEMA_IN.xml`, `default.properties` (OFS_NGECM), `OFSAAI_InstallConfig.xml`
+**Schema Fields**: Prefixed with `ecm_schema_*`, `ecm_prop_*`, `ecm_aai_*`
 
 ---
 
-## Contract Rules (Critical)
+### SANC Pack (Implemented)
 
-1. **Backward Compatibility**: Existing BD Pack payload must work without ECM fields
-2. **Additive Only**: New fields should be Optional with defaults
-3. **Module Isolation**: ECM logic should NOT modify BD Pack code paths
-4. **Flag Guards**: Always check `if install_ecm:` before ECM operations
-5. **Separate XML Handlers**: Create dedicated `_patch_ofs_ecm_*` methods
-6. **Error Isolation**: ECM failure should not corrupt BD Pack installation
+**Flag**: `install_sanc: bool`
+**Kit Location**: `/u01/SANC_Installer_Kit/OFS_SANC_PACK`
+
+**Same 4-step pattern as ECM** (runs after ECM if both selected)
+**Extra Fields**: `cs_swiftinfo`, `tflt_swiftinfo`
+**Schema Fields**: Prefixed with `sanc_schema_*`, `sanc_aai_*`
 
 ---
 
-## Safety Checklist (BD + ECM + Backup/Restore)
+### FICHOME Deployment (EAR Creation & Exploding)
 
-- [x] BD Pack-only installation works with existing payload
-- [x] `install_ecm: false` does not trigger any ECM code (guarded by `if request.install_ecm:`)
-- [x] ECM fields have sensible defaults (all Optional with None defaults)
-- [x] BD Pack XML patching unchanged (OFS_BD_*)
-- [x] ECM XML patching uses separate methods (`_patch_ofs_ecm_*`)
-- [x] WebSocket logs properly show ECM steps when enabled
-- [x] Rollback endpoint still works for both modules
-- [x] No changes to core infrastructure (SSH, WebSocket)
-- [x] Automatic backup after BD success (app tar + DB schema backup)
-- [x] ECM failure triggers automatic restore to BD state
-- [x] sqlplus uses `sys/<db_sys_password>@host:port/service as sysdba` (not OS auth)
-- [x] Backup scripts pulled from Git (backup_Restore folder)
-- [x] `db_sys_password` field added to UI and schema
-- [x] Backend uses `uv sync` + `uv run python -m uvicorn` for setup/start
+**Endpoint**: `POST /api/installation/deploy-fichome`
+**Frontend**: `DeploymentForm.tsx`
+
+**5-Step Workflow**:
+1. Grant database privileges (ATOMIC + CONFIG schemas)
+2. Run EAR creation script (backup -> ant.sh -> explode EAR/WAR)
+3. Run startofsaa.sh
+4. Run checkofsaa.sh
+5. Combined WLST: create datasources + deploy FICHOME.ear (optional, single session)
+
+---
+
+### WebLogic Datasource + App Deployment
+
+**Combined Method**: `installer.create_datasources_and_deploy_app()`
+
+**How it works**:
+1. Generates a single WLST Python script with all datasources from UI input
+2. Wraps in bash script that auto-discovers wlst.sh:
+   `find /u01 -name wlst.sh 2>/dev/null | grep -i wlserver | head -1`
+3. SSHs to target, writes script, executes as oracle user
+4. Single WebLogic session: connect -> delete+create each DS -> test pools -> undeploy+deploy app -> disconnect
+5. Cleans up temp files
+
+**Datasource Logic**: Delete existing -> Create new -> Set JNDI, driver, pool, targets -> Save & Activate -> Test pool
+**App Deploy Logic**: Stop app (if running) -> Undeploy -> Deploy new -> Save & Activate
+
+**Default Datasources** (from UI):
+| DS Name | JNDI | DB User | Targets |
+|---------|------|---------|---------|
+| ANALYST | jdbc/ANALYST | OFSATOMIC | AdminServer, MS1 |
+| FCCMINFO | jdbc/FCCMINFO | OFSATOMIC | MS1 |
+| FCCMINFOCNF | jdbc/FCCMINFOCNF | OFSCONFIG | AdminServer, MS1 |
+| FICMASTER | jdbc/FICMASTER | OFSCONFIG | MS1 |
+| MINER | jdbc/MINER | OFSATOMIC | AdminServer, MS1 |
+
+---
+
+## Backup / Restore System
+
+**Workflow (BD + ECM)**:
+1. BD Pack installs (steps 1-10)
+2. After BD success -> automatic backup: app tar + DB schema backup
+3. ECM installs (steps 1-4)
+4. If ECM fails -> automatic restore to BD state
+5. User retries ECM with `resume_from_checkpoint: true`
+6. After successful ECM -> checkpoint auto-cleared
+
+**BD osc.sh Failure**: Kill Java -> Drop schemas/tablespaces via sqlplus -> Clear cache -> Full reinstall
+
+**Backup Scripts** (Git-controlled): `<REPO_DIR>/backup_Restore/backup_ofs_schemas.sh`, `restore_ofs_schemas.sh`
+
+**Key Fields**: `resume_from_checkpoint`, `db_sys_password`, `db_ssh_host/username/password`
+
+---
+
+## Persistent Logging
+
+- **Write**: `LogPersistence.append_log()` -> `/tmp/ofsaa_logs/{task_id}.log`
+- **Recovery**: Full history sent on WebSocket connect via `historical_logs` message
+- **API**: `GET /logs/{task_id}/full` and `GET /logs/{task_id}/tail`
+- **Guarantee**: No data loss on page refresh, backend restart, or network disconnect
+- **Concurrency**: Per-task `asyncio.Lock`
+
+---
+
+## Frontend Architecture
+
+### Home Page (`page.tsx`)
+Tabbed: **Installation** (InstallationForm) | **Deployment** (DeploymentForm)
+Dark glass-panel aesthetic with BackgroundMatrix animation.
+
+### Log Viewer (`logs/[taskId]/page.tsx`)
+- Left: step list with progress indicators
+- Center: scrollable terminal output with auto-scroll
+- Interactive prompts for osc.sh/setup.sh
+- Status bar with color coding
+- Download logs, auto-redirect on failure (120s countdown)
+
+### Smart Auto-Population
+- DB host/port/service -> rebuild all datasource JDBC URLs
+- Schema names -> update datasource db_user fields
+- Domain home -> auto-populate app path
+- Password propagation across datasources
+- BD Pack fields auto-sync to ECM/SANC sections
 
 ---
 
 ## Environment Variables
 
 ```bash
-OFSAA_REPO_URL=<git_repo_url>     # Git repo with installer kits
-OFSAA_REPO_DIR=/path/to/clone     # Clone location on target
-OFSAA_GIT_USERNAME=<username>      # Git auth
-OFSAA_GIT_PASSWORD=<password>      # Git auth
-OFSAA_INSTALLER_ZIP_NAME=<name>    # Specific installer zip
-OFSAA_JAVA_ARCHIVE_HINT=<hint>     # Java archive pattern
-OFSAA_FAST_CONFIG_APPLY=1          # Skip git pull on config apply
-OFSAA_ENABLE_CONFIG_PUSH=0         # Push config changes back to git
+# Backend (.env)
+ALLOWED_ORIGIN=http://192.168.0.166
+OFSAA_REPO_URL=https://...
+OFSAA_REPO_DIR=/u01/OFSAA_REPO
+OFSAA_GIT_USERNAME=...
+OFSAA_GIT_PASSWORD=...
+OFSAA_INSTALLER_ZIP_NAME=...
+OFSAA_JAVA_ARCHIVE_HINT=jdk-11
+OFSAA_FAST_CONFIG_APPLY=1
+OFSAA_ENABLE_CONFIG_PUSH=0
+
+# Frontend (.env.local)
+NEXT_PUBLIC_API_URL=http://192.168.0.165:8000
 ```
+
+---
+
+## Default Paths (Target Server)
+
+| Path | Purpose |
+|------|---------|
+| `/u01/OFSAA/FICHOME` | FIC_HOME (OFSAA application root) |
+| `/u01/jdk-11.0.16` | JAVA_HOME |
+| `/u01/app/oracle/product/19.0.0/client_1` | ORACLE_HOME |
+| `/u01/BD_Installer_Kit/OFS_BD_PACK` | BD Pack kit |
+| `/u01/ECM_Installer_Kit/OFS_ECM_PACK` | ECM Pack kit |
+| `/u01/SANC_Installer_Kit/OFS_SANC_PACK` | SANC Pack kit |
+| `/u01/OFSAA/FICHOME/ficweb` | FICHOME.ear/war build |
+| `/tmp/ofsaa_logs/{task_id}.log` | Persistent log files |
+| `/home/oracle/.profile` | Oracle user profile |
+
+---
+
+## Startup Commands
+
+```bash
+# Backend
+cd backend && uv sync && uv run python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+# Frontend
+cd frontend && npm install && npm run dev
+
+# PM2 (Production)
+pm2 start ecosystem.config.js
+```
+
+---
+
+## Contract Rules (Critical)
+
+1. **Backward Compatibility**: BD Pack payload must work without ECM/SANC fields
+2. **Additive Only**: New fields must be `Optional` with defaults
+3. **Module Isolation**: ECM/SANC must NOT modify BD Pack code paths
+4. **Flag Guards**: Always check `if request.install_ecm:` before ECM operations
+5. **Separate XML Handlers**: Dedicated `_patch_ofs_MODULE_*` methods per module
+6. **Error Isolation**: Module failure must not corrupt previous module
+7. **shell_escape()**: Use for ALL shell arguments
+8. **Backup Scripts from Git**: Never create locally
+9. **WLST idempotent**: Always delete-if-exists before create
 
 ---
 
 ## Key Code Patterns
 
-### XML Patching Pattern (installer.py)
-```python
-async def _patch_MODULENAME_xml_repo(self, host, username, password, *, repo_dir, **params) -> dict:
-    logs: list[str] = []
-    
-    # 1. Find source file
-    src_path = await self._resolve_repo_file_path(...)
-    
-    # 2. Read content
-    read = await self._read_remote_file(host, username, password, src_path)
-    original = read.get("content", "")
-    
-    # 3. Patch content
-    patched = self._patch_MODULENAME_xml_content(original, **params)
-    
-    # 4. Write if changed
-    if patched != original:
-        await self._write_remote_file(host, username, password, src_path, patched)
-        logs.append("[OK] Updated MODULENAME XML")
-    
-    return {"success": True, "logs": logs, "changed": patched != original}
-```
+### XML Patching (installer.py)
+Resolve file in Git repo -> Read via SSH -> Patch content -> Write back if changed
 
-### Script Execution Pattern (installer.py)
-```python
-async def run_module_script(self, host, username, password, on_output_callback, on_prompt_callback) -> dict:
-    inner_cmd = "source /home/oracle/.profile; cd /path && ./script.sh"
-    
-    if username == "oracle":
-        command = f"bash -lc {shell_escape(inner_cmd)}"
-    else:
-        command = f"sudo -u oracle bash -lc {shell_escape(inner_cmd)}"
-    
-    result = await self.ssh_service.execute_interactive_command(
-        host, username, password, command,
-        on_output_callback=on_output_callback,
-        on_prompt_callback=on_prompt_callback,
-        timeout=3600
-    )
-    return result
-```
+### Script Execution (installer.py)
+Source oracle profile -> Build inner command -> Wrap with su/sudo if not oracle -> execute_interactive_command with callbacks
+
+### WLST Discovery
+`find /u01 -name wlst.sh 2>/dev/null | grep -i wlserver | head -1`
+
+### Combined WLST (create_datasources_and_deploy_app)
+Build datasource defs from UI -> Generate WLST Python inline -> Wrap in bash -> SSH write+execute -> Stream output -> Cleanup
 
 ---
 
-## Notes for Developers
+## Key Service Methods
 
-- Prefer adding new helper functions over modifying shared code
-- Use `shell_escape()` from utils.py for all shell arguments
-- All XML patches should create timestamped backups
-- Test ECM changes with `install_bdpack=True, install_ecm=True` (ECM runs after BD Pack)
-- ECM module is fully implemented in backend
-- Installation mode (fresh/addon) may affect ECM flow differently
-- Backend starts via `uv sync && uv run python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload`
-- All deps are in `pyproject.toml` — `requirements.txt` is kept for reference only
-- Backup/restore scripts come from Git repo `backup_Restore/` folder — never create locally
-- `db_sys_password` drives all sqlplus connections (backup, restore, schema drop)
-- ECM failure handling: auto-restore BD state, then user retries ECM with `resume_from_checkpoint: true`
+### installer.py (52 async methods)
+**BD**: download_and_extract_installer, set_permissions, apply_config_files_from_repo, run_osc_schema_creator, run_setup_silent, run_environment_check
+**ECM**: download_and_extract_ecm_installer, set_ecm_permissions, apply_ecm_config_files_from_repo, run_ecm_osc_schema_creator, run_ecm_setup_silent
+**SANC**: download_and_extract_sanc_installer, set_sanc_permissions, apply_sanc_config_files_from_repo, run_sanc_osc_schema_creator, run_sanc_setup_silent
+**FICHOME**: deploy_fichome, grant_database_privileges, run_startofsaa_script, run_checkofsaa_script
+**WebLogic**: deploy_weblogic_application, create_datasources_and_deploy_app, create_weblogic_datasource
+**Internal**: _read_remote_file, _write_remote_file, _resolve_repo_*_file_path, _commit_and_push_repo_changes, _patch_ofs_*_repo
+
+### recovery_service.py
+cleanup_after_osc_failure, kill_java_processes, ensure_backup_restore_scripts, backup_application, backup_db_schemas, restore_application, restore_db_schemas, full_restore_to_bd_state, _drop_database_schema, _detect_oracle_home
 
 ---
 
-## Module Status Summary
+## Extension Pattern for New Modules
 
-| Module | Status | Flag Field | Kit Location | Logging | Persistence |
-|--------|--------|------------|-------------|---------|------------|
-| BD Pack | ✅ Implemented | `install_bdpack` | `/u01/BD_Installer_Kit/OFS_BD_PACK` | ✅ | ✅ |
-| ECM | ✅ Implemented | `install_ecm` | `/u01/ECM_Installer_Kit/OFS_ECM_PACK` | ✅ | ✅ |
-| SANC | ⏳ Placeholder | `install_sanc` | TBD | ⏳ | ⏳ |
-| FICHOME | ✅ Implemented | N/A | `/u01/OFSAA/FICHOME` | ✅ | ✅ |
+1. **Schema** (schemas/installation.py): Add Optional fields with module prefix
+2. **Installer** (services/installer.py): Add _patch_ofs_MODULE_*, run_MODULE_osc_*, run_MODULE_setup_*
+3. **Service** (services/installation_service.py): Add wrapper methods
+4. **Router** (routers/installation.py): Add after previous module, guarded by flag
+5. **Frontend**: Create ModulePackForm.tsx, ModulePackPage.tsx, update InstallationForm.tsx
+
+---
+
+## Module Status
+
+| Module | Backend | Frontend | Logging | Backup/Restore |
+|--------|---------|----------|---------|---------------|
+| BD Pack | Done | Done | Done | Done |
+| ECM Pack | Done | Done | Done | Done |
+| SANC Pack | Done | Done | Done | Done |
+| FICHOME Deploy | Done | Done | Done | N/A |
+| WebLogic DS + App | Done (combined single-session WLST) | Done | Done | N/A |
+| Oracle Client Terraform | Done | Done | Done | N/A |

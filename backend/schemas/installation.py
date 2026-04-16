@@ -238,12 +238,6 @@ class InstallationStatus(BaseModel):
     logs: List[str] = []
     error: Optional[str] = None
 
-class SSHConnectionRequest(BaseModel):
-    """Schema for SSH connection test"""
-    host: str
-    username: str
-    password: str
-
 class ServiceResult(BaseModel):
     """Schema for service operation results"""
     success: bool
