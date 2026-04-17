@@ -144,12 +144,7 @@ class InstallerService:
         logs.append("[CLEANUP] All Java processes killed")
 
         dirs = [
-            "/u01/Installation_Kit/BD_PACK_INSTALLATION_KIT",
-            "/u01/Installation_Kit/ECM_PACK_INSTALLATION_KIT",
-            "/u01/installer_kit",
-            "/u01/INSTALLER_KIT",
-            "/u01/INSTALLER_KIT_AUTOMATION",
-            "/u01/Installation_Kit",
+            # Only clean OFSAA runtime directories — keep installer kits intact
             "/u01/OFSAA/FICHOME",
             "/u01/OFSAA/FTPSHARE",
         ]
@@ -4078,6 +4073,14 @@ except Exception, e:
         pass
     print('WARNING: Deployment issue: ' + errMsg)
     print('Check WebLogic Console -> Deployments for actual status.')
+
+# ---- STEP 3: Start application (move from Installed -> Active) ----
+try:
+    startApplication(appName, block='true')
+    print('Application ' + appName + ' started successfully - now servicing all requests.')
+except Exception, e:
+    print('WARNING: Could not start application: ' + str(e))
+    print('You may need to start it manually from WebLogic Console.')
 """
 
         # ── Build complete WLST Python script ──

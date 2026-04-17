@@ -250,11 +250,12 @@ export function InstallationForm() {
   const [ecmSubmitError, setEcmSubmitError] = useState('')
   const [sancConfig, setSancConfig] = useState<SancFormData | null>(null)
   const [isSancValid, setIsSancValid] = useState(true)
+  const [hydrated, setHydrated] = useState(false)
 
   useEffect(() => {
     try {
       const raw = localStorage.getItem(INSTALL_FORM_STORAGE_KEY)
-      if (!raw) return
+      if (!raw) { setHydrated(true); return }
       const parsed = JSON.parse(raw) as {
         formData?: Partial<InstallationData>
         ecmConfig?: EcmFormData | null
@@ -272,9 +273,11 @@ export function InstallationForm() {
     } catch {
       // Ignore local storage parse errors
     }
+    setHydrated(true)
   }, [])
 
   useEffect(() => {
+    if (!hydrated) return
     try {
       localStorage.setItem(
         INSTALL_FORM_STORAGE_KEY,
@@ -287,7 +290,7 @@ export function InstallationForm() {
     } catch {
       // Ignore local storage write errors
     }
-  }, [formData, ecmConfig, sancConfig])
+  }, [formData, ecmConfig, sancConfig, hydrated])
 
   const handleEcmChange = useCallback((data: EcmFormData, valid: boolean) => {
     setEcmConfig(data)
@@ -579,6 +582,11 @@ export function InstallationForm() {
         }
       }
 
+      // ── Group 4: Schema password → web service password ──
+      if (field === 'schema_default_password' && value) {
+        updated.prop_web_service_password = value
+      }
+
       return updated
     })
   }
@@ -770,7 +778,7 @@ export function InstallationForm() {
               </div>
 
               {/* Show JDBC Service input when a DB backup is required (BD pack or ECM taking BD backup) */}
-              {((formData.install_bdpack) || (formData.install_ecm && formData.ecm_take_bd_backup)) && (
+              {(formData.install_bdpack || formData.install_ecm || formData.install_sanc) && (
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-text-primary uppercase tracking-wider">JDBC Service Name</label>
                   <input
@@ -1571,6 +1579,9 @@ export function InstallationForm() {
           configSchemaName={formData.schema_config_schema_name}
           atomicSchemaName={formData.schema_atomic_schema_name}
           schemaDatafileDir={formData.schema_datafile_dir}
+          bdSchemaPassword={formData.schema_default_password}
+          bdJdbcPort={formData.schema_jdbc_port}
+          initialData={ecmConfig}
           aaiConfig={{
             aai_webappservertype: formData.aai_webappservertype,
             aai_dbserver_ip: formData.aai_dbserver_ip,
@@ -1611,6 +1622,9 @@ export function InstallationForm() {
           configSchemaName={formData.schema_config_schema_name}
           atomicSchemaName={formData.schema_atomic_schema_name}
           schemaDatafileDir={formData.schema_datafile_dir}
+          bdSchemaPassword={formData.schema_default_password}
+          bdJdbcPort={formData.schema_jdbc_port}
+          initialData={sancConfig}
           aaiConfig={{
             aai_webappservertype: formData.aai_webappservertype,
             aai_dbserver_ip: formData.aai_dbserver_ip,

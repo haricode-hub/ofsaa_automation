@@ -52,7 +52,7 @@ class LogPersistence:
         
         try:
             with open(log_file, 'r', encoding='utf-8') as f:
-                return f.readlines()
+                return [line.rstrip('\n') for line in f if line.strip()]
         except Exception as e:
             print(f"[ERROR] Failed to read logs for task {task_id}: {e}")
             return []
@@ -66,7 +66,7 @@ class LogPersistence:
         
         try:
             with open(log_file, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
+                lines = [line.rstrip('\n') for line in f if line.strip()]
                 return lines[-n:] if len(lines) > n else lines
         except Exception as e:
             print(f"[ERROR] Failed to read logs for task {task_id}: {e}")

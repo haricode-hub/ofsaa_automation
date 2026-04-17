@@ -10,12 +10,15 @@ Complete automation system for Oracle Financial Services products (OFSAA BD Pack
 # 1. Clone the repo
 git clone <repo-url> ofsaa-automation && cd ofsaa-automation
 
+
 # 2. Configure environment
 cp backend/.env.example backend/.env
 #    Edit backend/.env → set ALLOWED_ORIGIN, Git credentials, etc.
 
+
 # 3. Install backend deps
 cd backend && uv sync && cd ..
+
 
 # 4. Install frontend deps & build
 cd frontend && bun install && bun run build && cd ..

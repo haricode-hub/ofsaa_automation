@@ -19,6 +19,8 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
+from services.utils import shell_escape
+
 from fastapi import APIRouter, HTTPException
 
 from core.config import InstallationSteps
@@ -66,7 +68,8 @@ async def start_installation(request: InstallationRequest):
             ),
         )
 
-        asyncio.create_task(run_installation_process(task_id, request))
+        asyncio_task = asyncio.create_task(run_installation_process(task_id, request))
+        tm.register_asyncio_task(task_id, asyncio_task)
 
         return InstallationResponse(
             task_id=task_id,
@@ -155,6 +158,18 @@ async def get_checkpoint():
 async def clear_checkpoint():
     tm.clear_bd_checkpoint()
     return {"success": True, "message": "BD Pack checkpoint cleared."}
+
+
+@router.delete("/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str):
+    """Cancel a running task — kills SSH, stops async worker."""
+    task = tm.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    cancelled = await tm.cancel_task(task_id, "Cancelled by user")
+    if not cancelled:
+        raise HTTPException(status_code=400, detail=f"Task is not running (status={task.status})")
+    return {"success": True, "task_id": task_id, "message": "Task cancelled"}
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -273,6 +288,17 @@ async def _take_backup(
 
 # ── Main installation worker ─────────────────────────────────────────────────
 
+class TaskCancelledError(Exception):
+    """Raised when a task is cancelled by the user."""
+    pass
+
+
+def _check_cancelled(task_id: str) -> None:
+    """Raise TaskCancelledError if the task has been cancelled."""
+    if tm.is_cancelled(task_id):
+        raise TaskCancelledError("Task cancelled by user")
+
+
 async def run_installation_process(task_id: str, request: InstallationRequest):
     task = tm.get_task(task_id)
     svc = create_installation_service()
@@ -344,15 +370,29 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             db_host_for_cursor = getattr(request, "db_ssh_host", None) or request.host
             db_user_for_cursor = getattr(request, "db_ssh_username", None) or request.username
             db_pass_for_cursor = getattr(request, "db_ssh_password", None) or request.password
-            cursor_cmd = 'echo "ALTER SYSTEM SET open_cursors=2000 SCOPE=BOTH;" | sqlplus / as sysdba'
+            # Must run as oracle user with ORACLE_HOME/ORACLE_SID set for sqlplus OS auth
+            cursor_inner = 'source /home/oracle/.profile >/dev/null 2>&1; echo "ALTER SYSTEM SET open_cursors=2000 SCOPE=BOTH;" | sqlplus / as sysdba'
+            if db_user_for_cursor == "oracle":
+                cursor_cmd = cursor_inner
+            else:
+                cursor_cmd = (
+                    "if command -v sudo >/dev/null 2>&1; then "
+                    f"sudo -u oracle bash -c {shell_escape(cursor_inner)}; "
+                    "else "
+                    f"su - oracle -c {shell_escape(cursor_inner)}; "
+                    "fi"
+                )
             await tm.append_output(task_id, "[INFO] Setting open_cursors=2000 on DB server...")
             cursor_result = await svc.ssh_service.execute_command(db_host_for_cursor, db_user_for_cursor, db_pass_for_cursor, cursor_cmd)
-            if cursor_result.get("success"):
+            cursor_stdout = cursor_result.get("stdout", "")
+            if cursor_result.get("success") or "System altered" in cursor_stdout:
                 await tm.append_output(task_id, "[OK] open_cursors=2000 set successfully")
             else:
-                await tm.append_output(task_id, f"[WARN] Failed to set open_cursors: {cursor_result.get('error', 'unknown error')}")
+                cursor_err = cursor_result.get("stderr") or cursor_stdout or "unknown error"
+                await tm.append_output(task_id, f"[WARN] Failed to set open_cursors: {cursor_err}")
 
             # Step 1: Oracle user and oinstall group
+            _check_cancelled(task_id)
             await tm.update_status(task_id, "running", steps[0])
             result = await svc.create_oracle_user_and_oinstall_group(request.host, request.username, request.password)
             await tm.append_output(task_id, "\n".join(result.get("logs", [])))
@@ -361,6 +401,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 return
 
             # Step 2: Mount point /u01
+            _check_cancelled(task_id)
             await tm.update_status(task_id, "running", steps[1])
             result = await svc.create_mount_point(request.host, request.username, request.password)
             await tm.append_output(task_id, "\n".join(result.get("logs", [])))
@@ -369,6 +410,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 return
 
             # Step 3: Install packages
+            _check_cancelled(task_id)
             await tm.update_status(task_id, "running", steps[2])
             result = await svc.install_ksh_and_git(request.host, request.username, request.password)
             await tm.append_output(task_id, "\n".join(result.get("logs", [])))
@@ -377,6 +419,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 return
 
             # Step 4: Create .profile
+            _check_cancelled(task_id)
             await tm.update_status(task_id, "running", steps[3])
             result = await svc.create_profile_file(request.host, request.username, request.password)
             await tm.append_output(task_id, "\n".join(result.get("logs", [])))
@@ -385,6 +428,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 return
 
             # Step 5: Java installation
+            _check_cancelled(task_id)
             await tm.update_status(task_id, "running", steps[4])
             await trace("Starting Java installation step")
             result = await svc.install_java_from_repo(request.host, request.username, request.password)
@@ -403,6 +447,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                     return
 
             # Step 6: OFSAA directories
+            _check_cancelled(task_id)
             await tm.update_status(task_id, "running", steps[5])
             result = await svc.create_ofsaa_directories(request.host, request.username, request.password)
             await tm.append_output(task_id, "\n".join(result.get("logs", [])))
@@ -411,6 +456,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 return
 
             # Step 7: Oracle client check
+            _check_cancelled(task_id)
             await tm.update_status(task_id, "running", steps[6])
             result = await svc.check_existing_oracle_client_and_update_profile(
                 request.host, request.username, request.password, request.oracle_sid,
@@ -421,6 +467,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 return
 
             # Step 8: Installer setup and envCheck
+            _check_cancelled(task_id)
             await tm.update_status(task_id, "running", steps[7])
             await trace("Starting installer download/extract step")
             result = await svc.download_and_extract_installer(request.host, request.username, request.password)
@@ -453,6 +500,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await trace("Environment check step completed")
 
             # Step 9: Apply XML/properties and run osc.sh
+            _check_cancelled(task_id)
             await tm.update_status(task_id, "running", steps[8])
             await trace("Starting config apply and osc.sh step")
             cfg_result = await svc.apply_installer_config_files(
@@ -560,6 +608,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await trace("osc.sh step completed")
 
             # Step 10: setup.sh SILENT
+            _check_cancelled(task_id)
             await tm.update_status(task_id, "running", steps[9])
             await trace("Starting setup.sh SILENT step")
             setup_result = await svc.run_setup_silent(
@@ -620,62 +669,67 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await tm.append_output(task_id, "[INFO] Clearing filesystem caches before ECM Pack...")
             await svc.ssh_service.execute_command(request.host, request.username, request.password, "echo 2 | sudo tee /proc/sys/vm/drop_caches")
 
-            # Verify backup availability
-            await tm.append_output(task_id, "[INFO] Verifying BD backup availability before ECM installation...")
-            await tm.update_status(task_id, "running", "Verifying BD backups for ECM safety")
-            verify_result = await svc.verify_backups_exist(
-                request.host, request.username, request.password,
-                db_ssh_host=getattr(request, "db_ssh_host", None),
-                db_ssh_username=getattr(request, "db_ssh_username", None),
-                db_ssh_password=getattr(request, "db_ssh_password", None),
-            )
-            await tm.append_output(task_id, "\n".join(verify_result.get("logs", [])))
+            # Verify backup availability — only when BD Pack was part of this run or resuming from checkpoint
+            # ECM-only runs handle their own backup via ecm_take_bd_backup flag above
+            if request.install_bdpack or request.resume_from_checkpoint:
+                await tm.append_output(task_id, "[INFO] Verifying BD backup availability before ECM installation...")
+                await tm.update_status(task_id, "running", "Verifying BD backups for ECM safety")
+                verify_result = await svc.verify_backups_exist(
+                    request.host, request.username, request.password,
+                    db_ssh_host=getattr(request, "db_ssh_host", None),
+                    db_ssh_username=getattr(request, "db_ssh_username", None),
+                    db_ssh_password=getattr(request, "db_ssh_password", None),
+                )
+                await tm.append_output(task_id, "\n".join(verify_result.get("logs", [])))
 
-            if not verify_result.get("both_exist"):
-                await tm.append_output(task_id, "[INFO] BD backups not fully available. Taking fresh backup before ECM starts...")
-                await tm.update_status(task_id, "running", "Taking BD backup before ECM")
-                if not verify_result.get("app_backup_exists"):
-                    await tm.update_status(task_id, "running", "Taking application backup (tar)")
-                    app_bkp = await svc.backup_application(request.host, request.username, request.password, backup_tag="BD")
-                    await tm.append_output(task_id, "\n".join(app_bkp.get("logs", [])))
-                    if app_bkp.get("success"):
-                        await trace("Application backup completed (pre-ECM auto)")
-                    else:
-                        await tm.append_output(task_id, "[WARN] Application backup failed. ECM restore capability may be limited.")
-
-                if not verify_result.get("db_backup_exists"):
-                    db_sys_pass = request.db_sys_password
-                    db_service = request.schema_jdbc_service
-                    if db_sys_pass and db_service:
-                        await tm.update_status(task_id, "running", "Taking DB schema backup")
-                        db_bkp = await svc.backup_db_schemas(
-                            request.host, request.username, request.password,
-                            db_sys_password=db_sys_pass,
-                            db_jdbc_service=db_service,
-                            db_oracle_sid=getattr(request, "oracle_sid", None) or "OFSAADB",
-                            schema_config_schema_name=request.schema_config_schema_name,
-                            schema_atomic_schema_name=request.schema_atomic_schema_name,
-                            db_ssh_host=getattr(request, "db_ssh_host", None),
-                            db_ssh_username=getattr(request, "db_ssh_username", None),
-                            db_ssh_password=getattr(request, "db_ssh_password", None),
-                        )
-                        await tm.append_output(task_id, "\n".join(db_bkp.get("logs", [])))
-                        if db_bkp.get("success"):
-                            tm.bd_checkpoint["completed"] = True
-                            tm.bd_checkpoint["backup_taken"] = True
-                            tm.bd_checkpoint["request"] = request.dict()
-                            tm.bd_checkpoint["task_id"] = task_id
-                            tm.bd_checkpoint["host"] = request.host
-                            tm.bd_checkpoint["timestamp"] = datetime.now().isoformat()
-                            await trace("DB schema backup completed (pre-ECM auto) and checkpoint saved")
+                if not verify_result.get("both_exist"):
+                    await tm.append_output(task_id, "[INFO] BD backups not fully available. Taking fresh backup before ECM starts...")
+                    await tm.update_status(task_id, "running", "Taking BD backup before ECM")
+                    if not verify_result.get("app_backup_exists"):
+                        await tm.update_status(task_id, "running", "Taking application backup (tar)")
+                        app_bkp = await svc.backup_application(request.host, request.username, request.password, backup_tag="BD")
+                        await tm.append_output(task_id, "\n".join(app_bkp.get("logs", [])))
+                        if app_bkp.get("success"):
+                            await trace("Application backup completed (pre-ECM auto)")
                         else:
-                            await tm.append_output(task_id, "[WARN] DB schema backup failed. ECM restore capability may be limited.")
-                    else:
-                        await tm.append_output(task_id, "[WARN] db_sys_password or schema_jdbc_service not provided. Cannot take DB backup.")
+                            await tm.append_output(task_id, "[WARN] Application backup failed. ECM restore capability may be limited.")
+
+                    if not verify_result.get("db_backup_exists"):
+                        db_sys_pass = request.db_sys_password
+                        db_service = request.schema_jdbc_service
+                        if db_sys_pass and db_service:
+                            await tm.update_status(task_id, "running", "Taking DB schema backup")
+                            db_bkp = await svc.backup_db_schemas(
+                                request.host, request.username, request.password,
+                                db_sys_password=db_sys_pass,
+                                db_jdbc_service=db_service,
+                                db_oracle_sid=getattr(request, "oracle_sid", None) or "OFSAADB",
+                                schema_config_schema_name=request.schema_config_schema_name,
+                                schema_atomic_schema_name=request.schema_atomic_schema_name,
+                                db_ssh_host=getattr(request, "db_ssh_host", None),
+                                db_ssh_username=getattr(request, "db_ssh_username", None),
+                                db_ssh_password=getattr(request, "db_ssh_password", None),
+                            )
+                            await tm.append_output(task_id, "\n".join(db_bkp.get("logs", [])))
+                            if db_bkp.get("success"):
+                                tm.bd_checkpoint["completed"] = True
+                                tm.bd_checkpoint["backup_taken"] = True
+                                tm.bd_checkpoint["request"] = request.dict()
+                                tm.bd_checkpoint["task_id"] = task_id
+                                tm.bd_checkpoint["host"] = request.host
+                                tm.bd_checkpoint["timestamp"] = datetime.now().isoformat()
+                                await trace("DB schema backup completed (pre-ECM auto) and checkpoint saved")
+                            else:
+                                await tm.append_output(task_id, "[WARN] DB schema backup failed. ECM restore capability may be limited.")
+                        else:
+                            await tm.append_output(task_id, "[WARN] db_sys_password or schema_jdbc_service not provided. Cannot take DB backup.")
+                else:
+                    await tm.append_output(task_id, "[OK] BD backups verified — both application tar and DB dump exist. Safe to proceed with ECM.")
             else:
-                await tm.append_output(task_id, "[OK] BD backups verified — both application tar and DB dump exist. Safe to proceed with ECM.")
+                await tm.append_output(task_id, "[INFO] ECM-only run — skipping BD backup verification (use 'Take BD backup before ECM' checkbox if needed)")
 
             # ECM Step 1: Download and extract
+            _check_cancelled(task_id)
             await tm.update_status(task_id, "running", "Downloading and extracting ECM installer kit")
             await trace("Starting ECM installer download/extract step")
             ecm_download_result = await svc.download_and_extract_ecm_installer(request.host, request.username, request.password)
@@ -686,6 +740,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await trace("ECM installer download/extract step completed")
 
             # ECM Step 2: Set permissions
+            _check_cancelled(task_id)
             await tm.update_status(task_id, "running", "Setting ECM kit permissions")
             ecm_perm_result = await svc.set_ecm_permissions(request.host, request.username, request.password)
             await tm.append_output(task_id, "\n".join(ecm_perm_result.get("logs", [])))
@@ -694,6 +749,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 return
 
             # ECM Step 3: Apply config files
+            _check_cancelled(task_id)
             await tm.update_status(task_id, "running", "Applying ECM configuration files")
             await trace("Starting ECM config apply step")
             ecm_cfg_result = await svc.apply_ecm_config_files(
@@ -768,6 +824,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await trace("ECM config apply step completed")
 
             # ECM Step 4a: Run ECM osc.sh
+            _check_cancelled(task_id)
             await tm.update_status(task_id, "running", "Running ECM schema creator (osc.sh)")
             await trace("Starting ECM osc.sh step")
             ecm_db_password = request.db_sys_password or ""
@@ -786,6 +843,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await trace("ECM osc.sh step completed")
 
             # ECM Step 4b: Run ECM setup.sh SILENT
+            _check_cancelled(task_id)
             await tm.update_status(task_id, "running", "Running ECM setup (setup.sh SILENT)")
             await trace("Starting ECM setup.sh SILENT step")
             ecm_setup_result = await svc.run_ecm_setup_silent(
@@ -828,6 +886,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await svc.ssh_service.execute_command(request.host, request.username, request.password, "echo 2 | sudo tee /proc/sys/vm/drop_caches")
 
             # SANC Step 1: Download and extract
+            _check_cancelled(task_id)
             await tm.update_status(task_id, "running", "Downloading and extracting SANC installer kit")
             await trace("Starting SANC installer download/extract step")
             sanc_download_result = await svc.download_and_extract_sanc_installer(request.host, request.username, request.password)
@@ -838,6 +897,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await trace("SANC installer download/extract step completed")
 
             # SANC Step 2: Set permissions
+            _check_cancelled(task_id)
             await tm.update_status(task_id, "running", "Setting SANC kit permissions")
             sanc_perm_result = await svc.set_sanc_permissions(request.host, request.username, request.password)
             await tm.append_output(task_id, "\n".join(sanc_perm_result.get("logs", [])))
@@ -846,6 +906,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 return
 
             # SANC Step 3: Apply config files
+            _check_cancelled(task_id)
             await tm.update_status(task_id, "running", "Applying SANC configuration files")
             await trace("Starting SANC config apply step")
             sanc_cfg_result = await svc.apply_sanc_config_files(
@@ -897,6 +958,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await trace("SANC config apply step completed")
 
             # SANC Step 4a: Run SANC osc.sh
+            _check_cancelled(task_id)
             await tm.update_status(task_id, "running", "Running SANC schema creator (osc.sh)")
             await trace("Starting SANC osc.sh step")
             sanc_db_password = request.db_sys_password or ""
@@ -913,6 +975,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await trace("SANC osc.sh step completed")
 
             # SANC Step 4b: Run SANC setup.sh SILENT
+            _check_cancelled(task_id)
             await tm.update_status(task_id, "running", "Running SANC setup (setup.sh SILENT)")
             await trace("Starting SANC setup.sh SILENT step")
             sanc_setup_result = await svc.run_sanc_setup_silent(
@@ -948,6 +1011,11 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
 
     except asyncio.TimeoutError as exc:
         await handle_failure("Installation timed out", str(exc))
+    except (TaskCancelledError, asyncio.CancelledError):
+        logger.info("Installation task %s was cancelled", task_id)
+        # Status already set by cancel_task(); just ensure it's marked
+        if task.status not in ("failed",):
+            await tm.update_status(task_id, "failed", "Cancelled by user")
     except Exception as exc:
         logger.exception("Installation process failed")
         await handle_failure("Installation failed", str(exc))

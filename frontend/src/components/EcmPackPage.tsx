@@ -9,6 +9,9 @@ interface EcmPackPageProps {
   configSchemaName: string
   atomicSchemaName: string
   schemaDatafileDir?: string
+  bdSchemaPassword?: string
+  bdJdbcPort?: string
+  initialData?: EcmFormData | null
   onChange: (data: EcmFormData, isValid: boolean) => void
   aaiConfig?: {
     aai_webappservertype: string
@@ -39,8 +42,8 @@ interface EcmPackPageProps {
   }
 }
 
-export function EcmPackPage({ enabled, host, configSchemaName, atomicSchemaName, schemaDatafileDir, onChange, aaiConfig }: EcmPackPageProps) {
-  const [data, setData] = useState<EcmFormData>(() => createDefaultEcmData(configSchemaName, atomicSchemaName, host, aaiConfig))
+export function EcmPackPage({ enabled, host, configSchemaName, atomicSchemaName, schemaDatafileDir, bdSchemaPassword, bdJdbcPort, initialData, onChange, aaiConfig }: EcmPackPageProps) {
+  const [data, setData] = useState<EcmFormData>(() => initialData || createDefaultEcmData(configSchemaName, atomicSchemaName, host, aaiConfig))
 
   // Sync key fields from BD Pack → ECM whenever they change
   useEffect(() => {
@@ -77,6 +80,14 @@ export function EcmPackPage({ enabled, host, configSchemaName, atomicSchemaName,
       if (schemaDatafileDir) {
         next.datafileDir = schemaDatafileDir
       }
+      // Schema password from BD
+      if (bdSchemaPassword && !prev.schemaPassword) {
+        next.schemaPassword = bdSchemaPassword
+      }
+      // JDBC port from BD
+      if (bdJdbcPort) {
+        next.jdbc_port = bdJdbcPort
+      }
 
       // Schema-based sources
       // ATOMIC schema for data sources
@@ -110,7 +121,7 @@ export function EcmPackPage({ enabled, host, configSchemaName, atomicSchemaName,
 
       return next
     })
-  }, [host, configSchemaName, atomicSchemaName, aaiConfig?.aai_dbserver_ip, aaiConfig?.aai_oracle_service_name, aaiConfig?.aai_web_server_ip, aaiConfig?.aai_web_server_port, aaiConfig?.aai_https_enable, aaiConfig?.aai_weblogic_domain_home, aaiConfig?.aai_webapp_context_path, schemaDatafileDir])
+  }, [host, configSchemaName, atomicSchemaName, aaiConfig?.aai_dbserver_ip, aaiConfig?.aai_oracle_service_name, aaiConfig?.aai_web_server_ip, aaiConfig?.aai_web_server_port, aaiConfig?.aai_https_enable, aaiConfig?.aai_weblogic_domain_home, aaiConfig?.aai_webapp_context_path, schemaDatafileDir, bdSchemaPassword, bdJdbcPort])
 
   const validation = useMemo(() => validateEcmData(data), [data])
 

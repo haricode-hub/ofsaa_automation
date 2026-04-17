@@ -48,7 +48,8 @@ async def create_datasources(request: DatasourceCreationRequest):
             ),
         )
 
-        asyncio.create_task(_execute_datasource_creation(task_id, request))
+        asyncio_task = asyncio.create_task(_execute_datasource_creation(task_id, request))
+        tm.register_asyncio_task(task_id, asyncio_task)
 
         return DatasourceCreationResponse(
             success=True,
@@ -102,7 +103,7 @@ async def _execute_datasource_creation(
         await tm.append_output(task_id, f"[INFO] Target: {request.host}")
         await tm.append_output(task_id, f"[INFO] WebLogic Admin: {request.admin_url}")
         await tm.append_output(task_id, f"[INFO] Total datasources: {len(request.datasources)}")
-        await tm.update_status(task_id, "running", "Initializing datasource creation", 0)
+        await tm.update_status(task_id, "running", "Initializing datasource creation", module="DATASOURCE_CREATION")
 
         svc = create_installation_service()
 
@@ -147,12 +148,17 @@ async def _execute_datasource_creation(
         if not result.get("success"):
             err = result.get("error") or "Datasource creation failed"
             await tm.append_output(task_id, f"[ERROR] {err}")
-            await tm.update_status(task_id, "failed", "Datasource creation failed")
+            await tm.update_status(task_id, "failed", "Datasource creation failed", module="DATASOURCE_CREATION")
         else:
             total = len(request.datasources)
             await tm.append_output(task_id, f"\n[SUCCESS] All {total} datasources created successfully")
-            await tm.update_status(task_id, "completed", "All datasources created", 100)
+            await tm.update_status(task_id, "completed", "All datasources created", module="DATASOURCE_CREATION")
 
+    except (asyncio.CancelledError,):
+        logger.info("Datasource task %s was cancelled", task_id)
+        task = tm.get_task(task_id)
+        if task and task.status not in ("failed",):
+            await tm.update_status(task_id, "failed", "Cancelled by user")
     except Exception as exc:
         logger.exception("Datasource creation failed: %s", task_id)
         await tm.append_output(task_id, f"[ERROR] Exception: {exc}")

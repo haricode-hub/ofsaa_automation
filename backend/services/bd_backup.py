@@ -5,6 +5,7 @@ All values are parameterized — nothing hardcoded.
 """
 
 import logging
+from datetime import datetime
 from typing import Callable, Awaitable, Optional, List
 
 from services.ssh_service import SSHService
@@ -122,9 +123,10 @@ class BDBackupService:
         passwd = db_ssh_password
         sys_pass = db_sys_password
 
-        dump_file = f"ofs_{backup_tag}_bkp_%U.dmp"
-        log_file = f"ofs_{backup_tag}_bkp.log"
-        metadata_file = f"{BACKUP_DIR}/restore_metadata.sql"
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dump_file = f"ofs_{backup_tag}_bkp_{ts}_%U.dmp"
+        log_file = f"ofs_{backup_tag}_bkp_{ts}.log"
+        metadata_file = f"{BACKUP_DIR}/restore_metadata_{backup_tag}_{ts}.sql"
 
         # Auto-detect ORACLE_HOME
         oracle_home = await self._detect_oracle_home(host, user, passwd)
@@ -289,8 +291,7 @@ ORDER BY directory_name;
             f'logfile={log_file} '
             f'schemas={schemas} '
             f'parallel=4 '
-            f'compression=ALL '
-            f'reuse_dumpfiles=YES'
+            f'compression=ALL'
         )
         expdp_cmd = (
             f'{env} nohup {expdp_inner} > {BACKUP_DIR}/expdp_shell.log 2>&1 & '
@@ -316,7 +317,7 @@ ORDER BY directory_name;
 
         # ── Step 5: Verify backup files ──
         await log("[BACKUP] Step 5: Verifying backup files")
-        ls_result = await self.ssh.execute_command(host, user, passwd, f"ls -lh {BACKUP_DIR}/ofs_{backup_tag}_bkp_*.dmp 2>/dev/null")
+        ls_result = await self.ssh.execute_command(host, user, passwd, f"ls -lh {BACKUP_DIR}/ofs_{backup_tag}_bkp_{ts}_*.dmp 2>/dev/null")
         ls_out = (ls_result.get("stdout") or "").strip()
         if ls_out:
             for line in ls_out.splitlines():
@@ -328,5 +329,5 @@ ORDER BY directory_name;
         du_result = await self.ssh.execute_command(host, user, passwd, f"du -sh {BACKUP_DIR}/")
         await log(f"[BACKUP]   Total size: {(du_result.get('stdout') or '').strip()}")
 
-        await log(f"[BACKUP] DB schema backup completed (tag={backup_tag})")
-        return {"success": True, "logs": logs}
+        await log(f"[BACKUP] DB schema backup completed (tag={backup_tag}, timestamp={ts})")
+        return {"success": True, "logs": logs, "timestamp": ts, "dump_prefix": f"ofs_{backup_tag}_bkp_{ts}"}

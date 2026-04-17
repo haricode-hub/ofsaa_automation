@@ -415,7 +415,7 @@ class RecoveryService:
         target_ssh_username = db_ssh_username or username
         target_ssh_password = db_ssh_password or password
 
-        find_dmp_cmd = f"ls -1t {backup_dump_dir}/*.dmp 2>/dev/null | head -1"
+        find_dmp_cmd = f"ls -1t {backup_dump_dir}/ofsaa/*.dmp 2>/dev/null | head -1"
         dmp_result = await self.ssh_service.execute_command(
             target_ssh_host, target_ssh_username, target_ssh_password, find_dmp_cmd
         )

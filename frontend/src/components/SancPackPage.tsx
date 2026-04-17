@@ -37,12 +37,15 @@ interface SancPackPageProps {
   configSchemaName: string
   atomicSchemaName: string
   schemaDatafileDir?: string
+  bdSchemaPassword?: string
+  bdJdbcPort?: string
+  initialData?: SancFormData | null
   onChange: (data: SancFormData, isValid: boolean) => void
   aaiConfig?: AaiConfig
 }
 
-export function SancPackPage({ enabled, host, configSchemaName, atomicSchemaName, schemaDatafileDir, onChange, aaiConfig }: SancPackPageProps) {
-  const [data, setData] = useState<SancFormData>(() => createDefaultSancData(configSchemaName, atomicSchemaName, host, aaiConfig))
+export function SancPackPage({ enabled, host, configSchemaName, atomicSchemaName, schemaDatafileDir, bdSchemaPassword, bdJdbcPort, initialData, onChange, aaiConfig }: SancPackPageProps) {
+  const [data, setData] = useState<SancFormData>(() => initialData || createDefaultSancData(configSchemaName, atomicSchemaName, host, aaiConfig))
 
   // Sync key fields from BD Pack -> SANC whenever they change
   useEffect(() => {
@@ -74,6 +77,14 @@ export function SancPackPage({ enabled, host, configSchemaName, atomicSchemaName
       // Datafile dir
       if (schemaDatafileDir) {
         next.datafileDir = schemaDatafileDir
+      }
+      // Schema password from BD
+      if (bdSchemaPassword && !prev.schemaPassword) {
+        next.schemaPassword = bdSchemaPassword
+      }
+      // JDBC port from BD
+      if (bdJdbcPort) {
+        next.jdbc_port = bdJdbcPort
       }
       // Inherit all AAI fields
       if (aaiConfig) {
@@ -114,7 +125,7 @@ export function SancPackPage({ enabled, host, configSchemaName, atomicSchemaName
     aaiConfig?.aai_amport, aaiConfig?.aai_web_local_path,
     aaiConfig?.aai_ftspshare_path, aaiConfig?.aai_sftp_user_id,
     aaiConfig?.aai_context_name, aaiConfig?.aai_webappservertype,
-    aaiConfig?.aai_olap_server_implementation])
+    aaiConfig?.aai_olap_server_implementation, bdSchemaPassword, bdJdbcPort])
 
   const validation = useMemo(() => validateSancData(data), [data])
 

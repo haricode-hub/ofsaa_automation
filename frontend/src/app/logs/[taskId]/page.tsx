@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { BackgroundMatrix } from '@/components/BackgroundMatrix'
-import { getWebSocketUrl } from '@/lib/api'
+import { getApiUrl, getWebSocketUrl } from '@/lib/api'
 
 type StatusType = 'connecting' | 'running' | 'waiting_input' | 'failed' | 'completed'
 
@@ -11,7 +11,7 @@ type StatusPayload = {
   status: StatusType
   step?: string
   progress?: number
-  module?: 'BD_PACK' | 'ECM_PACK' | 'SANC_PACK' | 'FICHOME_DEPLOYMENT' | 'EAR_CREATION' | 'DATASOURCE_CREATION'
+  module?: 'BD_PACK' | 'ECM_PACK' | 'SANC_PACK' | 'EAR_CREATION' | 'DATASOURCE_CREATION'
 }
 
 const BD_PACK_STEPS = [
@@ -41,19 +41,6 @@ const SANC_PACK_STEPS = [
   'Applying SANC configuration files',
   'Running SANC schema creator (osc.sh)',
   'Running SANC setup (setup.sh SILENT)'
-]
-
-const FICHOME_DEPLOYMENT_STEPS = [
-  'Granting database privileges to schema users',
-  'Extracting WebLogic domain configuration',
-  'Backing up existing FICHOME files',
-  'Rebuilding FICHOME with ant.sh',
-  'Setting permissions on build artifacts',
-  'Preparing WebLogic domain applications directory',
-  'Copying and extracting EAR file',
-  'Extracting and preparing WAR content',
-  'Running post-deployment startup script',
-  'Running health check validation'
 ]
 
 const EAR_CREATION_STEPS = [
@@ -86,27 +73,43 @@ export default function LogsPage() {
   const [outputLines, setOutputLines] = useState<string[]>([])
   const [autoFollowOutput, setAutoFollowOutput] = useState(true)
   const [redirectCountdown, setRedirectCountdown] = useState<number>(redirectDelaySec)
-  const [currentModule, setCurrentModule] = useState<'BD_PACK' | 'ECM_PACK' | 'SANC_PACK' | 'FICHOME_DEPLOYMENT' | 'EAR_CREATION' | 'DATASOURCE_CREATION'>('BD_PACK')
+  const [currentModule, setCurrentModule] = useState<'BD_PACK' | 'ECM_PACK' | 'SANC_PACK' | 'EAR_CREATION' | 'DATASOURCE_CREATION'>('BD_PACK')
   const [dynamicDsSteps, setDynamicDsSteps] = useState<string[]>([...DATASOURCE_CREATION_STEPS])
   const [dynamicEarSteps, setDynamicEarSteps] = useState<string[]>([...EAR_CREATION_STEPS])
+  const [maxStepReached, setMaxStepReached] = useState<number>(-1)
+  const [isCancelling, setIsCancelling] = useState(false)
   const socketRef = useRef<WebSocket | null>(null)
   const outputEndRef = useRef<HTMLDivElement>(null)
   const outputContainerRef = useRef<HTMLDivElement>(null)
+  const pendingLinesRef = useRef<string[]>([])
+  const rafIdRef = useRef<number | null>(null)
+  const lineCounterRef = useRef(0)
 
   // Determine which module is active based on current step
   const activeSteps = useMemo(() => {
     if (currentModule === 'ECM_PACK') return ECM_PACK_STEPS
     if (currentModule === 'SANC_PACK') return SANC_PACK_STEPS
-    if (currentModule === 'FICHOME_DEPLOYMENT') return FICHOME_DEPLOYMENT_STEPS
     if (currentModule === 'EAR_CREATION') return dynamicEarSteps
     if (currentModule === 'DATASOURCE_CREATION') return dynamicDsSteps
     return BD_PACK_STEPS
   }, [currentModule, dynamicDsSteps, dynamicEarSteps])
 
+  // Reset maxStepReached when module changes
+  useEffect(() => {
+    setMaxStepReached(-1)
+  }, [currentModule])
+
+  // Track highest step index reached in the current module
+  useEffect(() => {
+    const idx = activeSteps.indexOf(currentStep)
+    if (idx >= 0) {
+      setMaxStepReached(prev => Math.max(prev, idx))
+    }
+  }, [currentStep, activeSteps])
+
   const moduleLabel = useMemo(() => {
     if (currentModule === 'ECM_PACK') return 'ECM Pack'
     if (currentModule === 'SANC_PACK') return 'SANC Pack'
-    if (currentModule === 'FICHOME_DEPLOYMENT') return 'FICHOME Deployment'
     if (currentModule === 'EAR_CREATION') return 'Deployment'
     if (currentModule === 'DATASOURCE_CREATION') return 'Datasource Creation'
     return 'BD Pack'
@@ -138,6 +141,7 @@ export default function LogsPage() {
             .flatMap((line: string) => String(line || '').split(/\r?\n/))
             .filter((l: string) => l.length > 0)
           if (lines.length) {
+            lineCounterRef.current = lines.length
             setOutputLines(lines)
           }
         }
@@ -145,7 +149,23 @@ export default function LogsPage() {
           const chunk = String(message.data || '')
           const lines = chunk.split(/\r?\n/).filter(l => l.length > 0)
           if (lines.length) {
-            setOutputLines(prev => [...prev, ...lines])
+            // Batch into a pending buffer and flush once per animation frame
+            pendingLinesRef.current.push(...lines)
+            if (rafIdRef.current === null) {
+              rafIdRef.current = requestAnimationFrame(() => {
+                const batch = pendingLinesRef.current
+                pendingLinesRef.current = []
+                rafIdRef.current = null
+                if (batch.length) {
+                  lineCounterRef.current += batch.length
+                  setOutputLines(prev => {
+                    const merged = prev.concat(batch)
+                    // Keep only the last 2000 lines in state to prevent memory bloat
+                    return merged.length > 2000 ? merged.slice(-2000) : merged
+                  })
+                }
+              })
+            }
           }
         }
         if (message.type === 'prompt') {
@@ -170,11 +190,7 @@ export default function LogsPage() {
           if (data?.module) {
             setCurrentModule(data.module)
           } else if (data?.step) {
-            if (data.step.toLowerCase().includes('fichome')) {
-              setCurrentModule('FICHOME_DEPLOYMENT')
-            } else if (FICHOME_DEPLOYMENT_STEPS.some(s => s === data.step)) {
-              setCurrentModule('FICHOME_DEPLOYMENT')
-            } else if (EAR_CREATION_STEPS.some(s => s === data.step)) {
+            if (EAR_CREATION_STEPS.some(s => s === data.step)) {
               setCurrentModule('EAR_CREATION')
             } else if (data.step.toLowerCase().includes('sanc')) {
               setCurrentModule('SANC_PACK')
@@ -228,6 +244,7 @@ export default function LogsPage() {
 
     return () => {
       ws.close()
+      if (rafIdRef.current !== null) cancelAnimationFrame(rafIdRef.current)
     }
   }, [taskId])
 
@@ -269,7 +286,7 @@ export default function LogsPage() {
   const handleSendInput = () => {
     if (!inputText || !socketRef.current) return
     socketRef.current.send(JSON.stringify({ type: 'user_input', input: inputText }))
-    setOutputLines(prev => [...prev, `> ${inputText}`])
+    setOutputLines(prev => prev.concat(`> ${inputText}`))
     setInputText('')
     if (promptQueue.length > 0) {
       const [nextPrompt, ...rest] = promptQueue
@@ -282,7 +299,22 @@ export default function LogsPage() {
     }
   }
 
-  const handleDownloadLogs = () => {
+  const handleDownloadLogs = async () => {
+    // Try to fetch full logs from backend (disk-persisted, not capped)
+    try {
+      const resp = await fetch(`${getApiUrl()}/api/installation/logs/${taskId}/full`)
+      if (resp.ok) {
+        const blob = await resp.blob()
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `installation-logs-${taskId.slice(0, 8)}.txt`
+        a.click()
+        URL.revokeObjectURL(url)
+        return
+      }
+    } catch { /* fallback to local lines */ }
+    // Fallback: use in-memory lines (may be capped)
     const content = outputLines.join('\n')
     const blob = new Blob([content], { type: 'text/plain' })
     const url = URL.createObjectURL(blob)
@@ -291,6 +323,45 @@ export default function LogsPage() {
     a.download = `installation-logs-${taskId.slice(0, 8)}.txt`
     a.click()
     URL.revokeObjectURL(url)
+  }
+
+  // Auto-download logs on completion or failure
+  const autoDownloadedRef = useRef(false)
+  useEffect(() => {
+    if ((status === 'completed' || status === 'failed') && outputLines.length > 0 && !autoDownloadedRef.current) {
+      autoDownloadedRef.current = true
+      // Small delay to ensure final log lines are captured
+      const timer = setTimeout(() => handleDownloadLogs(), 1500)
+      return () => clearTimeout(timer)
+    }
+  }, [status, outputLines.length])
+
+  // Warn user before leaving if task is running (browser close triggers backend grace timer)
+  useEffect(() => {
+    const isRunning = status === 'running' || status === 'waiting_input' || status === 'connecting'
+    if (!isRunning) return
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handler)
+    return () => window.removeEventListener('beforeunload', handler)
+  }, [status])
+
+  const handleCancelTask = async () => {
+    if (!confirm('Are you sure you want to stop this process? This will kill all running commands on the remote server.')) return
+    setIsCancelling(true)
+    try {
+      const resp = await fetch(`${getApiUrl()}/api/installation/tasks/${taskId}/cancel`, { method: 'DELETE' })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        alert(err.detail || 'Failed to cancel task')
+      }
+    } catch (e) {
+      alert('Failed to cancel: ' + (e instanceof Error ? e.message : 'unknown error'))
+    } finally {
+      setIsCancelling(false)
+    }
   }
 
   const statusColor = (() => {
@@ -314,6 +385,15 @@ export default function LogsPage() {
             <div className="text-xs text-text-muted">Task: {taskId.slice(0, 8)}...</div>
           </div>
           <div className="text-xs text-text-secondary flex items-center gap-3">
+            {(status === 'running' || status === 'waiting_input' || status === 'connecting') && (
+              <button
+                onClick={handleCancelTask}
+                disabled={isCancelling}
+                className="px-3 py-1 rounded-md border border-red-500/60 text-red-400 hover:bg-red-500/20 hover:text-red-300 hover:border-red-400 transition-colors disabled:opacity-40 disabled:cursor-not-allowed font-semibold"
+              >
+                {isCancelling ? 'Stopping...' : 'Stop Process'}
+              </button>
+            )}
             <button
               onClick={handleDownloadLogs}
               disabled={outputLines.length === 0}
@@ -338,8 +418,8 @@ export default function LogsPage() {
               {activeSteps.map((step, idx) => {
                 const isActive = currentStep === step
                 const isCompleted =
-                  progress >= 100 ||
-                  (progress > 0 && idx < activeSteps.indexOf(currentStep))
+                  status === 'completed' ||
+                  (maxStepReached >= 0 && idx < maxStepReached)
                 return (
                   <div
                     key={step}
@@ -371,7 +451,7 @@ export default function LogsPage() {
               className="flex-1 min-h-0 max-h-full terminal overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-track-gray-900 scrollbar-thumb-gray-700"
             >
               {outputLines.map((line, idx) => (
-                <div key={`${idx}-${line}`} className="whitespace-pre-wrap break-words leading-relaxed">
+                <div key={idx} className="whitespace-pre-wrap break-words leading-relaxed">
                   {line}
                 </div>
               ))}

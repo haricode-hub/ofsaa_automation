@@ -55,7 +55,8 @@ async def deploy_fichome(request: FichomeDeploymentRequest):
             ),
         )
 
-        asyncio.create_task(_execute_fichome_deployment(task_id, request))
+        asyncio_task = asyncio.create_task(_execute_fichome_deployment(task_id, request))
+        tm.register_asyncio_task(task_id, asyncio_task)
 
         return FichomeDeploymentResponse(
             success=True,
@@ -108,7 +109,7 @@ async def _execute_fichome_deployment(
     try:
         await tm.append_output(task_id, f"[INFO] Target: {request.host}")
         await tm.append_output(task_id, f"[INFO] WebLogic Domain: {request.weblogic_domain_home}")
-        await tm.update_status(task_id, "running", "Initializing EAR creation & exploding", 0)
+        await tm.update_status(task_id, "running", "Initializing EAR creation & exploding", module="EAR_CREATION")
 
         svc = create_installation_service()
 
@@ -121,21 +122,23 @@ async def _execute_fichome_deployment(
         async def on_subtask(message: str) -> None:
             await tm.append_output(task_id, message)
             if "Granting database privileges" in message:
-                await tm.update_status(task_id, "running", "Granting database privileges", 10)
+                await tm.update_status(task_id, "running", "Granting database privileges", module="EAR_CREATION")
             elif "Running EAR creation & exploding script" in message:
-                await tm.update_status(task_id, "running", "Running EAR creation & exploding script", 30)
+                await tm.update_status(task_id, "running", "Running EAR creation & exploding script", module="EAR_CREATION")
             elif "Running startofsaa.sh" in message:
-                await tm.update_status(task_id, "running", "Running startofsaa.sh", 70)
+                await tm.update_status(task_id, "running", "Running startofsaa.sh", module="EAR_CREATION")
             elif "Running checkofsaa.sh" in message:
-                await tm.update_status(task_id, "running", "Running checkofsaa.sh", 80)
+                await tm.update_status(task_id, "running", "Running checkofsaa.sh", module="EAR_CREATION")
             elif "Deploying application to WebLogic" in message:
-                await tm.update_status(task_id, "running", "Deploying application to WebLogic", 85)
+                await tm.update_status(task_id, "running", "Deploying application to WebLogic", module="EAR_CREATION")
 
         async def on_output(line: str) -> None:
             if line and line.strip():
                 await tm.append_output(task_id, line)
 
         # EAR creation
+        if tm.is_cancelled(task_id):
+            return
         result = await svc.installer.deploy_fichome(
             host=request.host,
             username=request.username,
@@ -165,6 +168,8 @@ async def _execute_fichome_deployment(
         has_deploy = request.deploy_app_enabled
 
         if has_ds or has_deploy:
+            if tm.is_cancelled(task_id):
+                return
             ds_list = []
             if has_ds:
                 ds_list = [
@@ -189,7 +194,7 @@ async def _execute_fichome_deployment(
                 await tm.append_output(task_id, f"[INFO] Datasources: {len(ds_list)}")
             if has_deploy:
                 await tm.append_output(task_id, f"[INFO] Deploy: FICHOME -> {request.deploy_app_target_server}")
-            await tm.update_status(task_id, "running", "Datasources + App Deployment", 88)
+            await tm.update_status(task_id, "running", "Datasources + App Deployment", module="EAR_CREATION")
 
             combined_result = await svc.installer.create_datasources_and_deploy_app(
                 host=request.host,
@@ -211,13 +216,18 @@ async def _execute_fichome_deployment(
             if not combined_result.get("success"):
                 err = combined_result.get("error") or f"{section_label} failed"
                 await tm.append_output(task_id, f"[ERROR] {err}")
-                await tm.update_status(task_id, "failed", f"EAR OK but {section_label} failed", 100)
+                await tm.update_status(task_id, "failed", f"EAR OK but {section_label} failed", module="EAR_CREATION")
             else:
                 await tm.append_output(task_id, f"[SUCCESS] {section_label} completed successfully")
-                await tm.update_status(task_id, "completed", "Deployment completed", 100)
+                await tm.update_status(task_id, "completed", "Deployment completed", module="EAR_CREATION")
         else:
-            await tm.update_status(task_id, "completed", "Deployment completed", 100)
+            await tm.update_status(task_id, "completed", "Deployment completed", module="EAR_CREATION")
 
+    except (asyncio.CancelledError,):
+        logger.info("Deployment task %s was cancelled", task_id)
+        task = tm.get_task(task_id)
+        if task and task.status not in ("failed",):
+            await tm.update_status(task_id, "failed", "Cancelled by user")
     except Exception as exc:
         logger.exception("EAR creation & exploding failed: %s", task_id)
         await tm.append_output(task_id, f"[ERROR] Exception: {exc}")

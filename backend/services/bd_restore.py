@@ -135,8 +135,43 @@ class BDRestoreService:
         passwd = db_ssh_password
         sys_pass = db_sys_password
 
-        dump_file = f"ofs_{backup_tag}_bkp_%U.dmp"
-        metadata_file = f"{BACKUP_DIR}/restore_metadata.sql"
+        # ── Find latest dump set for this tag ──
+        find_latest_cmd = (
+            f"ls -1 {BACKUP_DIR}/ofs_{backup_tag}_bkp_*_01.dmp 2>/dev/null "
+            f"| sort | tail -1"
+        )
+        latest_result = await self.ssh.execute_command(host, user, passwd, find_latest_cmd)
+        latest_file = (latest_result.get("stdout") or "").strip()
+
+        if latest_file:
+            # Extract timestamp from filename: ofs_BD_bkp_20260416_231022_01.dmp -> 20260416_231022
+            import re
+            m = re.search(rf"ofs_{backup_tag}_bkp_(\d{{8}}_\d{{6}})_01\.dmp", latest_file)
+            if m:
+                ts = m.group(1)
+                dump_file = f"ofs_{backup_tag}_bkp_{ts}_%U.dmp"
+                await log(f"[RESTORE] Found latest dump set: timestamp={ts}")
+            else:
+                dump_file = f"ofs_{backup_tag}_bkp_%U.dmp"
+                await log(f"[RESTORE] Found dump file but could not parse timestamp, using generic pattern")
+        else:
+            # Fallback: try old non-timestamped pattern
+            dump_file = f"ofs_{backup_tag}_bkp_%U.dmp"
+            await log(f"[RESTORE] No timestamped dumps found, trying legacy pattern: {dump_file}")
+
+        # Find latest metadata file
+        find_meta_cmd = (
+            f"ls -1 {BACKUP_DIR}/restore_metadata_{backup_tag}_*.sql 2>/dev/null "
+            f"| sort | tail -1"
+        )
+        meta_result_check = await self.ssh.execute_command(host, user, passwd, find_meta_cmd)
+        metadata_file = (meta_result_check.get("stdout") or "").strip()
+        if not metadata_file:
+            # Fallback to old single metadata file
+            metadata_file = f"{BACKUP_DIR}/restore_metadata.sql"
+            await log(f"[RESTORE] No timestamped metadata found, using legacy: {metadata_file}")
+        else:
+            await log(f"[RESTORE] Using metadata: {metadata_file}")
 
         # Auto-detect ORACLE_HOME
         oracle_home = await self._detect_oracle_home(host, user, passwd)
@@ -159,13 +194,14 @@ class BDRestoreService:
             return {"success": False, "logs": logs, "error": f"PDB {pdb_name} not open"}
         await log(f"[RESTORE]   PDB {pdb_name}: READ WRITE ✓")
 
-        # Check dump files exist
+        # Check dump files exist (use the resolved dump_file pattern)
+        check_pattern = dump_file.replace('%U', '*')
         ls_result = await self.ssh.execute_command(
-            host, user, passwd, f"ls {BACKUP_DIR}/ofs_{backup_tag}_bkp_*.dmp 2>/dev/null | head -5"
+            host, user, passwd, f"ls {BACKUP_DIR}/{check_pattern} 2>/dev/null | head -5"
         )
         ls_out = (ls_result.get("stdout") or "").strip()
         if not ls_out:
-            await log(f"[RESTORE] ERROR: No dump files found in {BACKUP_DIR}/ for tag={backup_tag}")
+            await log(f"[RESTORE] ERROR: No dump files found in {BACKUP_DIR}/ for pattern={check_pattern}")
             return {"success": False, "logs": logs, "error": "No dump files found"}
         await log(f"[RESTORE]   Dump files found ✓")
 

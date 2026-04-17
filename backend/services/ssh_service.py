@@ -15,6 +15,44 @@ class SSHService:
 
     def __init__(self) -> None:
         self._client = None
+        # Per-task active SSH connections for cancellation
+        self._active_connections: dict[str, list[paramiko.SSHClient]] = {}
+        self._active_channels: dict[str, list[paramiko.Channel]] = {}
+
+    def register_connection(self, task_id: str, client: paramiko.SSHClient, channel: Optional[paramiko.Channel] = None) -> None:
+        """Track an active SSH connection for a task."""
+        if task_id:
+            self._active_connections.setdefault(task_id, []).append(client)
+            if channel:
+                self._active_channels.setdefault(task_id, []).append(channel)
+
+    def unregister_connection(self, task_id: str, client: paramiko.SSHClient, channel: Optional[paramiko.Channel] = None) -> None:
+        """Remove a tracked SSH connection."""
+        if task_id:
+            conns = self._active_connections.get(task_id, [])
+            if client in conns:
+                conns.remove(client)
+            if channel:
+                chans = self._active_channels.get(task_id, [])
+                if channel in chans:
+                    chans.remove(channel)
+
+    def close_task_connections(self, task_id: str) -> None:
+        """Force-close all SSH connections for a task (used on cancel)."""
+        channels = self._active_channels.pop(task_id, [])
+        for ch in channels:
+            try:
+                ch.close()
+            except Exception:
+                pass
+        clients = self._active_connections.pop(task_id, [])
+        for cl in clients:
+            try:
+                cl.close()
+            except Exception:
+                pass
+        if channels or clients:
+            logger.info("Force-closed %d channels + %d clients for task %s", len(channels), len(clients), task_id)
 
     def _connect(self, host: str, username: str, password: str, timeout: int = 10) -> paramiko.SSHClient:
         attempts = 3
@@ -62,11 +100,13 @@ class SSHService:
         command: str,
         timeout: int = 600,
         get_pty: bool = False,
+        task_id: str = "",
     ) -> Dict[str, Any]:
         start_ts = time.time()
         cmd_preview = " ".join(command.strip().split())[:180]
         logger.info("SSH command start host=%s timeout=%ss pty=%s cmd=%s", host, timeout, get_pty, cmd_preview)
         client = self._connect(host, username, password, timeout=timeout)
+        self.register_connection(task_id, client)
         try:
             stdin, stdout, stderr = client.exec_command(command, get_pty=get_pty, timeout=timeout)
             out = stdout.read().decode(errors="ignore")
@@ -87,6 +127,7 @@ class SSHService:
                 "returncode": exit_status,
             }
         finally:
+            self.unregister_connection(task_id, client)
             client.close()
 
     async def execute_command(
@@ -97,6 +138,7 @@ class SSHService:
         command: str,
         timeout: int = 600,
         get_pty: bool = False,
+        task_id: str = "",
     ) -> Dict[str, Any]:
         return await asyncio.to_thread(
             self._execute_command_sync,
@@ -106,6 +148,7 @@ class SSHService:
             command,
             timeout,
             get_pty,
+            task_id,
         )
 
     async def test_connection(self, host: str, username: str, password: str) -> Dict[str, Any]:
@@ -136,6 +179,7 @@ class SSHService:
         on_prompt_callback: Optional[Callable[[str], Any]] = None,
         timeout: int = 1800,
         prompt_patterns: Optional[Iterable[str]] = None,
+        task_id: str = "",
     ) -> Dict[str, Any]:
         loop = asyncio.get_running_loop()
         return await asyncio.to_thread(
@@ -149,6 +193,7 @@ class SSHService:
             timeout,
             prompt_patterns,
             loop,
+            task_id,
         )
 
     def _execute_interactive_sync(
@@ -162,6 +207,7 @@ class SSHService:
         timeout: int,
         prompt_patterns: Optional[Iterable[str]],
         loop: asyncio.AbstractEventLoop,
+        task_id: str = "",
     ) -> Dict[str, Any]:
         start_ts = time.time()
         cmd_preview = " ".join(command.strip().split())[:180]
@@ -213,6 +259,7 @@ class SSHService:
                 return None
 
         client = self._connect(host, username, password, timeout=10)
+        self.register_connection(task_id, client)
         # Send SSH keep-alive packets every 60 seconds so the TCP connection
         # is never treated as idle by firewalls/routers during long quiet phases
         # of setup.sh (e.g. Oracle DB inserts that produce no output for 15+ min).
@@ -225,6 +272,7 @@ class SSHService:
             channel.get_pty()
             channel.exec_command(command)
             channel.settimeout(1.0)
+            self.register_connection(task_id, client, channel)
 
             buffer = ""
             last_prompt = None
@@ -275,5 +323,11 @@ class SSHService:
             return {"success": exit_status == 0, "returncode": exit_status}
         finally:
             if channel is not None:
+                self.unregister_connection(task_id, client, channel)
                 channel.close()
+            self.unregister_connection(task_id, client)
             client.close()
+
+
+# ── Module-level singleton ───────────────────────────────────────────────────
+ssh_service = SSHService()

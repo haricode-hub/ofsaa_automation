@@ -41,6 +41,7 @@ export interface DeploymentFormData {
   db_jdbc_service: string
   config_schema_name: string
   atomic_schema_name: string
+  schema_password: string
   weblogic_domain_home: string
 
   // Datasource creation fields
@@ -125,6 +126,7 @@ export function DeploymentForm() {
       db_jdbc_service: 'FLEXPDB1',
       config_schema_name: 'OFSCONFIG',
       atomic_schema_name: 'OFSATOMIC',
+      schema_password: '',
       weblogic_domain_home: '/u01/Oracle/user_projects/domains/ofsaa_domain',
       // Datasources
       ds_enabled: true,
@@ -187,6 +189,11 @@ export function DeploymentForm() {
         }
         return ds
       })
+    }
+
+    // Auto-populate: when schema_password changes, fill ALL datasource db_password fields
+    if (field === 'schema_password' && value) {
+      next.datasources = next.datasources.map(ds => ({ ...ds, db_password: value as string }))
     }
 
     // Auto-populate app path when domain home changes
@@ -444,7 +451,7 @@ export function DeploymentForm() {
 
                 {/* Schema config */}
                 <div className="text-xs font-bold text-text-muted uppercase tracking-wider mt-2">Schema</div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div>
                     <label className={labelClass}>Config Schema Name</label>
                     <input className={inputClass} value={formData.config_schema_name} onChange={e => handleFieldChange('config_schema_name', e.target.value)} placeholder="OFSCONFIG" />
@@ -452,6 +459,10 @@ export function DeploymentForm() {
                   <div>
                     <label className={labelClass}>Atomic Schema Name</label>
                     <input className={inputClass} value={formData.atomic_schema_name} onChange={e => handleFieldChange('atomic_schema_name', e.target.value)} placeholder="OFSATOMIC" />
+                  </div>
+                  <div>
+                    <label className={labelClass}>Schema Password</label>
+                    <input className={inputClass} type="password" value={formData.schema_password} onChange={e => handleFieldChange('schema_password', e.target.value)} placeholder="BD Pack default password" />
                   </div>
                 </div>
 
