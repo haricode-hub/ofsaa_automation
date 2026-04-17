@@ -272,8 +272,10 @@ interface EcmPackFormProps {
 }
 
 function fieldClass(hasError: boolean): string {
-  const base = 'w-full bg-bg-secondary border rounded-lg px-3 py-2 text-sm text-text-primary focus:outline-none focus:bg-bg-tertiary'
-  return hasError ? `${base} border-error focus:border-error` : `${base} border-border focus:border-white`
+  const base = 'w-full rounded-lg px-3 py-2 text-sm text-text-primary focus:outline-none placeholder-text-muted transition-all duration-200'
+  return hasError
+    ? `${base} bg-red-500/5 border-2 border-red-500 focus:border-red-400`
+    : `${base} bg-bg-secondary border border-border focus:border-white focus:bg-bg-tertiary`
 }
 
 export function EcmPackForm({ data, errors, onChange }: EcmPackFormProps) {
@@ -343,13 +345,6 @@ export function EcmPackForm({ data, errors, onChange }: EcmPackFormProps) {
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {input('SETUPINFO NAME', 'setupInfoName', 'DEV')}
-            <div className="space-y-1">
-              <label className="text-xs font-bold text-text-primary uppercase tracking-wider">PREFIX_SCHEMA_NAME</label>
-              <select value={data.prefixSchemaName} onChange={(e) => update('prefixSchemaName', e.target.value as 'Y' | 'N')} className={fieldClass(!!errors.prefixSchemaName)}>
-                <option value="N">N</option>
-                <option value="Y">Y</option>
-              </select>
-            </div>
           </div>
           {input('Schema Password', 'schemaPassword', 'ofsaa8x', 'password')}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

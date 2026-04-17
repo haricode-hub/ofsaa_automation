@@ -33,6 +33,7 @@ interface AaiConfig {
 
 interface SancPackPageProps {
   enabled: boolean
+  submitted?: boolean
   host: string
   configSchemaName: string
   atomicSchemaName: string
@@ -44,7 +45,7 @@ interface SancPackPageProps {
   aaiConfig?: AaiConfig
 }
 
-export function SancPackPage({ enabled, host, configSchemaName, atomicSchemaName, schemaDatafileDir, bdSchemaPassword, bdJdbcPort, initialData, onChange, aaiConfig }: SancPackPageProps) {
+export function SancPackPage({ enabled, submitted, host, configSchemaName, atomicSchemaName, schemaDatafileDir, bdSchemaPassword, bdJdbcPort, initialData, onChange, aaiConfig }: SancPackPageProps) {
   const [data, setData] = useState<SancFormData>(() => initialData || createDefaultSancData(configSchemaName, atomicSchemaName, host, aaiConfig))
 
   // Sync key fields from BD Pack -> SANC whenever they change
@@ -143,8 +144,8 @@ export function SancPackPage({ enabled, host, configSchemaName, atomicSchemaName
       <div className="text-xs text-text-muted">
         Database & Host, Schema & Password, Tablespaces, CS/TFLT SWIFTINFO, OFSAAI config.
       </div>
-      <SancPackForm data={data} errors={validation.errors} onChange={setData} />
-      {!validation.isValid && <p className="text-xs text-error">Review has blocking validation errors. Resolve highlighted fields before submit.</p>}
+      <SancPackForm data={data} errors={submitted ? validation.errors : {}} onChange={setData} />
+      {submitted && !validation.isValid && <p className="text-xs text-error">Review has blocking validation errors. Resolve highlighted fields before submit.</p>}
     </section>
   )
 }

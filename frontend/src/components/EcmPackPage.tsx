@@ -5,6 +5,7 @@ import { EcmPackForm, EcmFormData, createDefaultEcmData, validateEcmData } from 
 
 interface EcmPackPageProps {
   enabled: boolean
+  submitted?: boolean
   host: string
   configSchemaName: string
   atomicSchemaName: string
@@ -42,7 +43,7 @@ interface EcmPackPageProps {
   }
 }
 
-export function EcmPackPage({ enabled, host, configSchemaName, atomicSchemaName, schemaDatafileDir, bdSchemaPassword, bdJdbcPort, initialData, onChange, aaiConfig }: EcmPackPageProps) {
+export function EcmPackPage({ enabled, submitted, host, configSchemaName, atomicSchemaName, schemaDatafileDir, bdSchemaPassword, bdJdbcPort, initialData, onChange, aaiConfig }: EcmPackPageProps) {
   const [data, setData] = useState<EcmFormData>(() => initialData || createDefaultEcmData(configSchemaName, atomicSchemaName, host, aaiConfig))
 
   // Sync key fields from BD Pack → ECM whenever they change
@@ -139,8 +140,8 @@ export function EcmPackPage({ enabled, host, configSchemaName, atomicSchemaName,
       <div className="text-xs text-text-muted">
         Database & Host, Schema & Password, Tablespaces, ECM default.properties, Review & Generate.
       </div>
-      <EcmPackForm data={data} errors={validation.errors} onChange={setData} />
-      {!validation.isValid && <p className="text-xs text-error">Review has blocking validation errors. Resolve highlighted fields before submit.</p>}
+      <EcmPackForm data={data} errors={submitted ? validation.errors : {}} onChange={setData} />
+      {submitted && !validation.isValid && <p className="text-xs text-error">Review has blocking validation errors. Resolve highlighted fields before submit.</p>}
     </section>
   )
 }

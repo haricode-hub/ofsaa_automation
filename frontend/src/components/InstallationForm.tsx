@@ -251,6 +251,51 @@ export function InstallationForm() {
   const [sancConfig, setSancConfig] = useState<SancFormData | null>(null)
   const [isSancValid, setIsSancValid] = useState(true)
   const [hydrated, setHydrated] = useState(false)
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({})
+  const [submitted, setSubmitted] = useState(false)
+
+  // Validate main config + BD pack fields
+  const validateForm = (): boolean => {
+    const errs: Record<string, string> = {}
+
+    // Main configuration — always required
+    if (!formData.host.trim()) errs.host = 'Target Host is required'
+    if (!formData.username.trim()) errs.username = 'SSH Username is required'
+    if (!formData.password.trim()) errs.password = 'SSH Password is required'
+    if (!formData.fic_home.trim()) errs.fic_home = 'FIC_HOME is required'
+    if (!formData.oracle_sid.trim()) errs.oracle_sid = 'Oracle Service Name is required'
+
+    // DB SYS password & JDBC service when backup/restore may be needed
+    const dbNeeded = formData.install_bdpack || formData.install_ecm || formData.install_sanc
+    if (dbNeeded) {
+      if (!formData.db_sys_password.trim()) errs.db_sys_password = 'DB SYS Password is required for backup/restore'
+      if (!formData.schema_jdbc_service.trim()) errs.schema_jdbc_service = 'JDBC Service Name is required'
+    }
+
+    // BD Pack fields
+    if (formData.install_bdpack) {
+      if (!formData.schema_jdbc_host.trim()) errs.schema_jdbc_host = 'JDBC Host is required'
+      if (!formData.schema_jdbc_port.toString().trim()) errs.schema_jdbc_port = 'JDBC Port is required'
+      if (!formData.schema_default_password.trim()) errs.schema_default_password = 'Schema Password is required'
+      if (!formData.schema_config_schema_name.trim()) errs.schema_config_schema_name = 'CONFIG Schema Name is required'
+      if (!formData.schema_atomic_schema_name.trim()) errs.schema_atomic_schema_name = 'ATOMIC Schema Name is required'
+      if (!formData.schema_datafile_dir.trim()) errs.schema_datafile_dir = 'Datafile directory is required'
+      if (formData.schema_datafile_dir.trim() && !formData.schema_datafile_dir.startsWith('/')) errs.schema_datafile_dir = 'Datafile path must start with /'
+      if (!formData.aai_dbserver_ip.trim()) errs.aai_dbserver_ip = 'DBSERVER_IP is required'
+      if (!formData.aai_oracle_service_name.trim()) errs.aai_oracle_service_name = 'Oracle Service Name is required'
+      if (!formData.aai_web_server_ip.trim()) errs.aai_web_server_ip = 'Web Server IP is required'
+    }
+
+    setFormErrors(errs)
+    return Object.keys(errs).length === 0
+  }
+
+  const fieldClass = (field: string): string => {
+    const base = 'w-full rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none placeholder-text-muted'
+    return formErrors[field]
+      ? `${base} bg-red-500/5 border-2 border-red-500 focus:border-red-400`
+      : `${base} bg-bg-secondary border border-border focus:border-white focus:bg-bg-tertiary`
+  }
 
   useEffect(() => {
     try {
@@ -305,8 +350,13 @@ export function InstallationForm() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setEcmSubmitError('')
-    if (formData.install_bdpack) {
-      // BD Pack validation would go here
+    setSubmitted(true)
+
+    // Validate main + BD fields
+    if (!validateForm()) {
+      setStatus('error')
+      setEcmSubmitError('Review has blocking validation errors. Resolve highlighted fields before submit.')
+      return
     }
     
     if (formData.install_ecm && (!ecmConfig || !isEcmValid)) {
@@ -315,13 +365,6 @@ export function InstallationForm() {
       return
     }
 
-    // Validate DB credentials when backup/restore is requested
-    const dbBackupRequested = formData.install_bdpack || (formData.install_ecm && formData.ecm_take_bd_backup)
-    if (dbBackupRequested && (!formData.db_sys_password || !formData.schema_jdbc_service)) {
-      setStatus('error')
-      setEcmSubmitError('DB SYS password and JDBC service are required for DB schema backup/restore. Please provide them.')
-      return
-    }
     setIsLoading(true)
     
     try {
@@ -555,6 +598,17 @@ export function InstallationForm() {
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
     const value = e.target.value
+    // Clear validation error for this field (and synced fields) as user types
+    setFormErrors(prev => {
+      const next = { ...prev }
+      delete next[field]
+      // Also clear synced field errors
+      const dbIpFields: Array<keyof InstallationData> = ['aai_dbserver_ip', 'schema_jdbc_host', 'db_ssh_host']
+      const serviceFields: Array<keyof InstallationData> = ['aai_oracle_service_name', 'schema_jdbc_service']
+      const syncGroup = dbIpFields.includes(field) ? dbIpFields : serviceFields.includes(field) ? serviceFields : []
+      for (const f of syncGroup) delete next[f]
+      return next
+    })
     setFormData(prev => {
       const updated = { ...prev, [field]: value }
 
@@ -647,51 +701,29 @@ export function InstallationForm() {
           <div className="text-sm font-bold text-text-primary uppercase tracking-wider mb-3">
             Module Installation Scenario
           </div>
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                Installation Mode
+          <div className="flex items-center gap-5">
+            <label className="inline-flex items-center gap-2 text-sm text-text-primary cursor-pointer">
+              <input type="checkbox" checked={formData.install_bdpack} onChange={() => toggleModuleSelection('install_bdpack')} />
+              BD Pack
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm text-text-primary cursor-pointer">
+              <input type="checkbox" checked={formData.install_ecm} onChange={() => toggleModuleSelection('install_ecm')} />
+              ECM
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm text-text-primary cursor-pointer">
+              <input type="checkbox" checked={formData.install_sanc} onChange={() => toggleModuleSelection('install_sanc')} />
+              SANC
+            </label>
+            {formData.install_ecm && !formData.install_bdpack && (
+              <label className="inline-flex items-center gap-2 text-sm text-text-primary cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={formData.ecm_take_bd_backup}
+                  onChange={() => setFormData(prev => ({ ...prev, ecm_take_bd_backup: !prev.ecm_take_bd_backup }))}
+                />
+                Take BD app + DB backup before ECM
               </label>
-              <select
-                value={formData.installation_mode}
-                onChange={e =>
-                  setFormData(prev => ({ ...prev, installation_mode: e.target.value as 'fresh' | 'addon' }))
-                }
-                className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary"
-              >
-                <option value="fresh">Fresh</option>
-                <option value="addon">Add-on</option>
-              </select>
-            </div>
-            <div className="space-y-2">
-              <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                Optional Modules
-              </label>
-              <div className="flex items-center gap-5 pt-2">
-                <label className="inline-flex items-center gap-2 text-sm text-text-primary cursor-pointer">
-                  <input type="checkbox" checked={formData.install_bdpack} onChange={() => toggleModuleSelection('install_bdpack')} />
-                  BD Pack
-                </label>
-                <label className="inline-flex items-center gap-2 text-sm text-text-primary cursor-pointer">
-                  <input type="checkbox" checked={formData.install_ecm} onChange={() => toggleModuleSelection('install_ecm')} />
-                  ECM
-                </label>
-                <label className="inline-flex items-center gap-2 text-sm text-text-primary cursor-pointer">
-                  <input type="checkbox" checked={formData.install_sanc} onChange={() => toggleModuleSelection('install_sanc')} />
-                  SANC
-                </label>
-                {formData.install_ecm && !formData.install_bdpack && (
-                  <label className="inline-flex items-center gap-2 text-sm text-text-primary cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={formData.ecm_take_bd_backup}
-                      onChange={() => setFormData(prev => ({ ...prev, ecm_take_bd_backup: !prev.ecm_take_bd_backup }))}
-                    />
-                    Take BD app + DB backup before ECM
-                  </label>
-                )}
-              </div>
-            </div>
+            )}
           </div>
         </motion.div>
 
@@ -726,9 +758,9 @@ export function InstallationForm() {
                   value={formData.host}
                   onChange={handleInputChange('host')}
                   placeholder="192.168.1.100"
-                  className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  required
+                  className={fieldClass('host')}
                 />
+                {formErrors.host && <p className="text-xs text-error">{formErrors.host}</p>}
               </div>
 
               <div className="space-y-2">
@@ -741,9 +773,9 @@ export function InstallationForm() {
                   value={formData.username}
                   onChange={handleInputChange('username')}
                   placeholder="root"
-                  className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  required
+                  className={fieldClass('username')}
                 />
+                {formErrors.username && <p className="text-xs text-error">{formErrors.username}</p>}
                 <p className="text-xs text-text-muted">(root recommended — scripts will automatically switch to oracle user internally)</p>
               </div>
 
@@ -757,9 +789,9 @@ export function InstallationForm() {
                   value={formData.password}
                   onChange={handleInputChange('password')}
                   placeholder="********"
-                  className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                  required
+                  className={fieldClass('password')}
                 />
+                {formErrors.password && <p className="text-xs text-error">{formErrors.password}</p>}
               </div>
 
               <div className="space-y-2">
@@ -772,8 +804,9 @@ export function InstallationForm() {
                   value={formData.db_sys_password}
                   onChange={handleInputChange('db_sys_password')}
                   placeholder="Oracle SYS password for backup/restore"
-                  className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                  className={fieldClass('db_sys_password')}
                 />
+                {formErrors.db_sys_password && <p className="text-xs text-error">{formErrors.db_sys_password}</p>}
                 <p className="text-[10px] text-text-muted">Used for sqlplus connections during backup, restore, and schema cleanup operations.</p>
               </div>
 
@@ -786,8 +819,9 @@ export function InstallationForm() {
                     value={formData.schema_jdbc_service}
                     onChange={handleInputChange('schema_jdbc_service')}
                     placeholder="OFSAAPDB"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    className={fieldClass('schema_jdbc_service')}
                   />
+                  {formErrors.schema_jdbc_service && <p className="text-xs text-error">{formErrors.schema_jdbc_service}</p>}
                   <p className="text-[10px] text-text-muted">Provide the JDBC Service Name used for DB schema backup/restore.</p>
                 </div>
               )}
@@ -844,9 +878,9 @@ export function InstallationForm() {
                     value={formData.fic_home}
                     onChange={handleInputChange('fic_home')}
                     placeholder="/u01/OFSAA/FICHOME"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                    required
+                    className={fieldClass('fic_home')}
                   />
+                  {formErrors.fic_home && <p className="text-xs text-error">{formErrors.fic_home}</p>}
                 </div>
 
                 <div className="space-y-2">
@@ -884,9 +918,9 @@ export function InstallationForm() {
                     value={formData.oracle_sid}
                     onChange={handleInputChange('oracle_sid')}
                     placeholder="ORCL"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
-                    required
+                    className={fieldClass('oracle_sid')}
                   />
+                  {formErrors.oracle_sid && <p className="text-xs text-error">{formErrors.oracle_sid}</p>}
                 </div>
               </div>
             </div>
@@ -932,8 +966,9 @@ export function InstallationForm() {
                     value={formData.schema_jdbc_host}
                     onChange={handleInputChange('schema_jdbc_host')}
                     placeholder="192.168.3.42"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    className={fieldClass('schema_jdbc_host')}
                   />
+                  {formErrors.schema_jdbc_host && <p className="text-xs text-error">{formErrors.schema_jdbc_host}</p>}
                 </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -946,8 +981,9 @@ export function InstallationForm() {
                       value={formData.schema_jdbc_port}
                       onChange={handleInputChange('schema_jdbc_port')}
                       placeholder="1521"
-                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                      className={fieldClass('schema_jdbc_port')}
                     />
+                    {formErrors.schema_jdbc_port && <p className="text-xs text-error">{formErrors.schema_jdbc_port}</p>}
                   </div>
                   <div className="space-y-2">
                     <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
@@ -958,8 +994,9 @@ export function InstallationForm() {
                       value={formData.schema_jdbc_service}
                       onChange={handleInputChange('schema_jdbc_service')}
                       placeholder="OFSAAPDB"
-                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                      className={fieldClass('schema_jdbc_service')}
                     />
+                    {formErrors.schema_jdbc_service && <p className="text-xs text-error">{formErrors.schema_jdbc_service}</p>}
                   </div>
                 </div>
 
@@ -1012,8 +1049,9 @@ export function InstallationForm() {
                     value={formData.schema_default_password}
                     onChange={handleInputChange('schema_default_password')}
                     placeholder="Password1"
-                    className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    className={fieldClass('schema_default_password')}
                   />
+                  {formErrors.schema_default_password && <p className="text-xs text-error">{formErrors.schema_default_password}</p>}
                 </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -1026,8 +1064,9 @@ export function InstallationForm() {
                       value={formData.schema_datafile_dir}
                       onChange={handleInputChange('schema_datafile_dir')}
                       placeholder="/u01/app/oracle/oradata/OFSAA/OFSAADB"
-                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                      className={fieldClass('schema_datafile_dir')}
                     />
+                    {formErrors.schema_datafile_dir && <p className="text-xs text-error">{formErrors.schema_datafile_dir}</p>}
                   </div>
                   <div className="space-y-2">
                     <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
@@ -1066,8 +1105,9 @@ export function InstallationForm() {
                       value={formData.schema_config_schema_name}
                       onChange={handleInputChange('schema_config_schema_name')}
                       placeholder="OFSCONFIG"
-                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                      className={fieldClass('schema_config_schema_name')}
                     />
+                    {formErrors.schema_config_schema_name && <p className="text-xs text-error">{formErrors.schema_config_schema_name}</p>}
                   </div>
                   <div className="space-y-2">
                     <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
@@ -1078,8 +1118,9 @@ export function InstallationForm() {
                       value={formData.schema_atomic_schema_name}
                       onChange={handleInputChange('schema_atomic_schema_name')}
                       placeholder="OFSATOMIC"
-                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                      className={fieldClass('schema_atomic_schema_name')}
                     />
+                    {formErrors.schema_atomic_schema_name && <p className="text-xs text-error">{formErrors.schema_atomic_schema_name}</p>}
                   </div>
                 </div>
               </div>
@@ -1468,11 +1509,13 @@ export function InstallationForm() {
                   </div>
                   <div className="space-y-2">
                     <label className="text-xs font-bold text-text-primary uppercase tracking-wider">DBSERVER_IP</label>
-                    <input type="text" value={formData.aai_dbserver_ip} onChange={handleInputChange('aai_dbserver_ip')} placeholder="192.168.3.42" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                    <input type="text" value={formData.aai_dbserver_ip} onChange={handleInputChange('aai_dbserver_ip')} placeholder="192.168.3.42" className={fieldClass('aai_dbserver_ip')} />
+                    {formErrors.aai_dbserver_ip && <p className="text-xs text-error">{formErrors.aai_dbserver_ip}</p>}
                   </div>
                   <div className="space-y-2">
                     <label className="text-xs font-bold text-text-primary uppercase tracking-wider">ORACLE SERVICE</label>
-                    <input type="text" value={formData.aai_oracle_service_name} onChange={handleInputChange('aai_oracle_service_name')} placeholder="OFSAAPDB" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                    <input type="text" value={formData.aai_oracle_service_name} onChange={handleInputChange('aai_oracle_service_name')} placeholder="OFSAAPDB" className={fieldClass('aai_oracle_service_name')} />
+                    {formErrors.aai_oracle_service_name && <p className="text-xs text-error">{formErrors.aai_oracle_service_name}</p>}
                   </div>
                 </div>
 
@@ -1483,7 +1526,8 @@ export function InstallationForm() {
                   </div>
                   <div className="space-y-2">
                     <label className="text-xs font-bold text-text-primary uppercase tracking-wider">WEB_SERVER_IP</label>
-                    <input type="text" value={formData.aai_web_server_ip} onChange={handleInputChange('aai_web_server_ip')} placeholder="192.168.3.41" className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted" />
+                    <input type="text" value={formData.aai_web_server_ip} onChange={handleInputChange('aai_web_server_ip')} placeholder="192.168.3.41" className={fieldClass('aai_web_server_ip')} />
+                    {formErrors.aai_web_server_ip && <p className="text-xs text-error">{formErrors.aai_web_server_ip}</p>}
                   </div>
                 </div>
 
@@ -1575,6 +1619,7 @@ export function InstallationForm() {
         {formData.install_ecm && (
         <EcmPackPage
           enabled={formData.install_ecm}
+          submitted={submitted}
           host={formData.host}
           configSchemaName={formData.schema_config_schema_name}
           atomicSchemaName={formData.schema_atomic_schema_name}
@@ -1618,6 +1663,7 @@ export function InstallationForm() {
         {formData.install_sanc && (
         <SancPackPage
           enabled={formData.install_sanc}
+          submitted={submitted}
           host={formData.host}
           configSchemaName={formData.schema_config_schema_name}
           atomicSchemaName={formData.schema_atomic_schema_name}

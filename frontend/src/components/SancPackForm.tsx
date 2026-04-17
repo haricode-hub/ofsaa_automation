@@ -158,8 +158,10 @@ interface SancPackFormProps {
 }
 
 function fieldClass(hasError: boolean): string {
-  const base = 'w-full bg-bg-secondary border rounded-lg px-3 py-2 text-sm text-text-primary focus:outline-none focus:bg-bg-tertiary'
-  return hasError ? `${base} border-error focus:border-error` : `${base} border-border focus:border-white`
+  const base = 'w-full rounded-lg px-3 py-2 text-sm text-text-primary focus:outline-none placeholder-text-muted transition-all duration-200'
+  return hasError
+    ? `${base} bg-red-500/5 border-2 border-red-500 focus:border-red-400`
+    : `${base} bg-bg-secondary border border-border focus:border-white focus:bg-bg-tertiary`
 }
 
 export function SancPackForm({ data, errors, onChange }: SancPackFormProps) {
