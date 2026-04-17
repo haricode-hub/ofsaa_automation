@@ -6,8 +6,8 @@ from typing import Optional, Callable, Awaitable
 from core.config import Config
 from services.ssh_service import SSHService
 from services.utils import shell_escape
-from services.bd_backup import BDBackupService
-from services.bd_restore import BDRestoreService
+from services.backup import BackupService
+from services.restore import RestoreService
 
 
 logger = logging.getLogger(__name__)
@@ -18,8 +18,8 @@ class RecoveryService:
 
     def __init__(self, ssh_service: SSHService) -> None:
         self.ssh_service = ssh_service
-        self.bd_backup = BDBackupService(ssh_service)
-        self.bd_restore = BDRestoreService(ssh_service)
+        self.backup = BackupService(ssh_service)
+        self.restore = RestoreService(ssh_service)
 
     # ------------------------------------------------------------------
     # Sqlplus connection helper
@@ -343,7 +343,7 @@ class RecoveryService:
         target_user = db_ssh_username or username
         target_pass = db_ssh_password or password
 
-        return await self.bd_backup.run_backup(
+        return await self.backup.run_backup(
             db_ssh_host=target_host,
             db_ssh_username=target_user,
             db_ssh_password=target_pass,
@@ -559,7 +559,7 @@ class RecoveryService:
         target_user = db_ssh_username or username
         target_pass = db_ssh_password or password
 
-        return await self.bd_restore.run_restore(
+        return await self.restore.run_restore(
             db_ssh_host=target_host,
             db_ssh_username=target_user,
             db_ssh_password=target_pass,
@@ -632,6 +632,95 @@ class RecoveryService:
 
         logs.append("[RESTORE] ===== FULL RESTORE TO BD STATE COMPLETED SUCCESSFULLY =====")
         return {"success": True, "logs": logs, "failed_steps": []}
+
+    async def full_restore_to_previous_state(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        restore_tags: list[str],
+        db_sys_password: str,
+        db_jdbc_service: str,
+        db_oracle_sid: str = "OFSAADB",
+        schema_config_schema_name: Optional[str] = None,
+        schema_atomic_schema_name: Optional[str] = None,
+        db_ssh_host: Optional[str] = None,
+        db_ssh_username: Optional[str] = None,
+        db_ssh_password: Optional[str] = None,
+        ofsaa_dir: str = "/u01",
+    ) -> dict:
+        """Full restore trying tags in order (e.g. ['ECM', 'BD']).
+
+        For SANC failure: tries ECM backup first, falls back to BD backup.
+        For ECM failure: tries BD backup.
+
+        Flow: kill Java -> find best available backup -> rm -rf OFSAA -> restore app tar -> restore DB.
+        """
+        logs = [f"[RESTORE] ===== FULL RESTORE (trying tags: {restore_tags}) ====="]
+        failed_steps = []
+
+        # Step 0: Kill all Java processes
+        logs.append("[RESTORE] --- Step 0: Killing all Java processes ---")
+        kill_result = await self.kill_java_processes(host, username, password)
+        logs.extend(kill_result.get("logs", []))
+        if not kill_result.get("success"):
+            failed_steps.append("Kill Java processes")
+
+        # Step 1: Find the best available backup tag
+        chosen_tag = None
+        for tag in restore_tags:
+            find_cmd = f"ls -1t {ofsaa_dir}/OFSAA_BKP_{tag}_*.tar.gz 2>/dev/null | head -1"
+            find_result = await self.ssh_service.execute_command(host, username, password, find_cmd)
+            found = (find_result.get("stdout") or "").strip()
+            if found:
+                logs.append(f"[RESTORE] Found backup for tag={tag}: {found}")
+                chosen_tag = tag
+                break
+            else:
+                logs.append(f"[RESTORE] No backup found for tag={tag}")
+
+        if not chosen_tag:
+            logs.append("[RESTORE] ERROR: No backup found for any tag. Cannot restore.")
+            return {"success": False, "logs": logs, "failed_steps": ["No backup found"], "error": "No backup available for restore"}
+
+        logs.append(f"[RESTORE] Restoring to {chosen_tag} state...")
+
+        # Step 2: Restore application (rm -rf OFSAA + extract tar)
+        logs.append("[RESTORE] --- Step 2: Restoring application backup ---")
+        app_result = await self.restore_application(
+            host, username, password,
+            ofsaa_dir=ofsaa_dir,
+            backup_tag=chosen_tag,
+        )
+        logs.extend(app_result.get("logs", []))
+        if not app_result.get("success"):
+            failed_steps.append("Restore application")
+
+        # Step 3: Restore DB schemas
+        logs.append("[RESTORE] --- Step 3: Restoring DB schemas ---")
+        db_result = await self.restore_db_schemas(
+            host, username, password,
+            db_sys_password=db_sys_password,
+            db_jdbc_service=db_jdbc_service,
+            db_oracle_sid=db_oracle_sid,
+            schema_config_schema_name=schema_config_schema_name,
+            schema_atomic_schema_name=schema_atomic_schema_name,
+            db_ssh_host=db_ssh_host,
+            db_ssh_username=db_ssh_username,
+            db_ssh_password=db_ssh_password,
+            backup_tag=chosen_tag,
+        )
+        logs.extend(db_result.get("logs", []))
+        if not db_result.get("success"):
+            failed_steps.append("Restore DB schemas")
+
+        if failed_steps:
+            logs.append(f"[RESTORE] PARTIAL RESTORE - Failed steps: {', '.join(failed_steps)}")
+            return {"success": False, "logs": logs, "failed_steps": failed_steps}
+
+        logs.append(f"[RESTORE] ===== FULL RESTORE TO {chosen_tag} STATE COMPLETED =====")
+        return {"success": True, "logs": logs, "failed_steps": [], "restored_tag": chosen_tag}
 
     async def _remove_ofsaa_directory(
         self,

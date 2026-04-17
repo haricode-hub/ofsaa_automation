@@ -14,11 +14,11 @@ from fastapi import APIRouter, HTTPException
 
 from core.task_manager import task_manager as tm
 from core.dependencies import create_installation_service
-from schemas.installation import (
+from schemas.datasource import (
     FichomeDeploymentRequest,
     FichomeDeploymentResponse,
-    InstallationStatus,
 )
+from schemas.installation import InstallationStatus
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

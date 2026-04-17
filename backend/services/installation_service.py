@@ -360,6 +360,29 @@ class InstallationService:
             db_ssh_password=db_ssh_password,
         )
 
+    async def full_restore_to_previous_state(
+        self, host: str, username: str, password: str,
+        *, restore_tags: list[str],
+        db_sys_password: str, db_jdbc_service: str,
+        db_oracle_sid: str = "OFSAADB",
+        schema_config_schema_name: Optional[str] = None,
+        schema_atomic_schema_name: Optional[str] = None,
+        db_ssh_host: Optional[str] = None, db_ssh_username: Optional[str] = None, db_ssh_password: Optional[str] = None,
+    ) -> dict:
+        """Full restore trying tags in order (e.g. ['ECM', 'BD'] for SANC failure)."""
+        return await self.recovery.full_restore_to_previous_state(
+            host, username, password,
+            restore_tags=restore_tags,
+            db_sys_password=db_sys_password,
+            db_jdbc_service=db_jdbc_service,
+            db_oracle_sid=db_oracle_sid,
+            schema_config_schema_name=schema_config_schema_name,
+            schema_atomic_schema_name=schema_atomic_schema_name,
+            db_ssh_host=db_ssh_host,
+            db_ssh_username=db_ssh_username,
+            db_ssh_password=db_ssh_password,
+        )
+
     # ============== ECM MODULE METHODS ==============
 
     async def download_and_extract_ecm_installer(self, host: str, username: str, password: str) -> dict:

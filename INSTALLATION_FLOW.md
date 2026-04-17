@@ -41,8 +41,8 @@
 │    ├── oracle_client.py       (Step 7)                              │
 │    ├── installer.py           (Steps 8-10 + ECM + SANC)            │
 │    └── recovery_service.py    (Cleanup, Backup, Restore)            │
-│         ├── bd_backup.py      (expdp)                               │
-│         └── bd_restore.py     (impdp)                               │
+│         ├── backup.py         (expdp)                               │
+│         └── restore.py        (impdp)                               │
 └─────────────────────────────────────────────────────────────────────┘
                              │
                              ▼
@@ -133,7 +133,7 @@ BD Pack completes
   ├── Take application backup
   │     → tar -cvf /u01/OFSAA_BKP_BD_<timestamp>.tar.gz OFSAA
   ├── Take DB schema backup (if db_sys_password provided)
-  │     → expdp OFSATOMIC,OFSCONFIG via bd_backup.py
+  │     → expdp OFSATOMIC,OFSCONFIG via backup.py
   └── Mark checkpoint as backup_taken = true
 ```
 
@@ -210,7 +210,7 @@ ECM osc.sh or setup.sh fails
   │        → rm -rf /u01/OFSAA
   │        → tar -xvf /u01/OFSAA_BKP_BD_<timestamp>.tar.gz
   └── 3. Restore DB schemas from BD dump
-           → impdp via bd_restore.py
+           → impdp via restore.py
   │
   → status = failed
   → User can retry with resume_from_checkpoint = true
@@ -317,8 +317,8 @@ Prompt callbacks are defined in `core/prompt_helpers.py`:
 | `services/oracle_client.py` | Step 7: Oracle client detection |
 | `services/installer.py` | Steps 8-10 + all ECM/SANC operations |
 | `services/recovery_service.py` | Cleanup, backup/restore orchestration |
-| `services/bd_backup.py` | DB schema backup (expdp) |
-| `services/bd_restore.py` | DB schema restore (impdp) |
+| `services/backup.py` | DB schema backup (expdp) |
+| `services/restore.py` | DB schema restore (impdp) |
 | `services/ssh_service.py` | All remote commands (Paramiko SSH) |
 | `services/validation.py` | Pre-checks (user, group, dir, file) |
 | `services/utils.py` | shell_escape(), sed_escape() |

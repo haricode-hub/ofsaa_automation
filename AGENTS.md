@@ -49,15 +49,20 @@ backend/
     logging.py                    # Logger setup, timing context manager
     websocket_manager.py          # WS connection manager, input queues
   routers/
-    installation.py               # All API endpoints + async task orchestration
+    installation.py               # BD/ECM/SANC installation endpoints + orchestration
+    deployment.py                 # FICHOME deployment endpoints
+    datasource.py                 # WebLogic datasource endpoints
   schemas/
     installation.py               # Pydantic models (Request/Response/Status)
+    datasource.py                 # Datasource/deployment schemas
   services/
     installation_service.py       # Orchestrator - delegates to all sub-services
     installer.py                  # Core: Git ops, XML patching, script execution,
                                   #   BD/ECM/SANC modules, FICHOME deploy, WLST
     ssh_service.py                # Paramiko SSH wrapper (exec, interactive, keepalive)
     recovery_service.py           # Backup/restore, schema drop, failure cleanup
+    backup.py                     # Oracle Data Pump export (expdp)
+    restore.py                    # Oracle Data Pump import (impdp)
     log_persistence.py            # Disk-based log persistence per task
     validation.py                 # Pre-checks (user, group, dir, file, package)
     oracle_user_setup.py          # Create oracle user + oinstall group

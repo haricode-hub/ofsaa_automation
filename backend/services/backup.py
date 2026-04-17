@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 BACKUP_DIR = "/u01/backup/ofsaa"
 
 
-class BDBackupService:
+class BackupService:
     """Runs expdp schema backup + generates restore_metadata.sql on the DB host."""
 
     def __init__(self, ssh_service: SSHService) -> None:

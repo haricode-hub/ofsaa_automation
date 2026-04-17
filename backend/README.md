@@ -68,14 +68,15 @@ backend/
 │   ├── deployment.py                # FICHOME deployment endpoints
 │   └── datasource.py               # WebLogic datasource endpoints
 ├── schemas/
-│   └── installation.py              # Pydantic request/response models
+│   ├── installation.py              # Pydantic request/response models
+│   └── datasource.py               # Datasource/deployment schemas
 └── services/
     ├── installation_service.py      # Orchestrator facade
     ├── installer.py                 # Git ops, XML patching, script execution
     ├── ssh_service.py               # Paramiko SSH wrapper
     ├── recovery_service.py          # Backup/restore coordination
-    ├── bd_backup.py                 # Oracle Data Pump export (expdp)
-    ├── bd_restore.py                # Oracle Data Pump import (impdp)
+    ├── backup.py                    # Oracle Data Pump export (expdp)
+    ├── restore.py                   # Oracle Data Pump import (impdp)
     ├── log_persistence.py           # Disk-based log persistence per task
     ├── validation.py                # Pre-checks (user, group, dir, packages)
     ├── oracle_user_setup.py         # Create oracle user + oinstall group
