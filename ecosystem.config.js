@@ -1,7 +1,7 @@
 // PM2 process configuration for OFSAA Installation Automation
 // Set SERVER_IP, BACKEND_PORT, FRONTEND_PORT as environment variables, or edit defaults below.
 
-const SERVER_IP = process.env.SERVER_IP || '192.168.0.166';
+const SERVER_IP = process.env.SERVER_IP || 'localhost';
 const BACKEND_PORT = process.env.BACKEND_PORT || 8000;
 const FRONTEND_PORT = process.env.FRONTEND_PORT || 3000;
 
