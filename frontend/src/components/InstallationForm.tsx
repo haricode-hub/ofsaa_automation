@@ -103,7 +103,8 @@ interface InstallationData {
   // SANC module flag
   install_sanc: boolean
   
-  installation_mode: 'fresh' | 'addon'
+  installation_mode: 'fresh' | 'addon' | 'force_reinstall'
+  force_reinstall_bd: boolean
   install_bdpack: boolean
   install_ecm: boolean
   // Database SYS password for backup/restore/cleanup
@@ -133,6 +134,28 @@ const APP_PACK_APPS: Array<{ id: string; name: string }> = [
 ]
 
 const INSTALL_FORM_STORAGE_KEY = 'ofsaa_install_form_v1'
+
+const normalizeInstallationState = (data: InstallationData): InstallationData => {
+  if (data.installation_mode === 'addon') {
+    return {
+      ...data,
+      install_bdpack: false,
+      force_reinstall_bd: false,
+    }
+  }
+
+  if (data.installation_mode === 'force_reinstall') {
+    return {
+      ...data,
+      install_bdpack: true,
+    }
+  }
+
+  return {
+    ...data,
+    force_reinstall_bd: false,
+  }
+}
 
 export function InstallationForm() {
   const router = useRouter()
@@ -233,6 +256,7 @@ export function InstallationForm() {
     // SANC defaults
     install_sanc: false,
     installation_mode: 'fresh',
+    force_reinstall_bd: false,
     install_bdpack: false,
     install_ecm: false,
     db_sys_password: '',
@@ -254,6 +278,16 @@ export function InstallationForm() {
   // Validate main config + BD pack fields
   const validateForm = (): boolean => {
     const errs: Record<string, string> = {}
+
+    if (formData.installation_mode === 'addon') {
+      if (formData.install_bdpack) errs.installation_mode = 'Addon mode cannot run BD Pack.'
+      if (!formData.install_ecm && !formData.install_sanc) errs.module_selection = 'Addon mode requires ECM and/or SANC.'
+    }
+
+    if (formData.installation_mode === 'force_reinstall') {
+      if (!formData.install_bdpack) errs.installation_mode = 'Force reinstall mode requires BD Pack.'
+      if (!formData.force_reinstall_bd) errs.force_reinstall_bd = 'Confirm BD reinstall to continue.'
+    }
 
     // Main configuration — always required
     if (!formData.host.trim()) errs.host = 'Target Host is required'
@@ -304,7 +338,7 @@ export function InstallationForm() {
         sancConfig?: SancFormData | null
       }
       if (parsed.formData) {
-        setFormData(prev => ({ ...prev, ...parsed.formData }))
+        setFormData(prev => normalizeInstallationState({ ...prev, ...parsed.formData }))
       }
       if (parsed.ecmConfig !== undefined) {
         setEcmConfig(parsed.ecmConfig)
@@ -449,6 +483,7 @@ export function InstallationForm() {
           aai_ftspshare_path: formData.aai_ftspshare_path,
           aai_sftp_user_id: formData.aai_sftp_user_id,
           installation_mode: formData.installation_mode,
+          force_reinstall_bd: formData.force_reinstall_bd,
           install_bdpack: formData.install_bdpack,
           install_ecm: formData.install_ecm,
           install_sanc: formData.install_sanc,
@@ -570,7 +605,18 @@ export function InstallationForm() {
       })
       
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`)
+        let detail = `HTTP error! status: ${response.status}`
+        try {
+          const errorBody = await response.json()
+          if (typeof errorBody?.detail === 'string') {
+            detail = errorBody.detail
+          } else if (Array.isArray(errorBody?.detail) && errorBody.detail[0]?.msg) {
+            detail = errorBody.detail[0].msg
+          }
+        } catch {
+          // Ignore response parsing errors and keep fallback detail
+        }
+        throw new Error(detail)
       }
       
       const result = await response.json()
@@ -583,6 +629,7 @@ export function InstallationForm() {
       console.error('Installation failed:', error)
       setStatus('error')
       setIsLoading(false)
+      setEcmSubmitError(error instanceof Error ? error.message : 'Installation failed')
       
       setTimeout(() => {
         setStatus('idle')
@@ -652,7 +699,27 @@ export function InstallationForm() {
   }
 
   const toggleModuleSelection = (field: 'install_bdpack' | 'install_ecm' | 'install_sanc') => {
-    setFormData(prev => ({ ...prev, [field]: !prev[field] }))
+    setFormErrors(prev => {
+      const next = { ...prev }
+      delete next.installation_mode
+      delete next.module_selection
+      delete next.force_reinstall_bd
+      return next
+    })
+
+    setFormData(prev => normalizeInstallationState({ ...prev, [field]: !prev[field] }))
+  }
+
+  const setInstallationMode = (mode: InstallationData['installation_mode']) => {
+    setFormErrors(prev => {
+      const next = { ...prev }
+      delete next.installation_mode
+      delete next.module_selection
+      delete next.force_reinstall_bd
+      return next
+    })
+
+    setFormData(prev => normalizeInstallationState({ ...prev, installation_mode: mode }))
   }
 
   const getButtonText = () => {
@@ -694,12 +761,70 @@ export function InstallationForm() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4, delay: 0.08 }}
         >
+          <div className="mb-4 space-y-3 border-b border-border pb-4">
+            <div className="text-xs font-bold text-text-primary uppercase tracking-wider">
+              Installation Mode
+            </div>
+            <div className="rounded-lg border border-sky-500/30 bg-sky-500/5 px-4 py-3 text-sm text-text-primary">
+              <div className="font-semibold">Choose the mode based on the current target state.</div>
+              <div className="mt-1 text-xs text-text-muted">Use Fresh for first-time BD-led installs. Use Addon when BD already exists and you only want ECM and/or SANC. Use Force reinstall only when you intentionally want to rerun BD on an existing environment.</div>
+            </div>
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+              <label className="flex items-start gap-3 rounded-lg border border-border bg-bg-secondary/60 px-4 py-3 text-sm text-text-primary cursor-pointer">
+                <input
+                  type="radio"
+                  name="installation_mode"
+                  checked={formData.installation_mode === 'fresh'}
+                  onChange={() => setInstallationMode('fresh')}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="block font-semibold">Fresh mode</span>
+                  <span className="block text-xs text-text-muted">BD can run. ECM and SANC remain optional.</span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3 rounded-lg border border-border bg-bg-secondary/60 px-4 py-3 text-sm text-text-primary cursor-pointer">
+                <input
+                  type="radio"
+                  name="installation_mode"
+                  checked={formData.installation_mode === 'addon'}
+                  onChange={() => setInstallationMode('addon')}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="block font-semibold">Addon mode</span>
+                  <span className="block text-xs text-text-muted">BD is blocked. Only ECM and/or SANC can run.</span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3 rounded-lg border border-border bg-bg-secondary/60 px-4 py-3 text-sm text-text-primary cursor-pointer">
+                <input
+                  type="radio"
+                  name="installation_mode"
+                  checked={formData.installation_mode === 'force_reinstall'}
+                  onChange={() => setInstallationMode('force_reinstall')}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="block font-semibold">Force reinstall mode</span>
+                  <span className="block text-xs text-text-muted">BD runs again, but only after explicit confirmation.</span>
+                </span>
+              </label>
+            </div>
+            {formErrors.installation_mode && <p className="text-xs text-error">{formErrors.installation_mode}</p>}
+            {formErrors.module_selection && <p className="text-xs text-error">{formErrors.module_selection}</p>}
+          </div>
+
           <div className="text-sm font-bold text-text-primary uppercase tracking-wider mb-3">
             Module Installation Scenario
           </div>
           <div className="flex items-center gap-5">
-            <label className="inline-flex items-center gap-2 text-sm text-text-primary cursor-pointer">
-              <input type="checkbox" checked={formData.install_bdpack} onChange={() => toggleModuleSelection('install_bdpack')} />
+            <label className={`inline-flex items-center gap-2 text-sm ${formData.installation_mode === 'addon' ? 'text-text-muted cursor-not-allowed opacity-60' : 'text-text-primary cursor-pointer'}`}>
+              <input
+                type="checkbox"
+                checked={formData.install_bdpack}
+                disabled={formData.installation_mode !== 'fresh'}
+                onChange={() => toggleModuleSelection('install_bdpack')}
+              />
               BD Pack
             </label>
             <label className="inline-flex items-center gap-2 text-sm text-text-primary cursor-pointer">
@@ -711,6 +836,27 @@ export function InstallationForm() {
               SANC
             </label>
           </div>
+          {formData.installation_mode === 'force_reinstall' && (
+            <div className="mt-4 space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+              <label className="inline-flex items-center gap-2 text-sm text-text-primary cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={formData.force_reinstall_bd}
+                  onChange={() => {
+                    setFormErrors(prev => {
+                      const next = { ...prev }
+                      delete next.force_reinstall_bd
+                      return next
+                    })
+                    setFormData(prev => ({ ...prev, force_reinstall_bd: !prev.force_reinstall_bd }))
+                  }}
+                />
+                I confirm BD Pack should be reinstalled on this target.
+              </label>
+              <p className="text-[10px] text-text-muted">Use this only when you intentionally want to rerun BD on an existing environment.</p>
+              {formErrors.force_reinstall_bd && <p className="text-xs text-error">{formErrors.force_reinstall_bd}</p>}
+            </div>
+          )}
         </motion.div>
 
         <motion.div
@@ -796,7 +942,7 @@ export function InstallationForm() {
                 <p className="text-[10px] text-text-muted">Used for sqlplus connections during backup, restore, and schema cleanup operations.</p>
               </div>
 
-              {/* Show JDBC Service input when a DB backup is required (BD pack or ECM taking BD backup) */}
+              {/* Show JDBC Service input when a DB backup is required for the selected modules */}
               {(formData.install_bdpack || formData.install_ecm || formData.install_sanc) && (
                 <div className="space-y-2">
                   <label className="text-xs font-bold text-text-primary uppercase tracking-wider">JDBC Service Name</label>

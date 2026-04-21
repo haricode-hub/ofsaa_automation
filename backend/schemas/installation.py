@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field
-from typing import Any, Optional, List, Dict
+from pydantic import BaseModel, Field, model_validator
+from typing import Any, Optional, List, Dict, Literal
 
 class InstallationRequest(BaseModel):
     """Schema for installation request"""
@@ -92,7 +92,14 @@ class InstallationRequest(BaseModel):
     aai_weblogic_domain_home: Optional[str] = Field(default=None, description="WEBLOGIC_DOMAIN_HOME")
     aai_ftspshare_path: Optional[str] = Field(default="/u01/OFSAA/FTPSHARE", description="OFSAAI_FTPSHARE_PATH")
     aai_sftp_user_id: Optional[str] = Field(default="oracle", description="OFSAAI_SFTP_USER_ID")
-    installation_mode: Optional[str] = Field(default="fresh", description="Installation mode: fresh/addon/auto")
+    installation_mode: Literal["fresh", "addon", "force_reinstall"] = Field(
+        default="fresh",
+        description="Installation mode: fresh/addon/force_reinstall",
+    )
+    force_reinstall_bd: bool = Field(
+        default=False,
+        description="Explicit confirmation required before rerunning BD in force_reinstall mode",
+    )
     install_sanc: Optional[bool] = Field(default=None, description="Install SANC module")
 
     # Module selection flags
@@ -128,6 +135,22 @@ class InstallationRequest(BaseModel):
     ecm_prop_analyst_data_source: Optional[str] = Field(default="ANALYST", description="ECM ANALYST_DATA_SOURCE")
     ecm_prop_miner_data_source: Optional[str] = Field(default="MINER", description="ECM MINER_DATA_SOURCE")
     ecm_prop_configure_obiee: Optional[str] = Field(default="0", description="ECM CONFIGURE_OBIEE")
+
+    @model_validator(mode="after")
+    def validate_installation_mode_rules(self):
+        if self.installation_mode == "addon":
+            if self.install_bdpack:
+                raise ValueError("Addon mode cannot run BD Pack. Select ECM and/or SANC only.")
+            if not (self.install_ecm or self.install_sanc):
+                raise ValueError("Addon mode requires ECM and/or SANC to be selected.")
+
+        if self.installation_mode == "force_reinstall":
+            if not self.install_bdpack:
+                raise ValueError("Force reinstall mode requires BD Pack to be selected.")
+            if not self.force_reinstall_bd:
+                raise ValueError("Force reinstall mode requires explicit BD reinstall confirmation.")
+
+        return self
     ecm_prop_fsdf_upload_model: Optional[str] = Field(default="0", description="ECM FSDF_UPLOAD_MODEL")
     ecm_prop_amlsource: Optional[str] = Field(default="OFSATOMIC", description="ECM AMLSOURCE")
     ecm_prop_kycsource: Optional[str] = Field(default="OFSATOMIC", description="ECM KYCSOURCE")

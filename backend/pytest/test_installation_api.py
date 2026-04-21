@@ -142,6 +142,34 @@ def test_status_rollback_and_checkpoint_endpoints():
         assert tm.bd_checkpoint["completed"] is False
 
 
+def test_start_installation_rejects_bd_in_addon_mode():
+    with isolated_task_manager():
+        with api_client() as client:
+            response = client.post(
+                "/api/installation/start",
+                json=build_request_payload(installation_mode="addon", install_bdpack=True, install_ecm=True),
+            )
+
+    assert response.status_code == 422
+    assert "Addon mode cannot run BD Pack" in response.text
+
+
+def test_start_installation_requires_force_confirmation_for_bd_reinstall():
+    with isolated_task_manager():
+        with api_client() as client:
+            response = client.post(
+                "/api/installation/start",
+                json=build_request_payload(
+                    installation_mode="force_reinstall",
+                    install_bdpack=True,
+                    force_reinstall_bd=False,
+                ),
+            )
+
+    assert response.status_code == 422
+    assert "Force reinstall mode requires explicit BD reinstall confirmation" in response.text
+
+
 def test_cancel_endpoint_delegates_to_task_manager():
     with isolated_task_manager():
         tm.register_task(
