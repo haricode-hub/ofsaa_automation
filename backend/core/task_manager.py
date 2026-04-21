@@ -13,6 +13,7 @@ import asyncio
 import logging
 from typing import Optional
 
+from core.task_state_store import TaskStateStore
 from core.websocket_manager import WebSocketManager
 from schemas.installation import InstallationStatus
 from services.log_persistence import LogPersistence
@@ -31,6 +32,8 @@ class TaskManager:
         self.tasks: dict[str, InstallationStatus] = {}
         self.ws: WebSocketManager = WebSocketManager()
         self.logs: LogPersistence = LogPersistence()
+        self.state_store: TaskStateStore = TaskStateStore()
+        self.task_context: dict[str, dict] = {}
 
         # Cancellation infrastructure
         self.cancel_events: dict[str, asyncio.Event] = {}
@@ -47,7 +50,6 @@ class TaskManager:
         # Checkpoint cache for BD Pack completion (resume ECM from backup)
         self.bd_checkpoint: dict = {
             "completed": False,
-            "backup_taken": False,
             "request": None,
             "task_id": None,
             "host": None,
@@ -57,6 +59,8 @@ class TaskManager:
     def register_task(self, task_id: str, status: InstallationStatus) -> None:
         self.tasks[task_id] = status
         self.cancel_events[task_id] = asyncio.Event()
+        self.task_context[task_id] = {}
+        self._persist_task_state(task_id)
 
     def register_asyncio_task(self, task_id: str, task: asyncio.Task) -> None:
         """Store the asyncio.Task reference so it can be cancelled."""
@@ -95,6 +99,7 @@ class TaskManager:
         # 4. Update status
         await self.append_output(task_id, f"\n[CANCELLED] {reason}")
         await self.update_status(task_id, "failed", reason)
+        self.save_task_context(task_id, cancellation_reason=reason)
         return True
 
     def cancel_disconnect_timer(self, task_id: str) -> None:
@@ -167,16 +172,59 @@ class TaskManager:
         await self.ws.send_status(
             task_id, task.status, task.current_step, task.progress, task.current_module
         )
+        self._persist_task_state(task_id)
+
+    def save_task_context(self, task_id: str, **fields) -> None:
+        context = self.task_context.setdefault(task_id, {})
+        context.update(fields)
+        self._persist_task_state(task_id)
+
+    def _status_to_dict(self, task: InstallationStatus) -> dict:
+        if hasattr(task, "model_dump"):
+            return task.model_dump()
+        return task.dict()
+
+    def _persist_task_state(self, task_id: str) -> None:
+        task = self.tasks.get(task_id)
+        if task is None:
+            return
+        payload = self._status_to_dict(task)
+        payload["context"] = self.task_context.get(task_id, {})
+        self.state_store.save(task_id, payload)
 
     def clear_bd_checkpoint(self) -> None:
         self.bd_checkpoint.update(
             completed=False,
-            backup_taken=False,
             request=None,
             task_id=None,
             host=None,
             timestamp=None,
         )
+
+    def restore_persisted_tasks(self) -> list[dict]:
+        restored: list[dict] = []
+        for payload in self.state_store.list_all():
+            task_id = payload.get("task_id")
+            if not task_id or task_id in self.tasks:
+                continue
+            task_payload = {
+                "task_id": task_id,
+                "status": payload.get("status", "failed"),
+                "current_step": payload.get("current_step"),
+                "current_module": payload.get("current_module"),
+                "progress": payload.get("progress", 0),
+                "logs": payload.get("logs", []),
+                "error": payload.get("error"),
+            }
+            task = InstallationStatus(**task_payload)
+            if task.status in ("started", "running", "waiting_input"):
+                task.status = "interrupted"
+                task.error = task.error or "Backend restarted during execution"
+            self.tasks[task_id] = task
+            self.cancel_events[task_id] = asyncio.Event()
+            self.task_context[task_id] = payload.get("context", {})
+            restored.append(payload)
+        return restored
 
 
 # ── Module-level singleton ──────────────────────────────────────────────────

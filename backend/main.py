@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from core.logging import setup_logging
 from core.task_manager import task_manager as tm
 from routers.installation import router as installation_router
+from routers.installation import recover_interrupted_tasks
 from routers.deployment import router as deployment_router
 from routers.datasource import router as datasource_router
 
@@ -54,6 +55,11 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+
+@app.on_event("startup")
+async def startup_recovery() -> None:
+    await recover_interrupted_tasks()
 
 
 # ── WebSocket ────────────────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ from services.profile import ProfileService
 from services.java import JavaService
 from services.oracle_client import OracleClientService
 from services.installer import InstallerService
+from services.backup_restore_governor import BackupRestoreGovernorService
 from services.recovery_service import RecoveryService
 
 
@@ -27,6 +28,7 @@ class InstallationService:
         self.oracle_client = OracleClientService(ssh_service, self.validation, self.profile)
         self.installer = InstallerService(ssh_service, self.validation)
         self.recovery = RecoveryService(ssh_service)
+        self.backup_restore_governor = BackupRestoreGovernorService(self.recovery)
 
     async def create_oracle_user_and_oinstall_group(self, host: str, username: str, password: str) -> dict:
         return await self.oracle_user_setup.ensure_oracle_user(host, username, password)
@@ -214,6 +216,38 @@ class InstallationService:
     async def cleanup_failed_fresh_installation(self, host: str, username: str, password: str) -> dict:
         return await self.installer.cleanup_failed_fresh_installation(host, username, password)
 
+    async def verify_fresh_cleanup(self, host: str, username: str, password: str) -> dict:
+        return await self.installer.verify_fresh_cleanup(host, username, password)
+
+    async def verify_cleanup_after_osc_failure(self, *args, **kwargs) -> dict:
+        return await self.recovery.verify_cleanup_after_osc_failure(*args, **kwargs)
+
+    async def ensure_valid_backup_before_module(self, task_id: str, request, module_name: str, **kwargs) -> dict:
+        return await self.backup_restore_governor.ensure_valid_backup_before_module(
+            task_id, request, module_name, **kwargs
+        )
+
+    def record_backup_manifest(
+        self,
+        *,
+        request,
+        backup_tag: str,
+        app_backup_path: str,
+        dump_prefix: str,
+        dump_timestamp: str,
+        db_service: str,
+        schemas: list[str],
+    ) -> dict:
+        return self.backup_restore_governor.record_backup_manifest(
+            request=request,
+            backup_tag=backup_tag,
+            app_backup_path=app_backup_path,
+            dump_prefix=dump_prefix,
+            dump_timestamp=dump_timestamp,
+            db_service=db_service,
+            schemas=schemas,
+        )
+
     async def update_profile_with_custom_variables(
         self,
         host: str,
@@ -302,21 +336,17 @@ class InstallationService:
             db_ssh_password=db_ssh_password,
         )
 
-    async def restore_application(self, host: str, username: str, password: str, *, backup_tag: str = "BD") -> dict:
-        """Restore application from most recent tagged tar backup."""
-        return await self.recovery.restore_application(host, username, password, backup_tag=backup_tag)
-
-    async def verify_backups_exist(
-        self, host: str, username: str, password: str,
-        *, db_ssh_host: Optional[str] = None, db_ssh_username: Optional[str] = None, db_ssh_password: Optional[str] = None,
+    async def restore_application(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        backup_tag: str = "BD",
+        backup_path: Optional[str] = None,
     ) -> dict:
-        """Check whether app tar and DB dump backups exist on the target servers."""
-        return await self.recovery.verify_backups_exist(
-            host, username, password,
-            db_ssh_host=db_ssh_host,
-            db_ssh_username=db_ssh_username,
-            db_ssh_password=db_ssh_password,
-        )
+        """Restore application from most recent tagged tar backup."""
+        return await self.recovery.restore_application(host, username, password, backup_tag=backup_tag, backup_path=backup_path)
 
     async def restore_db_schemas(
         self, host: str, username: str, password: str,
@@ -325,6 +355,9 @@ class InstallationService:
         schema_config_schema_name: Optional[str] = None,
         schema_atomic_schema_name: Optional[str] = None,
         db_ssh_host: Optional[str] = None, db_ssh_username: Optional[str] = None, db_ssh_password: Optional[str] = None,
+        schemas: Optional[list[str]] = None,
+        dump_prefix: Optional[str] = None,
+        metadata_path: Optional[str] = None,
     ) -> dict:
         """Restore DB schemas using Data Pump (impdp)."""
         return await self.recovery.restore_db_schemas(
@@ -337,47 +370,34 @@ class InstallationService:
             db_ssh_host=db_ssh_host,
             db_ssh_username=db_ssh_username,
             db_ssh_password=db_ssh_password,
+            schemas=schemas,
+            dump_prefix=dump_prefix,
+            metadata_path=metadata_path,
         )
 
-    async def full_restore_to_bd_state(
-        self, host: str, username: str, password: str,
-        *, db_sys_password: str, db_jdbc_service: str,
-        db_oracle_sid: str = "OFSAADB",
-        schema_config_schema_name: Optional[str] = None,
-        schema_atomic_schema_name: Optional[str] = None,
-        db_ssh_host: Optional[str] = None, db_ssh_username: Optional[str] = None, db_ssh_password: Optional[str] = None,
-    ) -> dict:
-        """Full restore to BD state: rm OFSAA -> restore tar -> restore DB schemas."""
-        return await self.recovery.full_restore_to_bd_state(
-            host, username, password,
-            db_sys_password=db_sys_password,
-            db_jdbc_service=db_jdbc_service,
-            db_oracle_sid=db_oracle_sid,
-            schema_config_schema_name=schema_config_schema_name,
-            schema_atomic_schema_name=schema_atomic_schema_name,
-            db_ssh_host=db_ssh_host,
-            db_ssh_username=db_ssh_username,
-            db_ssh_password=db_ssh_password,
-        )
+    async def select_restore_manifest(self, request, restore_tags: list[str], **kwargs) -> dict:
+        return await self.backup_restore_governor.select_restore_manifest(request, restore_tags, **kwargs)
 
-    async def full_restore_to_previous_state(
-        self, host: str, username: str, password: str,
-        *, restore_tags: list[str],
-        db_sys_password: str, db_jdbc_service: str,
+    async def full_restore_from_manifest(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        manifest: dict,
+        db_sys_password: str,
         db_oracle_sid: str = "OFSAADB",
-        schema_config_schema_name: Optional[str] = None,
-        schema_atomic_schema_name: Optional[str] = None,
-        db_ssh_host: Optional[str] = None, db_ssh_username: Optional[str] = None, db_ssh_password: Optional[str] = None,
+        db_ssh_host: Optional[str] = None,
+        db_ssh_username: Optional[str] = None,
+        db_ssh_password: Optional[str] = None,
     ) -> dict:
-        """Full restore trying tags in order (e.g. ['ECM', 'BD'] for SANC failure)."""
-        return await self.recovery.full_restore_to_previous_state(
-            host, username, password,
-            restore_tags=restore_tags,
+        return await self.recovery.full_restore_from_manifest(
+            host,
+            username,
+            password,
+            manifest=manifest,
             db_sys_password=db_sys_password,
-            db_jdbc_service=db_jdbc_service,
             db_oracle_sid=db_oracle_sid,
-            schema_config_schema_name=schema_config_schema_name,
-            schema_atomic_schema_name=schema_atomic_schema_name,
             db_ssh_host=db_ssh_host,
             db_ssh_username=db_ssh_username,
             db_ssh_password=db_ssh_password,

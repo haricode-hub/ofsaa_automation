@@ -98,8 +98,6 @@ class InstallationRequest(BaseModel):
     # Module selection flags
     install_bdpack: bool = Field(default=False, description="Install BD Pack module")
     install_ecm: bool = Field(default=False, description="Install ECM module")
-    # When installing ECM only, optionally take BD application + DB backup before ECM
-    ecm_take_bd_backup: Optional[bool] = Field(default=False, description="If true and ECM runs alone, take BD application and DB schema backup before ECM starts")
 
     # Optional SSH credentials to run DB-side operations on the DB server
     db_ssh_host: Optional[str] = Field(default=None, description="Optional SSH host for DB server to execute backup/restore scripts on the DB host")

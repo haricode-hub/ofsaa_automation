@@ -67,6 +67,7 @@ async def start_installation(request: InstallationRequest):
                 ],
             ),
         )
+        tm.save_task_context(task_id, request=request.dict())
 
         asyncio_task = asyncio.create_task(run_installation_process(task_id, request))
         tm.register_asyncio_task(task_id, asyncio_task)
@@ -145,12 +146,11 @@ async def get_checkpoint():
     return {
         "success": True,
         "bd_pack_completed": True,
-        "backup_taken": tm.bd_checkpoint.get("backup_taken", False),
         "host": tm.bd_checkpoint.get("host"),
         "task_id": tm.bd_checkpoint.get("task_id"),
         "timestamp": tm.bd_checkpoint.get("timestamp"),
         "cached_request": tm.bd_checkpoint.get("request"),
-        "message": "BD Pack completed with backup. You can resume ECM installation using resume_from_checkpoint=true.",
+        "message": "BD Pack checkpoint is available. You can resume ECM installation using resume_from_checkpoint=true.",
     }
 
 
@@ -200,6 +200,7 @@ async def _restore_bd_on_ecm_failure(
     """Restore to BD state after ECM failure."""
     await tm.append_output(task_id, "\n[RECOVERY] ==================== ECM FAILURE - RESTORING BD STATE ====================")
     await tm.update_status(task_id, "running", "Restoring to BD state after ECM failure")
+    tm.save_task_context(task_id, rollback_status="started", rollback_module="ECM", rollback_target="BD")
 
     db_sys_pass = request.db_sys_password or getattr(request, "schema_default_password", None)
     db_service = request.schema_jdbc_service or getattr(request, "ecm_schema_jdbc_service", None)
@@ -208,13 +209,25 @@ async def _restore_bd_on_ecm_failure(
         await tm.append_output(task_id, "[RECOVERY] WARNING: db_sys_password or schema_jdbc_service not provided.")
         await tm.append_output(task_id, "[RECOVERY] Cannot auto-restore DB schemas. Manual restore required.")
 
-    restore_result = await svc.full_restore_to_bd_state(
-        request.host, request.username, request.password,
+    manifest_result = await svc.select_restore_manifest(
+        request,
+        ["BD"],
+        on_log=lambda line: tm.append_output(task_id, line),
+    )
+    if not manifest_result.get("success"):
+        await tm.append_output(task_id, "[RECOVERY] ERROR: No valid BD restore manifest found.")
+        await tm.append_output(task_id, f"[RECOVERY] {manifest_result.get('error', 'Manifest selection failed')}")
+        await trace("BD restore manifest selection failed")
+        return
+
+    tm.save_task_context(task_id, restore_manifest_path=manifest_result.get("manifest_path"), restore_target_tag="BD")
+    restore_result = await svc.full_restore_from_manifest(
+        request.host,
+        request.username,
+        request.password,
+        manifest=manifest_result["manifest"],
         db_sys_password=db_sys_pass or "",
-        db_jdbc_service=db_service or "",
         db_oracle_sid=getattr(request, "oracle_sid", None) or "OFSAADB",
-        schema_config_schema_name=request.schema_config_schema_name,
-        schema_atomic_schema_name=request.schema_atomic_schema_name,
         db_ssh_host=getattr(request, "db_ssh_host", None),
         db_ssh_username=getattr(request, "db_ssh_username", None),
         db_ssh_password=getattr(request, "db_ssh_password", None),
@@ -222,9 +235,11 @@ async def _restore_bd_on_ecm_failure(
     await tm.append_output(task_id, "\n".join(restore_result.get("logs", [])))
 
     if restore_result.get("success"):
+        tm.save_task_context(task_id, rollback_status="completed", rollback_target="BD")
         await tm.append_output(task_id, "[RECOVERY] BD state restored successfully. You can retry ECM installation.")
         await tm.append_output(task_id, "[RECOVERY] Use resume_from_checkpoint=true to skip BD Pack and retry ECM only.")
     else:
+        tm.save_task_context(task_id, rollback_status="failed", rollback_target="BD", rollback_failed_steps=restore_result.get("failed_steps", []))
         failed = restore_result.get("failed_steps", [])
         await tm.append_output(task_id, f"[RECOVERY] WARNING: Some restore steps failed: {', '.join(failed)}")
         await tm.append_output(task_id, "[RECOVERY] Please manually complete the failed steps before retrying ECM.")
@@ -244,6 +259,7 @@ async def _restore_on_sanc_failure(
     """
     await tm.append_output(task_id, "\n[RECOVERY] ==================== SANC FAILURE - RESTORING PREVIOUS STATE ====================")
     await tm.update_status(task_id, "running", "Restoring to previous state after SANC failure")
+    tm.save_task_context(task_id, rollback_status="started", rollback_module="SANC")
 
     db_sys_pass = request.db_sys_password or getattr(request, "schema_default_password", None)
     db_service = request.sanc_schema_jdbc_service or request.schema_jdbc_service
@@ -252,16 +268,27 @@ async def _restore_on_sanc_failure(
         await tm.append_output(task_id, "[RECOVERY] WARNING: db_sys_password or schema_jdbc_service not provided.")
         await tm.append_output(task_id, "[RECOVERY] Cannot auto-restore DB schemas. Manual restore required.")
 
-    # Try ECM first, fall back to BD
     restore_tags = ["ECM", "BD"] if request.install_ecm else ["BD"]
-    restore_result = await svc.full_restore_to_previous_state(
-        request.host, request.username, request.password,
-        restore_tags=restore_tags,
+    manifest_result = await svc.select_restore_manifest(
+        request,
+        restore_tags,
+        on_log=lambda line: tm.append_output(task_id, line),
+    )
+    if not manifest_result.get("success"):
+        await tm.append_output(task_id, "[RECOVERY] ERROR: No valid restore manifest found for previous state.")
+        await tm.append_output(task_id, f"[RECOVERY] {manifest_result.get('error', 'Manifest selection failed')}")
+        await trace("Previous-state restore manifest selection failed")
+        return
+
+    selected_tag = manifest_result["manifest"].get("tag", "unknown")
+    tm.save_task_context(task_id, restore_manifest_path=manifest_result.get("manifest_path"), restore_target_tag=selected_tag)
+    restore_result = await svc.full_restore_from_manifest(
+        request.host,
+        request.username,
+        request.password,
+        manifest=manifest_result["manifest"],
         db_sys_password=db_sys_pass or "",
-        db_jdbc_service=db_service or "",
         db_oracle_sid=getattr(request, "oracle_sid", None) or "OFSAADB",
-        schema_config_schema_name=request.sanc_schema_config_schema_name or request.schema_config_schema_name,
-        schema_atomic_schema_name=request.sanc_schema_atomic_schema_name or request.schema_atomic_schema_name,
         db_ssh_host=getattr(request, "db_ssh_host", None),
         db_ssh_username=getattr(request, "db_ssh_username", None),
         db_ssh_password=getattr(request, "db_ssh_password", None),
@@ -270,8 +297,10 @@ async def _restore_on_sanc_failure(
 
     restored_tag = restore_result.get("restored_tag", "unknown")
     if restore_result.get("success"):
+        tm.save_task_context(task_id, rollback_status="completed", rollback_target=restored_tag)
         await tm.append_output(task_id, f"[RECOVERY] Restored to {restored_tag} state successfully. You can retry SANC installation.")
     else:
+        tm.save_task_context(task_id, rollback_status="failed", rollback_target=restored_tag, rollback_failed_steps=restore_result.get("failed_steps", []))
         failed = restore_result.get("failed_steps", [])
         await tm.append_output(task_id, f"[RECOVERY] WARNING: Some restore steps failed: {', '.join(failed)}")
         await tm.append_output(task_id, "[RECOVERY] Please manually complete the failed steps before retrying SANC.")
@@ -291,6 +320,8 @@ async def _take_backup(
     db_service: Optional[str] = None,
 ) -> None:
     """Take application tar + DB schema backup with given tag."""
+    app_backup_path: Optional[str] = None
+
     # Application backup
     await tm.update_status(task_id, "running", f"Taking application backup (tar) [{tag}]")
     app_result = await svc.backup_application(
@@ -300,6 +331,7 @@ async def _take_backup(
     if not app_result.get("success"):
         await tm.append_output(task_id, f"[WARN] {tag} application backup failed.")
     else:
+        app_backup_path = app_result.get("backup_path")
         await trace(f"{tag} application backup completed")
 
     # DB schema backup
@@ -323,11 +355,32 @@ async def _take_backup(
             await tm.append_output(task_id, f"[WARN] {tag} DB schema backup failed.")
         else:
             tm.bd_checkpoint["completed"] = True
-            tm.bd_checkpoint["backup_taken"] = True
             tm.bd_checkpoint["request"] = request.dict()
             tm.bd_checkpoint["task_id"] = task_id
             tm.bd_checkpoint["host"] = request.host
             tm.bd_checkpoint["timestamp"] = datetime.now().isoformat()
+
+            schema_names = [schema for schema in [schema_atomic or request.schema_atomic_schema_name, schema_config or request.schema_config_schema_name] if schema]
+            manifest_result = None
+            if app_backup_path and db_result.get("timestamp") and db_result.get("dump_prefix"):
+                manifest_result = svc.record_backup_manifest(
+                    request=request,
+                    backup_tag=tag,
+                    app_backup_path=app_backup_path,
+                    dump_prefix=db_result["dump_prefix"],
+                    dump_timestamp=db_result["timestamp"],
+                    db_service=db_svc,
+                    schemas=schema_names,
+                )
+                manifest_path = manifest_result.get("manifest_path")
+                if manifest_path:
+                    tm.save_task_context(
+                        task_id,
+                        selected_backup_tag=tag,
+                        backup_manifest_path=manifest_path,
+                        backup_decision="backup_created",
+                    )
+                    await tm.append_output(task_id, f"[BACKUP-GOVERNOR] Backup manifest saved: {manifest_path}")
             await trace(f"{tag} DB schema backup completed")
     else:
         await tm.append_output(task_id, f"[WARN] db_sys_password or JDBC service not provided. Skipping {tag} DB schema backup.")
@@ -362,13 +415,21 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
     async def handle_failure(message: str, error: Optional[str] = None) -> None:
         if "Environment check failed" in message:
             tm.latest_request_cache["error"] = f"{message}: {error}" if error else message
+        tm.save_task_context(task_id, failure_message=message, failure_error=error)
 
         if should_cleanup_failed_fresh():
             await tm.append_output(task_id, "[INFO] Fresh installation failed at Step 8+. Starting automatic cleanup...")
+            tm.save_task_context(task_id, cleanup_status="started", cleanup_mode="fresh")
             cleanup_result = await svc.cleanup_failed_fresh_installation(
                 request.host, request.username, request.password,
             )
             await tm.append_output(task_id, "\n".join(cleanup_result.get("logs", [])))
+            verify_result = await svc.verify_fresh_cleanup(request.host, request.username, request.password)
+            await tm.append_output(task_id, "\n".join(verify_result.get("logs", [])))
+            if verify_result.get("success"):
+                tm.save_task_context(task_id, cleanup_status="completed", cleanup_mode="fresh")
+            else:
+                tm.save_task_context(task_id, cleanup_status="failed", cleanup_mode="fresh", cleanup_failures=verify_result.get("remaining_paths", []))
         task.status = "failed"
         task.error = error or message
         await tm.append_output(task_id, f"[ERROR] {message}")
@@ -379,6 +440,38 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
     async def trace(message: str) -> None:
         logger.info("task=%s %s", task_id[:8], message)
         await tm.append_output(task_id, f"[TRACE] {message}")
+
+    async def ensure_valid_backup_before_module(module_name: str) -> bool:
+        await tm.append_output(task_id, f"[INFO] Validating backup gate before {module_name}...")
+        await tm.update_status(task_id, "running", f"Validating backup before {module_name}")
+        result = await svc.ensure_valid_backup_before_module(
+            task_id,
+            request,
+            module_name,
+            on_log=lambda line: tm.append_output(task_id, line),
+        )
+        if result.get("manifest_path"):
+            tm.save_task_context(
+                task_id,
+                selected_backup_tag=result.get("backup_tag"),
+                backup_manifest_path=result.get("manifest_path"),
+                backup_decision=result.get("decision"),
+            )
+        if result.get("backup_tag") == "BD" and result.get("success"):
+            tm.bd_checkpoint["completed"] = True
+            tm.bd_checkpoint["request"] = request.dict()
+            tm.bd_checkpoint["task_id"] = task_id
+            tm.bd_checkpoint["host"] = request.host
+            tm.bd_checkpoint["timestamp"] = datetime.now().isoformat()
+        if result.get("success"):
+            await trace(
+                f"Backup gate passed before {module_name}: {result.get('decision')} ({result.get('backup_tag')})"
+            )
+            return True
+        await tm.append_output(task_id, f"[ERROR] Backup gate failed before {module_name}")
+        if result.get("error"):
+            await tm.append_output(task_id, f"[ERROR] {result.get('error')}")
+        return False
 
     try:
         await tm.update_status(task_id, "running", task.current_step)
@@ -394,8 +487,6 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             if not tm.bd_checkpoint.get("completed"):
                 await handle_failure("Cannot resume: No BD Pack backup found. Run BD Pack first or disable resume_from_checkpoint.")
                 return
-            if not tm.bd_checkpoint.get("backup_taken"):
-                await tm.append_output(task_id, "[WARN] BD Pack completed but backup was not taken. ECM restore capability may be limited.")
             if tm.bd_checkpoint.get("host") != request.host:
                 await tm.append_output(task_id, f"[WARN] BD backup was for host {tm.bd_checkpoint.get('host')}, current host is {request.host}")
 
@@ -659,6 +750,27 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                     db_ssh_password=getattr(request, "db_ssh_password", None),
                 )
                 await tm.append_output(task_id, "\n".join(cleanup_result.get("logs", [])))
+                verify_cleanup = await svc.verify_cleanup_after_osc_failure(
+                    app_host=request.host,
+                    app_username=request.username,
+                    app_password=request.password,
+                    db_sys_password=request.db_sys_password,
+                    db_jdbc_host=request.schema_jdbc_host or request.host,
+                    db_jdbc_port=request.schema_jdbc_port or 1521,
+                    db_jdbc_service=request.schema_jdbc_service,
+                    schema_config_schema_name=request.schema_config_schema_name,
+                    schema_atomic_schema_name=request.schema_atomic_schema_name,
+                    db_ssh_host=getattr(request, "db_ssh_host", None),
+                    db_ssh_username=getattr(request, "db_ssh_username", None),
+                    db_ssh_password=getattr(request, "db_ssh_password", None),
+                )
+                await tm.append_output(task_id, "\n".join(verify_cleanup.get("logs", [])))
+                tm.save_task_context(
+                    task_id,
+                    cleanup_status="completed" if verify_cleanup.get("success") else "failed",
+                    cleanup_mode="osc_failure",
+                    cleanup_failures=verify_cleanup.get("failures", []),
+                )
                 if cleanup_result.get("failed_steps"):
                     await tm.append_output(task_id, f"\n[RECOVERY] The following cleanup steps failed: {', '.join(cleanup_result['failed_steps'])}")
                     await tm.append_output(task_id, "[RECOVERY] Please manually complete the failed steps before retrying installation")
@@ -699,11 +811,9 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await tm.append_output(task_id, "\n[INFO] ==================== BD PACK BACKUP ====================")
             await _take_backup(task_id, svc, request, "BD", trace)
             await tm.append_output(task_id, "[INFO] BD Pack backup phase complete")
-            if tm.bd_checkpoint.get("backup_taken"):
-                await tm.append_output(task_id, "[CHECKPOINT] BD Pack backup saved. ECM can be restored to this point if it fails.")
+            await tm.append_output(task_id, "[CHECKPOINT] BD Pack checkpoint saved. ECM can be restored to this point if it fails.")
 
         else:
-            # Skipping BD Pack (resume or not selected)
             if request.resume_from_checkpoint and tm.bd_checkpoint.get("completed"):
                 await tm.append_output(task_id, "[INFO] Resuming from BD Pack backup - skipping BD Pack installation")
                 await tm.append_output(task_id, "[INFO] BD Pack will NOT be reinstalled. Starting ECM from BD backup restore point.")
@@ -711,12 +821,6 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             else:
                 await tm.append_output(task_id, "[INFO] Skipping BD Pack installation as per request")
                 await trace("Skipping BD Pack installation")
-
-            # ECM-only with BD backup before ECM
-            if (not request.install_bdpack) and getattr(request, "ecm_take_bd_backup", False):
-                await tm.append_output(task_id, "\n[INFO] ECM-only run: taking BD application + DB schema backup before ECM start as requested")
-                await tm.update_status(task_id, "running", "Preparing BD backup before ECM")
-                await _take_backup(task_id, svc, request, "BD", trace)
 
         # ═══════════════════════════════════════════════════════════════════
         # ECM PACK
@@ -728,64 +832,9 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await tm.append_output(task_id, "[INFO] Clearing filesystem caches before ECM Pack...")
             await svc.ssh_service.execute_command(request.host, request.username, request.password, "echo 2 | sudo tee /proc/sys/vm/drop_caches")
 
-            # Verify backup availability — only when BD Pack was part of this run or resuming from checkpoint
-            # ECM-only runs handle their own backup via ecm_take_bd_backup flag above
-            if request.install_bdpack or request.resume_from_checkpoint:
-                await tm.append_output(task_id, "[INFO] Verifying BD backup availability before ECM installation...")
-                await tm.update_status(task_id, "running", "Verifying BD backups for ECM safety")
-                verify_result = await svc.verify_backups_exist(
-                    request.host, request.username, request.password,
-                    db_ssh_host=getattr(request, "db_ssh_host", None),
-                    db_ssh_username=getattr(request, "db_ssh_username", None),
-                    db_ssh_password=getattr(request, "db_ssh_password", None),
-                )
-                await tm.append_output(task_id, "\n".join(verify_result.get("logs", [])))
-
-                if not verify_result.get("both_exist"):
-                    await tm.append_output(task_id, "[INFO] BD backups not fully available. Taking fresh backup before ECM starts...")
-                    await tm.update_status(task_id, "running", "Taking BD backup before ECM")
-                    if not verify_result.get("app_backup_exists"):
-                        await tm.update_status(task_id, "running", "Taking application backup (tar)")
-                        app_bkp = await svc.backup_application(request.host, request.username, request.password, backup_tag="BD")
-                        await tm.append_output(task_id, "\n".join(app_bkp.get("logs", [])))
-                        if app_bkp.get("success"):
-                            await trace("Application backup completed (pre-ECM auto)")
-                        else:
-                            await tm.append_output(task_id, "[WARN] Application backup failed. ECM restore capability may be limited.")
-
-                    if not verify_result.get("db_backup_exists"):
-                        db_sys_pass = request.db_sys_password
-                        db_service = request.schema_jdbc_service
-                        if db_sys_pass and db_service:
-                            await tm.update_status(task_id, "running", "Taking DB schema backup")
-                            db_bkp = await svc.backup_db_schemas(
-                                request.host, request.username, request.password,
-                                db_sys_password=db_sys_pass,
-                                db_jdbc_service=db_service,
-                                db_oracle_sid=getattr(request, "oracle_sid", None) or "OFSAADB",
-                                schema_config_schema_name=request.schema_config_schema_name,
-                                schema_atomic_schema_name=request.schema_atomic_schema_name,
-                                db_ssh_host=getattr(request, "db_ssh_host", None),
-                                db_ssh_username=getattr(request, "db_ssh_username", None),
-                                db_ssh_password=getattr(request, "db_ssh_password", None),
-                            )
-                            await tm.append_output(task_id, "\n".join(db_bkp.get("logs", [])))
-                            if db_bkp.get("success"):
-                                tm.bd_checkpoint["completed"] = True
-                                tm.bd_checkpoint["backup_taken"] = True
-                                tm.bd_checkpoint["request"] = request.dict()
-                                tm.bd_checkpoint["task_id"] = task_id
-                                tm.bd_checkpoint["host"] = request.host
-                                tm.bd_checkpoint["timestamp"] = datetime.now().isoformat()
-                                await trace("DB schema backup completed (pre-ECM auto) and checkpoint saved")
-                            else:
-                                await tm.append_output(task_id, "[WARN] DB schema backup failed. ECM restore capability may be limited.")
-                        else:
-                            await tm.append_output(task_id, "[WARN] db_sys_password or schema_jdbc_service not provided. Cannot take DB backup.")
-                else:
-                    await tm.append_output(task_id, "[OK] BD backups verified — both application tar and DB dump exist. Safe to proceed with ECM.")
-            else:
-                await tm.append_output(task_id, "[INFO] ECM-only run — skipping BD backup verification (use 'Take BD backup before ECM' checkbox if needed)")
+            if not await ensure_valid_backup_before_module("ECM"):
+                await handle_failure("ECM backup validation failed", "Could not verify or create a proper BD backup before ECM")
+                return
 
             # ECM Step 1: Download and extract
             _check_cancelled(task_id)
@@ -950,6 +999,10 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await tm.append_output(task_id, "[INFO] Clearing filesystem caches before SANC Pack...")
             await svc.ssh_service.execute_command(request.host, request.username, request.password, "echo 2 | sudo tee /proc/sys/vm/drop_caches")
 
+            if not await ensure_valid_backup_before_module("SANC"):
+                await handle_failure("SANC backup validation failed", "Could not verify or create a proper backup before SANC")
+                return
+
             # SANC Step 1: Download and extract
             _check_cancelled(task_id)
             await tm.update_status(task_id, "running", "Downloading and extracting SANC installer kit")
@@ -1106,6 +1159,14 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                         request.host, request.username, request.password,
                     )
                     await tm.append_output(task_id, "\n".join(cleanup.get("logs", [])))
+                    verify_cleanup = await svc.verify_fresh_cleanup(request.host, request.username, request.password)
+                    await tm.append_output(task_id, "\n".join(verify_cleanup.get("logs", [])))
+                    tm.save_task_context(
+                        task_id,
+                        cleanup_status="completed" if verify_cleanup.get("success") else "failed",
+                        cleanup_mode="fresh-cancel",
+                        cleanup_failures=verify_cleanup.get("remaining_paths", []),
+                    )
                 else:
                     await tm.append_output(task_id, "[CANCEL] BD Pack cancel — no automatic cleanup for non-fresh installs.")
         except Exception as restore_exc:
@@ -1117,3 +1178,57 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
     except Exception as exc:
         logger.exception("Installation process failed")
         await handle_failure("Installation failed", str(exc))
+
+
+async def recover_interrupted_tasks() -> None:
+    restored = tm.restore_persisted_tasks()
+    for payload in restored:
+        task_id = payload.get("task_id")
+        task = tm.get_task(task_id) if task_id else None
+        context = payload.get("context", {})
+        request_payload = context.get("request")
+        if not task_id or not task or task.status != "interrupted" or not isinstance(request_payload, dict):
+            continue
+
+        request = InstallationRequest(**request_payload)
+        svc = create_installation_service()
+
+        async def trace(message: str) -> None:
+            logger.info("recovery task=%s %s", task_id[:8], message)
+            await tm.append_output(task_id, f"[TRACE] {message}")
+
+        await tm.append_output(task_id, "[RECOVERY] Backend restart detected. Starting automatic recovery for interrupted task.")
+        try:
+            if task.current_module == "SANC_PACK":
+                await _restore_on_sanc_failure(task_id, request, svc, trace)
+                task.error = "Recovered after backend restart; retry SANC if needed"
+                await tm.update_status(task_id, "failed", "Recovered after backend restart; retry SANC if needed")
+            elif task.current_module == "ECM_PACK":
+                await _restore_bd_on_ecm_failure(task_id, request, svc, trace)
+                task.error = "Recovered after backend restart; retry ECM if needed"
+                await tm.update_status(task_id, "failed", "Recovered after backend restart; retry ECM if needed")
+            elif task.current_module == "BD_PACK":
+                if (request.installation_mode or "fresh").lower() == "fresh":
+                    cleanup = await svc.cleanup_failed_fresh_installation(request.host, request.username, request.password)
+                    await tm.append_output(task_id, "\n".join(cleanup.get("logs", [])))
+                    verify = await svc.verify_fresh_cleanup(request.host, request.username, request.password)
+                    await tm.append_output(task_id, "\n".join(verify.get("logs", [])))
+                    tm.save_task_context(
+                        task_id,
+                        cleanup_status="completed" if verify.get("success") else "failed",
+                        cleanup_mode="restart-recovery",
+                        cleanup_failures=verify.get("remaining_paths", []),
+                    )
+                    task.error = "Recovered after backend restart; retry BD if needed"
+                    await tm.update_status(task_id, "failed", "Recovered after backend restart; retry BD if needed")
+                else:
+                    task.error = "Backend restarted during BD task; no auto-cleanup for non-fresh install"
+                    await tm.update_status(task_id, "failed", "Backend restarted during BD task; no auto-cleanup for non-fresh install")
+            else:
+                task.error = "Backend restarted during task; manual retry required"
+                await tm.update_status(task_id, "failed", "Backend restarted during task; manual retry required")
+        except Exception as exc:
+            logger.exception("Automatic interrupted-task recovery failed for %s", task_id)
+            await tm.append_output(task_id, f"[RECOVERY] Automatic recovery failed: {exc}")
+            task.error = "Automatic recovery failed after backend restart"
+            await tm.update_status(task_id, "failed", "Automatic recovery failed after backend restart")

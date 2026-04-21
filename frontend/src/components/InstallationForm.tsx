@@ -106,8 +106,6 @@ interface InstallationData {
   installation_mode: 'fresh' | 'addon'
   install_bdpack: boolean
   install_ecm: boolean
-  // If true for ECM-only runs, take BD application + DB schema backup before ECM
-  ecm_take_bd_backup: boolean
   // Database SYS password for backup/restore/cleanup
   db_sys_password: string
   // Optional SSH credentials to run DB-side scripts on the DB server
@@ -237,7 +235,6 @@ export function InstallationForm() {
     installation_mode: 'fresh',
     install_bdpack: false,
     install_ecm: false,
-    ecm_take_bd_backup: false,
     db_sys_password: '',
     db_ssh_host: '',
     db_ssh_username: '',
@@ -455,7 +452,6 @@ export function InstallationForm() {
           install_bdpack: formData.install_bdpack,
           install_ecm: formData.install_ecm,
           install_sanc: formData.install_sanc,
-          ecm_take_bd_backup: formData.ecm_take_bd_backup,
           db_sys_password: formData.db_sys_password || null,
           db_ssh_host: formData.db_ssh_host || null,
           db_ssh_username: formData.db_ssh_username || null,
@@ -714,16 +710,6 @@ export function InstallationForm() {
               <input type="checkbox" checked={formData.install_sanc} onChange={() => toggleModuleSelection('install_sanc')} />
               SANC
             </label>
-            {formData.install_ecm && !formData.install_bdpack && (
-              <label className="inline-flex items-center gap-2 text-sm text-text-primary cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={formData.ecm_take_bd_backup}
-                  onChange={() => setFormData(prev => ({ ...prev, ecm_take_bd_backup: !prev.ecm_take_bd_backup }))}
-                />
-                Take BD app + DB backup before ECM
-              </label>
-            )}
           </div>
         </motion.div>
 
