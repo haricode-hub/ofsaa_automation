@@ -109,6 +109,10 @@ interface InstallationData {
   install_ecm: boolean
   // Database SYS password for backup/restore/cleanup
   db_sys_password: string
+  // Dedicated backup/restore schema identifiers (Main Configuration section)
+  backup_schema_atomic: string
+  backup_schema_config: string
+  backup_jdbc_service: string
   // Optional SSH credentials to run DB-side scripts on the DB server
   db_ssh_host: string
   db_ssh_username: string
@@ -260,6 +264,9 @@ export function InstallationForm() {
     install_bdpack: false,
     install_ecm: false,
     db_sys_password: '',
+    backup_schema_atomic: 'OFSATOMIC',
+    backup_schema_config: 'OFSCONFIG',
+    backup_jdbc_service: '',
     db_ssh_host: '',
     db_ssh_username: '',
     db_ssh_password: ''
@@ -488,6 +495,9 @@ export function InstallationForm() {
           install_ecm: formData.install_ecm,
           install_sanc: formData.install_sanc,
           db_sys_password: formData.db_sys_password || null,
+          backup_schema_atomic: formData.backup_schema_atomic || null,
+          backup_schema_config: formData.backup_schema_config || null,
+          backup_jdbc_service: formData.backup_jdbc_service || null,
           db_ssh_host: formData.db_ssh_host || null,
           db_ssh_username: formData.db_ssh_username || null,
           db_ssh_password: formData.db_ssh_password || null,
@@ -942,21 +952,43 @@ export function InstallationForm() {
                 <p className="text-[10px] text-text-muted">Used for sqlplus connections during backup, restore, and schema cleanup operations.</p>
               </div>
 
-              {/* Show JDBC Service input when a DB backup is required for the selected modules */}
-              {(formData.install_bdpack || formData.install_ecm || formData.install_sanc) && (
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">JDBC Service Name</label>
-                  <input
-                    type="text"
-                    value={formData.schema_jdbc_service}
-                    onChange={handleInputChange('schema_jdbc_service')}
-                    placeholder="OFSAAPDB"
-                    className={fieldClass('schema_jdbc_service')}
-                  />
-                  {formErrors.schema_jdbc_service && <p className="text-xs text-error">{formErrors.schema_jdbc_service}</p>}
-                  <p className="text-[10px] text-text-muted">Provide the JDBC Service Name used for DB schema backup/restore.</p>
+              {/* Dedicated Backup / Restore schema identifiers */}
+              <div className="border-t border-border pt-4 mt-2">
+                <div className="text-xs font-bold text-text-primary uppercase tracking-wider mb-3">Backup / Restore Configuration</div>
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">ATOMIC Schema Name</label>
+                    <input
+                      type="text"
+                      value={formData.backup_schema_atomic}
+                      onChange={handleInputChange('backup_schema_atomic')}
+                      placeholder="OFSATOMIC"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">CONFIG Schema Name</label>
+                    <input
+                      type="text"
+                      value={formData.backup_schema_config}
+                      onChange={handleInputChange('backup_schema_config')}
+                      placeholder="OFSCONFIG"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">JDBC Service Name</label>
+                    <input
+                      type="text"
+                      value={formData.backup_jdbc_service}
+                      onChange={handleInputChange('backup_jdbc_service')}
+                      placeholder="OFSAAPDB"
+                      className="w-full bg-bg-secondary border border-border rounded-lg px-4 py-3 text-sm text-text-primary transition-all duration-200 focus:outline-none focus:border-white focus:bg-bg-tertiary placeholder-text-muted"
+                    />
+                  </div>
                 </div>
-              )}
+                <p className="text-[10px] text-text-muted mt-2">Used exclusively for expdp/impdp backup and restore operations across all modules (BD, ECM, SANC).</p>
+              </div>
 
               <div className="space-y-2">
                 <label className="flex items-center gap-2 text-xs font-bold text-text-primary uppercase tracking-wider">

@@ -63,39 +63,36 @@ class BackupParams:
 def build_backup_params(request: Any, tag: str) -> BackupParams:
     """Resolve all backup/restore parameters from a request for the given tag.
 
-    Priority chain:
-        BD   -> request.schema_*
-        ECM  -> request.ecm_schema_*  -> BD fields
-        SANC -> request.sanc_schema_* -> ECM fields -> BD fields
+    All three tags (BD, ECM, SANC) share the same schema names and DB service
+    from the main configuration fields (schema_atomic_schema_name,
+    schema_config_schema_name, schema_jdbc_service).  The ECM/SANC-specific
+    schema fields in the request are used only for XML patching, NOT for
+    backup/restore.
 
     This is the ONLY place where schema names, db_service, and SSH credentials
     are resolved.  All callers (router, governor, recovery) must use this
     function instead of reading request fields directly.
     """
-    # BD layer
-    bd_atomic   = request.schema_atomic_schema_name or DEFAULT_SCHEMA_ATOMIC
-    bd_config   = request.schema_config_schema_name or DEFAULT_SCHEMA_CONFIG
-    bd_service  = request.schema_jdbc_service or ""
-
-    # ECM layer (fallback to BD)
-    ecm_atomic  = getattr(request, "ecm_schema_atomic_schema_name", None) or bd_atomic
-    ecm_config  = getattr(request, "ecm_schema_config_schema_name", None) or bd_config
-    ecm_service = getattr(request, "ecm_schema_jdbc_service", None) or bd_service
-
-    # SANC layer (fallback to ECM then BD)
-    sanc_atomic  = getattr(request, "sanc_schema_atomic_schema_name", None) or ecm_atomic
-    sanc_config  = getattr(request, "sanc_schema_config_schema_name", None) or ecm_config
-    sanc_service = getattr(request, "sanc_schema_jdbc_service", None) or ecm_service
-
-    _tag_map: dict = {
-        "BD":   (bd_atomic,   bd_config,   bd_service),
-        "ECM":  (ecm_atomic,  ecm_config,  ecm_service),
-        "SANC": (sanc_atomic, sanc_config, sanc_service),
-    }
-    if tag not in _tag_map:
+    if tag not in ("BD", "ECM", "SANC"):
         raise ValueError(f"Unsupported backup tag: {tag!r}")
 
-    schema_atomic, schema_config, db_service = _tag_map[tag]
+    # All modules use the dedicated backup fields from the Main Configuration section.
+    # Fall back to the XML-patching schema fields, then to defaults.
+    schema_atomic = (
+        getattr(request, "backup_schema_atomic", None)
+        or request.schema_atomic_schema_name
+        or DEFAULT_SCHEMA_ATOMIC
+    )
+    schema_config = (
+        getattr(request, "backup_schema_config", None)
+        or request.schema_config_schema_name
+        or DEFAULT_SCHEMA_CONFIG
+    )
+    db_service = (
+        getattr(request, "backup_jdbc_service", None)
+        or request.schema_jdbc_service
+        or ""
+    )
 
     return BackupParams(
         tag=tag,

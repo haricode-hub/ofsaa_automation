@@ -12,7 +12,13 @@ class InstallationRequest(BaseModel):
     
     # Database SYS/DBA password for backup/restore/cleanup operations
     db_sys_password: Optional[str] = Field(default=None, description="Oracle SYS password for sqlplus connections (backup/restore/schema cleanup)")
-    
+
+    # Dedicated backup/restore schema identifiers (used for expdp/impdp across ALL modules)
+    # These are separate from the XML-patching fields and are shown in the Main Configuration section.
+    backup_schema_atomic: Optional[str] = Field(default=None, description="ATOMIC schema name used for backup/restore (expdp/impdp)")
+    backup_schema_config: Optional[str] = Field(default=None, description="CONFIG schema name used for backup/restore (expdp/impdp)")
+    backup_jdbc_service: Optional[str] = Field(default=None, description="DB service name used for backup/restore connections")
+
     # Profile variables that user can customize
     fic_home: Optional[str] = Field(default="/u01/OFSAA/FICHOME", description="FIC_HOME path")
     java_home: Optional[str] = Field(default=None, description="Custom JAVA_HOME path (optional)")
