@@ -222,17 +222,23 @@ async def _restore_bd_on_ecm_failure(
         return
 
     tm.save_task_context(task_id, restore_manifest_path=manifest_result.get("manifest_path"), restore_target_tag="BD")
-    restore_result = await svc.full_restore_from_manifest(
-        request.host,
-        request.username,
-        request.password,
-        manifest=manifest_result["manifest"],
-        db_sys_password=db_sys_pass or "",
-        db_oracle_sid=getattr(request, "oracle_sid", None) or "OFSAADB",
-        db_ssh_host=getattr(request, "db_ssh_host", None),
-        db_ssh_username=getattr(request, "db_ssh_username", None),
-        db_ssh_password=getattr(request, "db_ssh_password", None),
-    )
+    try:
+        restore_result = await svc.full_restore_from_manifest(
+            request.host,
+            request.username,
+            request.password,
+            manifest=manifest_result["manifest"],
+            db_sys_password=db_sys_pass or "",
+            db_oracle_sid=getattr(request, "oracle_sid", None) or "OFSAADB",
+            db_ssh_host=getattr(request, "db_ssh_host", None),
+            db_ssh_username=getattr(request, "db_ssh_username", None),
+            db_ssh_password=getattr(request, "db_ssh_password", None),
+        )
+    except BaseException as _frm_exc:
+        import traceback as _tb
+        await tm.append_output(task_id, f"[RECOVERY] ERROR: Restore operation raised unexpectedly: {type(_frm_exc).__name__}: {_frm_exc}")
+        await tm.append_output(task_id, f"[RECOVERY] Traceback: {_tb.format_exc()}")
+        raise
     await tm.append_output(task_id, "\n".join(restore_result.get("logs", [])))
 
     if restore_result.get("success"):
@@ -285,17 +291,23 @@ async def _restore_on_sanc_failure(
 
     selected_tag = manifest_result["manifest"].get("tag", "unknown")
     tm.save_task_context(task_id, restore_manifest_path=manifest_result.get("manifest_path"), restore_target_tag=selected_tag)
-    restore_result = await svc.full_restore_from_manifest(
-        request.host,
-        request.username,
-        request.password,
-        manifest=manifest_result["manifest"],
-        db_sys_password=db_sys_pass or "",
-        db_oracle_sid=getattr(request, "oracle_sid", None) or "OFSAADB",
-        db_ssh_host=getattr(request, "db_ssh_host", None),
-        db_ssh_username=getattr(request, "db_ssh_username", None),
-        db_ssh_password=getattr(request, "db_ssh_password", None),
-    )
+    try:
+        restore_result = await svc.full_restore_from_manifest(
+            request.host,
+            request.username,
+            request.password,
+            manifest=manifest_result["manifest"],
+            db_sys_password=db_sys_pass or "",
+            db_oracle_sid=getattr(request, "oracle_sid", None) or "OFSAADB",
+            db_ssh_host=getattr(request, "db_ssh_host", None),
+            db_ssh_username=getattr(request, "db_ssh_username", None),
+            db_ssh_password=getattr(request, "db_ssh_password", None),
+        )
+    except BaseException as _frm_exc:
+        import traceback as _tb
+        await tm.append_output(task_id, f"[RECOVERY] ERROR: Restore operation raised unexpectedly: {type(_frm_exc).__name__}: {_frm_exc}")
+        await tm.append_output(task_id, f"[RECOVERY] Traceback: {_tb.format_exc()}")
+        raise
     await tm.append_output(task_id, "\n".join(restore_result.get("logs", [])))
 
     restored_tag = restore_result.get("restored_tag", "unknown")
@@ -1146,15 +1158,20 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
         logger.info("Installation task %s was cancelled", task_id)
         await tm.append_output(task_id, "\n[CANCEL] ==================== TASK CANCELLED BY USER ====================")
 
+        # Clear the cancel event so _check_cancelled does not interfere with restore
+        _cancel_ev = tm.cancel_events.get(task_id)
+        if _cancel_ev:
+            _cancel_ev.clear()
+
         # Module-based restore on cancel
         current_module = getattr(task, "current_module", None)
         try:
             if current_module == "SANC_PACK":
                 await tm.append_output(task_id, "[CANCEL] Cancelled during SANC Pack. Restoring to previous state...")
-                await _restore_on_sanc_failure(task_id, request, svc, trace)
+                await asyncio.shield(_restore_on_sanc_failure(task_id, request, svc, trace))
             elif current_module == "ECM_PACK":
                 await tm.append_output(task_id, "[CANCEL] Cancelled during ECM Pack. Restoring to BD state...")
-                await _restore_bd_on_ecm_failure(task_id, request, svc, trace)
+                await asyncio.shield(_restore_bd_on_ecm_failure(task_id, request, svc, trace))
             elif current_module == "BD_PACK":
                 await tm.append_output(task_id, "[CANCEL] Cancelled during BD Pack. Cleaning up partial installation...")
                 if should_cleanup_failed_fresh():
@@ -1172,9 +1189,11 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                     )
                 else:
                     await tm.append_output(task_id, "[CANCEL] BD Pack cancel — no automatic cleanup for non-fresh installs.")
-        except Exception as restore_exc:
+        except BaseException as restore_exc:
+            import traceback as _tb
             logger.exception("Restore on cancel failed for task %s", task_id)
-            await tm.append_output(task_id, f"[CANCEL] WARNING: Restore after cancel failed: {restore_exc}")
+            await tm.append_output(task_id, f"[CANCEL] WARNING: Restore after cancel failed: {type(restore_exc).__name__}: {restore_exc}")
+            await tm.append_output(task_id, f"[CANCEL] Traceback: {_tb.format_exc()}")
 
         if task.status not in ("failed",):
             await tm.update_status(task_id, "failed", "Cancelled by user")

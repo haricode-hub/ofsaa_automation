@@ -108,9 +108,49 @@ class SSHService:
         client = self._connect(host, username, password, timeout=timeout)
         self.register_connection(task_id, client)
         try:
-            stdin, stdout, stderr = client.exec_command(command, get_pty=get_pty, timeout=timeout)
-            out = stdout.read().decode(errors="ignore")
-            err = stderr.read().decode(errors="ignore")
+            # Do NOT pass timeout to exec_command: Paramiko would use it as the
+            # *socket-read* timeout, causing TimeoutError on quiet long-running
+            # commands (e.g. fuser -km, tar, impdp) that produce no stdout/stderr
+            # output but finish well within the overall allowed budget.
+            # Instead we set a per-chunk timeout and enforce the overall deadline
+            # ourselves so silent commands are handled correctly.
+            stdin, stdout, stderr = client.exec_command(command, get_pty=get_pty)
+            _chunk_timeout = min(30, timeout)
+            stdout.channel.settimeout(_chunk_timeout)
+            deadline = start_ts + timeout
+
+            out_chunks: list = []
+            while True:
+                if time.time() > deadline:
+                    stdout.channel.close()
+                    raise TimeoutError(f"Command timed out after {timeout}s")
+                try:
+                    chunk = stdout.read(65536)
+                    if not chunk:
+                        break
+                    out_chunks.append(chunk)
+                except (socket.timeout, TimeoutError):
+                    if time.time() >= deadline:
+                        stdout.channel.close()
+                        raise TimeoutError(f"Command timed out after {timeout}s")
+                    # No data yet but still within overall deadline — command is
+                    # running silently; keep waiting.
+                    continue
+
+            # Drain stderr (best-effort; channel is already done at this point)
+            err_chunks: list = []
+            try:
+                stderr.channel.settimeout(_chunk_timeout)
+                while True:
+                    chunk = stderr.read(65536)
+                    if not chunk:
+                        break
+                    err_chunks.append(chunk)
+            except Exception:
+                pass
+
+            out = b"".join(out_chunks).decode(errors="ignore")
+            err = b"".join(err_chunks).decode(errors="ignore")
             exit_status = stdout.channel.recv_exit_status()
             elapsed = round(time.time() - start_ts, 2)
             logger.info(
@@ -277,6 +317,8 @@ class SSHService:
             buffer = ""
             last_prompt = None
             start_time = time.time()
+            last_output_time = time.time()
+            _HEARTBEAT_INTERVAL = 30  # seconds between "still waiting" messages
 
             while True:
                 if time.time() - start_time > timeout:
@@ -285,6 +327,7 @@ class SSHService:
                 if channel.recv_ready():
                     data = channel.recv(4096).decode(errors="ignore")
                     if data:
+                        last_output_time = time.time()
                         buffer += data
                         schedule_output(data)
 
@@ -309,6 +352,19 @@ class SSHService:
                 if channel.exit_status_ready():
                     if not channel.recv_ready() and not channel.recv_stderr_ready():
                         break
+
+                # Emit a heartbeat when the remote process has been silent for a
+                # while (e.g. setup.sh was OOM-killed, shell cleanup is still running).
+                # This keeps the UI alive so the user knows the backend hasn't frozen.
+                silent_secs = time.time() - last_output_time
+                if silent_secs >= _HEARTBEAT_INTERVAL:
+                    elapsed_total = int(time.time() - start_time)
+                    schedule_output(
+                        f"\n[INFO] Remote process still running... "
+                        f"(no output for {int(silent_secs)}s, total elapsed {elapsed_total}s)\n"
+                    )
+                    last_output_time = time.time()  # reset so next heartbeat is another 30s away
+
                 time.sleep(0.1)
 
             exit_status = channel.recv_exit_status()

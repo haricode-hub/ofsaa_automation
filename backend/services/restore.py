@@ -95,6 +95,37 @@ class RestoreService:
             return detected2
         return fallback
 
+    async def _detect_cdb_oracle_sid(
+        self, host: str, username: str, password: str,
+        fallback: str = "OFSAADB",
+    ) -> str:
+        """Detect the CDB Oracle SID from /etc/oratab.
+
+        /etc/oratab entries are SID:ORACLE_HOME:flag.  We prefer entries whose
+        ORACLE_HOME path contains 'dbhome' (database home, not client).  PDB
+        names are never listed with a dbhome in /etc/oratab, so this reliably
+        returns the CDB SID even when the caller mistakenly passes the PDB name
+        as oracle_sid.
+        """
+        # Prefer a dbhome entry (rules out Oracle client installs)
+        cmd = (
+            "grep '^[A-Za-z]' /etc/oratab 2>/dev/null "
+            "| grep -i 'dbhome' "
+            "| head -1 "
+            "| cut -d: -f1"
+        )
+        result = await self.ssh.execute_command(host, username, password, cmd)
+        detected = (result.get("stdout") or "").strip()
+        if detected and detected.replace("_", "").isalnum():
+            return detected
+        # Fallback: any first entry in /etc/oratab
+        cmd2 = "grep '^[A-Za-z]' /etc/oratab 2>/dev/null | head -1 | cut -d: -f1"
+        result2 = await self.ssh.execute_command(host, username, password, cmd2)
+        detected2 = (result2.get("stdout") or "").strip()
+        if detected2 and detected2.replace("_", "").isalnum():
+            return detected2
+        return fallback
+
     # ------------------------------------------------------------------
     # Public: run full restore
     # ------------------------------------------------------------------
@@ -183,7 +214,19 @@ class RestoreService:
         # Auto-detect ORACLE_HOME
         oracle_home = await self._detect_oracle_home(host, user, passwd)
         await log(f"[RESTORE] Detected ORACLE_HOME: {oracle_home}")
-        env = self._env_block(oracle_home, oracle_sid)
+
+        # Always use the CDB SID for sqlplus/sysdba connections.
+        # If oracle_sid was passed as a PDB name (e.g. OFSAAPDB2), Oracle's
+        # STARTUP would look for initOFSAAPDB2.ora which does not exist.
+        # /etc/oratab lists the CDB SID, so we detect it here and override.
+        cdb_sid = await self._detect_cdb_oracle_sid(host, user, passwd, fallback=oracle_sid)
+        if cdb_sid != oracle_sid:
+            await log(
+                f"[RESTORE] NOTE: Detected CDB SID '{cdb_sid}' from /etc/oratab "
+                f"(overrides supplied oracle_sid='{oracle_sid}' which appears to be a PDB name). "
+                f"PDB '{pdb_name}' will be opened separately."
+            )
+        env = self._env_block(oracle_home, cdb_sid)
 
         schema_list = [s.strip() for s in schemas.split(",")]
         schema_in_clause = ",".join(f"'{s}'" for s in schema_list)
@@ -191,15 +234,80 @@ class RestoreService:
         # ── Pre-flight checks ──
         await log("[RESTORE] Step 0: Pre-flight checks")
 
-        # Check PDB is open READ WRITE
+        # ── Ensure Oracle CDB instance is running ──
+        # Connect locally as sysdba (no TNS) — works even when the instance is down.
+        instance_status = await self._run_sql_silent(
+            host, user, passwd, env, sys_pass,
+            "SELECT STATUS FROM v$instance;",
+        )
+        _inst_up = any(
+            kw in instance_status.upper()
+            for kw in ("OPEN", "MOUNTED", "STARTED", "NOMOUNT")
+        )
+        if not _inst_up:
+            await log(
+                f"[RESTORE] Oracle instance appears down (got: {instance_status.strip() or 'empty/error'}). "
+                f"Attempting STARTUP..."
+            )
+            startup_out = await self._run_sql(
+                host, user, passwd, env, sys_pass,
+                "STARTUP;",
+                timeout=300,
+            )
+            for _line in (startup_out or "").splitlines():
+                if _line.strip():
+                    await log(f"[RESTORE]   {_line}")
+            # Re-check instance
+            instance_status = await self._run_sql_silent(
+                host, user, passwd, env, sys_pass,
+                "SELECT STATUS FROM v$instance;",
+            )
+            _inst_up = any(
+                kw in instance_status.upper()
+                for kw in ("OPEN", "MOUNTED", "STARTED", "NOMOUNT")
+            )
+            if not _inst_up:
+                await log(
+                    f"[RESTORE] ERROR: Oracle instance still not available after STARTUP attempt. "
+                    f"Got: {instance_status.strip()}"
+                )
+                return {"success": False, "logs": logs, "error": "Oracle instance not available"}
+            await log("[RESTORE]   Oracle instance started ✓")
+        else:
+            await log(f"[RESTORE]   Oracle instance: {instance_status.strip()} ✓")
+
+        # ── Ensure PDB is open READ WRITE ──
         pdb_status = await self._run_sql_silent(
             host, user, passwd, env, sys_pass,
             f"SELECT open_mode FROM v$pdbs WHERE name = '{pdb_name}';",
         )
         if "READ WRITE" not in pdb_status:
-            await log(f"[RESTORE] ERROR: PDB {pdb_name} is not open READ WRITE. Got: {pdb_status}")
-            return {"success": False, "logs": logs, "error": f"PDB {pdb_name} not open"}
-        await log(f"[RESTORE]   PDB {pdb_name}: READ WRITE ✓")
+            await log(
+                f"[RESTORE] PDB {pdb_name} is not open READ WRITE "
+                f"(got: {pdb_status.strip() or 'empty'}). Attempting to open..."
+            )
+            open_out = await self._run_sql(
+                host, user, passwd, env, sys_pass,
+                f"ALTER PLUGGABLE DATABASE {pdb_name} OPEN;",
+                timeout=300,
+            )
+            for _line in (open_out or "").splitlines():
+                if _line.strip():
+                    await log(f"[RESTORE]   {_line}")
+            # Re-check
+            pdb_status = await self._run_sql_silent(
+                host, user, passwd, env, sys_pass,
+                f"SELECT open_mode FROM v$pdbs WHERE name = '{pdb_name}';",
+            )
+            if "READ WRITE" not in pdb_status:
+                await log(
+                    f"[RESTORE] ERROR: PDB {pdb_name} still not open READ WRITE "
+                    f"after open attempt. Got: {pdb_status}"
+                )
+                return {"success": False, "logs": logs, "error": f"PDB {pdb_name} not open READ WRITE"}
+            await log(f"[RESTORE]   PDB {pdb_name}: READ WRITE ✓ (opened successfully)")
+        else:
+            await log(f"[RESTORE]   PDB {pdb_name}: READ WRITE ✓")
 
         # Check dump files exist (use the resolved dump_file pattern)
         check_pattern = dump_file.replace('%U', '*')

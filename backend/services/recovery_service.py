@@ -353,9 +353,11 @@ class RecoveryService:
 
         # Step 1: Remove existing OFSAA directory as oracle (mandatory per guide)
         logs.append("[RESTORE] Step 1: Removing existing OFSAA directory as oracle...")
-        # Kill any processes holding files open under the OFSAA dir before removing
-        fuser_cmd = f"fuser -km {ofsaa_dir}/OFSAA 2>/dev/null || true; lsof +D {ofsaa_dir}/OFSAA 2>/dev/null | awk 'NR>1{{print $2}}' | sort -u | xargs -r kill -9 2>/dev/null || true"
-        await self.ssh_service.execute_command(host, username, password, fuser_cmd, timeout=30)
+        # Kill any processes holding files open under the OFSAA dir before removing.
+        # Use only fuser -km here: lsof +D can take many minutes on large directory
+        # trees and is not worth the wait — fuser is fast and sufficient.
+        fuser_cmd = f"fuser -km {ofsaa_dir}/OFSAA 2>/dev/null || true"
+        await self.ssh_service.execute_command(host, username, password, fuser_cmd, timeout=120)
         rm_inner = f"rm -rf {ofsaa_dir}/OFSAA"
         if username == "oracle":
             rm_cmd = rm_inner
