@@ -26,8 +26,10 @@ class RestoreService:
     # ------------------------------------------------------------------
     def _env_block(self, oracle_home: str, oracle_sid: str) -> str:
         return (
+            "[ -f /home/oracle/.profile ] && source /home/oracle/.profile 2>/dev/null; "
             f"export ORACLE_HOME={oracle_home}; "
             f"export ORACLE_SID={oracle_sid}; "
+            f"export LD_LIBRARY_PATH=$ORACLE_HOME/lib:$LD_LIBRARY_PATH; "
             f"export PATH=$ORACLE_HOME/bin:$PATH; "
         )
 

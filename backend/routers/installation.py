@@ -22,6 +22,7 @@ from typing import Optional
 from services.utils import shell_escape
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import PlainTextResponse
 
 from core.config import InstallationSteps
 from core.task_manager import task_manager as tm
@@ -95,10 +96,10 @@ async def list_installation_tasks():
     return {"tasks": list(tm.tasks.values())}
 
 
-@router.get("/logs/{task_id}/full")
+@router.get("/logs/{task_id}/full", response_class=PlainTextResponse)
 async def get_full_logs(task_id: str):
     logs = await tm.logs.read_all_logs(task_id)
-    return {"task_id": task_id, "log_lines": logs, "total_lines": len(logs)}
+    return PlainTextResponse(content="\n".join(logs), media_type="text/plain; charset=utf-8")
 
 
 @router.get("/logs/{task_id}/tail")

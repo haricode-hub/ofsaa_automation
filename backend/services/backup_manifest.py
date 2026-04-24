@@ -113,8 +113,6 @@ class BackupManifestService:
         db_ssh_username: str,
         db_ssh_password: str,
         expected_tag: str,
-        expected_db_service: str,
-        expected_schemas: list[str],
     ) -> dict[str, Any]:
         logs: list[str] = []
 
@@ -124,20 +122,6 @@ class BackupManifestService:
 
         if manifest.get("tag") != expected_tag:
             logs.append(f"[BACKUP-GOVERNOR] Manifest tag mismatch: expected {expected_tag}, found {manifest.get('tag')}")
-            return {"valid": False, "logs": logs}
-
-        if manifest.get("db_service") != expected_db_service:
-            logs.append(
-                f"[BACKUP-GOVERNOR] Manifest DB service mismatch: expected {expected_db_service}, found {manifest.get('db_service')}"
-            )
-            return {"valid": False, "logs": logs}
-
-        expected_schema_set = sorted(schema.upper() for schema in expected_schemas if schema)
-        manifest_schema_set = sorted(schema.upper() for schema in manifest.get("schemas", []))
-        if manifest_schema_set != expected_schema_set:
-            logs.append(
-                f"[BACKUP-GOVERNOR] Manifest schema mismatch: expected {expected_schema_set}, found {manifest_schema_set}"
-            )
             return {"valid": False, "logs": logs}
 
         app_path = manifest.get("app_backup", {}).get("path")

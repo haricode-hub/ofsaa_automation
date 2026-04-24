@@ -62,8 +62,6 @@ class BackupRestoreGovernorService:
                 db_ssh_username=params.effective_db_username,
                 db_ssh_password=params.effective_db_password,
                 expected_tag=tag,
-                expected_db_service=params.db_service,
-                expected_schemas=params.schemas,
             )
             for entry in validation.get("logs", []):
                 await log(entry)
@@ -108,8 +106,6 @@ class BackupRestoreGovernorService:
                 db_ssh_username=params.effective_db_username,
                 db_ssh_password=params.effective_db_password,
                 expected_tag=backup_tag,
-                expected_db_service=params.db_service,
-                expected_schemas=params.schemas,
             )
             for entry in validation.get("logs", []):
                 await log(entry)

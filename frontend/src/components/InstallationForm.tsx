@@ -11,7 +11,9 @@ import {
   RocketLaunchIcon,
   CheckCircleIcon,
   ExclamationCircleIcon,
-  ArrowPathIcon
+  ArrowPathIcon,
+  EyeIcon,
+  EyeSlashIcon
 } from '@heroicons/react/24/outline'
 import { EcmPackPage } from '@/components/EcmPackPage'
 import { EcmFormData } from '@/components/EcmPackForm'
@@ -272,6 +274,11 @@ export function InstallationForm() {
     db_ssh_password: ''
   })
   const [isLoading, setIsLoading] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
+  const [showDbSysPassword, setShowDbSysPassword] = useState(false)
+  const [showDbSshPassword, setShowDbSshPassword] = useState(false)
+  const [showSchemaPassword, setShowSchemaPassword] = useState(false)
+  const [showWebServicePassword, setShowWebServicePassword] = useState(false)
   const [status, setStatus] = useState<'idle' | 'success' | 'error'>('idle')
   const [ecmConfig, setEcmConfig] = useState<EcmFormData | null>(null)
   const [isEcmValid, setIsEcmValid] = useState(true)
@@ -922,12 +929,17 @@ export function InstallationForm() {
               </div>
 
               <div className="space-y-2">
-                <label className="flex items-center gap-2 text-xs font-bold text-text-primary uppercase tracking-wider">
-                  <KeyIcon className="w-4 h-4" />
-                  SSH Password
-                </label>
+                <div className="flex items-center justify-between">
+                  <label className="flex items-center gap-2 text-xs font-bold text-text-primary uppercase tracking-wider">
+                    <KeyIcon className="w-4 h-4" />
+                    SSH Password
+                  </label>
+                  <button type="button" onClick={() => setShowPassword(v => !v)} className="text-text-muted hover:text-text-primary transition-colors">
+                    {showPassword ? <EyeSlashIcon className="w-4 h-4" /> : <EyeIcon className="w-4 h-4" />}
+                  </button>
+                </div>
                 <input
-                  type="password"
+                  type={showPassword ? 'text' : 'password'}
                   value={formData.password}
                   onChange={handleInputChange('password')}
                   placeholder="********"
@@ -937,12 +949,17 @@ export function InstallationForm() {
               </div>
 
               <div className="space-y-2">
-                <label className="flex items-center gap-2 text-xs font-bold text-text-primary uppercase tracking-wider">
-                  <KeyIcon className="w-4 h-4" />
-                  DB SYS Password
-                </label>
+                <div className="flex items-center justify-between">
+                  <label className="flex items-center gap-2 text-xs font-bold text-text-primary uppercase tracking-wider">
+                    <KeyIcon className="w-4 h-4" />
+                    DB SYS Password
+                  </label>
+                  <button type="button" onClick={() => setShowDbSysPassword(v => !v)} className="text-text-muted hover:text-text-primary transition-colors">
+                    {showDbSysPassword ? <EyeSlashIcon className="w-4 h-4" /> : <EyeIcon className="w-4 h-4" />}
+                  </button>
+                </div>
                 <input
-                  type="password"
+                  type={showDbSysPassword ? 'text' : 'password'}
                   value={formData.db_sys_password}
                   onChange={handleInputChange('db_sys_password')}
                   placeholder="Oracle SYS password for backup/restore"
@@ -1017,9 +1034,14 @@ export function InstallationForm() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">DB SSH Password</label>
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">DB SSH Password</label>
+                    <button type="button" onClick={() => setShowDbSshPassword(v => !v)} className="text-text-muted hover:text-text-primary transition-colors">
+                      {showDbSshPassword ? <EyeSlashIcon className="w-4 h-4" /> : <EyeIcon className="w-4 h-4" />}
+                    </button>
+                  </div>
                   <input
-                    type="password"
+                    type={showDbSshPassword ? 'text' : 'password'}
                     value={formData.db_ssh_password}
                     onChange={handleInputChange('db_ssh_password')}
                     placeholder="********"
@@ -1205,11 +1227,14 @@ export function InstallationForm() {
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                    Default Schema Password
-                  </label>
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">Default Schema Password</label>
+                    <button type="button" onClick={() => setShowSchemaPassword(v => !v)} className="text-text-muted hover:text-text-primary transition-colors">
+                      {showSchemaPassword ? <EyeSlashIcon className="w-4 h-4" /> : <EyeIcon className="w-4 h-4" />}
+                    </button>
+                  </div>
                   <input
-                    type="password"
+                    type={showSchemaPassword ? 'text' : 'password'}
                     value={formData.schema_default_password}
                     onChange={handleInputChange('schema_default_password')}
                     placeholder="Password1"
@@ -1503,11 +1528,14 @@ export function InstallationForm() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-xs font-bold text-text-primary uppercase tracking-wider">
-                      WEB_SERVICE_PASSWORD
-                    </label>
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-bold text-text-primary uppercase tracking-wider">WEB_SERVICE_PASSWORD</label>
+                      <button type="button" onClick={() => setShowWebServicePassword(v => !v)} className="text-text-muted hover:text-text-primary transition-colors">
+                        {showWebServicePassword ? <EyeSlashIcon className="w-4 h-4" /> : <EyeIcon className="w-4 h-4" />}
+                      </button>
+                    </div>
                     <input
-                      type="password"
+                      type={showWebServicePassword ? 'text' : 'password'}
                       value={formData.prop_web_service_password}
                       onChange={handleInputChange('prop_web_service_password')}
                       placeholder="Oracle@123"

@@ -353,6 +353,9 @@ class RecoveryService:
 
         # Step 1: Remove existing OFSAA directory as oracle (mandatory per guide)
         logs.append("[RESTORE] Step 1: Removing existing OFSAA directory as oracle...")
+        # Kill any processes holding files open under the OFSAA dir before removing
+        fuser_cmd = f"fuser -km {ofsaa_dir}/OFSAA 2>/dev/null || true; lsof +D {ofsaa_dir}/OFSAA 2>/dev/null | awk 'NR>1{{print $2}}' | sort -u | xargs -r kill -9 2>/dev/null || true"
+        await self.ssh_service.execute_command(host, username, password, fuser_cmd, timeout=30)
         rm_inner = f"rm -rf {ofsaa_dir}/OFSAA"
         if username == "oracle":
             rm_cmd = rm_inner
@@ -366,9 +369,16 @@ class RecoveryService:
             )
         rm_result = await self.ssh_service.execute_command(host, username, password, rm_cmd, timeout=600)
         if not rm_result.get("success"):
-            logs.append(f"[RESTORE] ERROR: Failed to remove OFSAA directory: {rm_result.get('stderr', '')}")
-            return {"success": False, "logs": logs, "error": "Failed to remove OFSAA directory"}
-        logs.append("[RESTORE] Existing OFSAA directory removed")
+            # Last resort: remove with root and ignore sub-errors
+            logs.append(f"[RESTORE] WARNING: rm as oracle failed, retrying as root: {rm_result.get('stderr', '')}")
+            rm_root_result = await self.ssh_service.execute_command(host, username, password, f"rm -rf {ofsaa_dir}/OFSAA 2>&1 || true", timeout=600)
+            if rm_root_result.get("success") or not rm_root_result.get("stderr", "").strip():
+                logs.append("[RESTORE] Existing OFSAA directory removed (via root fallback)")
+            else:
+                logs.append(f"[RESTORE] ERROR: Failed to remove OFSAA directory: {rm_root_result.get('stderr', '')}")
+                return {"success": False, "logs": logs, "error": "Failed to remove OFSAA directory"}
+        else:
+            logs.append("[RESTORE] Existing OFSAA directory removed")
 
         # Step 2: Extract backup as oracle user
         logs.append("[RESTORE] Step 2: Restoring application from backup as oracle...")

@@ -1,0 +1,22 @@
+{
+  "app_backup": {
+    "path": "/u01/OFSAA_BKP_ECM_20260420_141730.tar.gz",
+    "size": null
+  },
+  "app_host": "192.168.0.39",
+  "created_at": "2026-04-24T13:28:55Z",
+  "db_backup": {
+    "dump_prefix": "ofs_ECM_bkp_20260424_132855",
+    "dump_timestamp": "20260424_132855",
+    "metadata_path": "/u01/backup/ofsaa/restore_metadata_ECM_20260424_132855.sql",
+    "metadata_size": null
+  },
+  "db_host": "192.168.0.48",
+  "db_service": "OFSAAPDB2",
+  "schemas": [
+    "OFSATOMIC1",
+    "OFSCONFIG1"
+  ],
+  "status": "complete",
+  "tag": "ECM"
+}

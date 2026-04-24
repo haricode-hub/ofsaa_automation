@@ -1,0 +1,22 @@
+{
+  "app_backup": {
+    "path": "/u01/OFSAA_BKP_BD_20260417_114422.tar.gz",
+    "size": null
+  },
+  "app_host": "192.168.0.39",
+  "created_at": "2026-04-20T14:22:48Z",
+  "db_backup": {
+    "dump_prefix": "ofs_BD_bkp_20260420_142248",
+    "dump_timestamp": "20260420_142248",
+    "metadata_path": "/u01/backup/ofsaa/restore_metadata_BD_20260420_142248.sql",
+    "metadata_size": null
+  },
+  "db_host": "192.168.0.48",
+  "db_service": "OFSAAPDB2",
+  "schemas": [
+    "OFSATOMIC1",
+    "OFSCONFIG1"
+  ],
+  "status": "complete",
+  "tag": "BD"
+}
