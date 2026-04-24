@@ -1,5 +1,116 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any, Optional
 import os
+
+
+# ---------------------------------------------------------------------------
+# Backup / Restore defaults — used by build_backup_params() as last-resort
+# fallbacks when the request does not supply a value.
+# ---------------------------------------------------------------------------
+DEFAULT_SCHEMA_ATOMIC: str = "OFSATOMIC"
+DEFAULT_SCHEMA_CONFIG: str = "OFSCONFIG"
+DEFAULT_ORACLE_SID_BACKUP: str = "OFSAADB"
+
+
+@dataclass
+class BackupParams:
+    """Single source of truth for all backup/restore parameters.
+
+    Always built via build_backup_params(request, tag).
+    Never construct manually at call sites.
+
+    Fields
+    ------
+    tag            : "BD" | "ECM" | "SANC"
+    db_service     : Oracle PDB / service name (from UI)
+    schema_atomic  : ATOMIC schema name (e.g. OFSATOMIC1)
+    schema_config  : CONFIG schema name (e.g. OFSCONFIG1)
+    db_sys_password: Oracle SYS password
+    oracle_sid     : Oracle SID on DB host
+    app_host/username/password : SSH creds for application server
+    db_ssh_*       : SSH creds for DB server (if separate from app server)
+    """
+    tag: str
+    db_service: str
+    schema_atomic: str
+    schema_config: str
+    db_sys_password: str
+    oracle_sid: str
+    app_host: str
+    app_username: str
+    app_password: str
+    db_ssh_host: Optional[str] = None
+    db_ssh_username: Optional[str] = None
+    db_ssh_password: Optional[str] = None
+
+    @property
+    def effective_db_host(self) -> str:
+        return self.db_ssh_host or self.app_host
+
+    @property
+    def effective_db_username(self) -> str:
+        return self.db_ssh_username or self.app_username
+
+    @property
+    def effective_db_password(self) -> str:
+        return self.db_ssh_password or self.app_password
+
+    @property
+    def schemas(self) -> list:
+        return [s for s in [self.schema_atomic, self.schema_config] if s]
+
+
+def build_backup_params(request: Any, tag: str) -> BackupParams:
+    """Resolve all backup/restore parameters from a request for the given tag.
+
+    Priority chain:
+        BD   -> request.schema_*
+        ECM  -> request.ecm_schema_*  -> BD fields
+        SANC -> request.sanc_schema_* -> ECM fields -> BD fields
+
+    This is the ONLY place where schema names, db_service, and SSH credentials
+    are resolved.  All callers (router, governor, recovery) must use this
+    function instead of reading request fields directly.
+    """
+    # BD layer
+    bd_atomic   = request.schema_atomic_schema_name or DEFAULT_SCHEMA_ATOMIC
+    bd_config   = request.schema_config_schema_name or DEFAULT_SCHEMA_CONFIG
+    bd_service  = request.schema_jdbc_service or ""
+
+    # ECM layer (fallback to BD)
+    ecm_atomic  = getattr(request, "ecm_schema_atomic_schema_name", None) or bd_atomic
+    ecm_config  = getattr(request, "ecm_schema_config_schema_name", None) or bd_config
+    ecm_service = getattr(request, "ecm_schema_jdbc_service", None) or bd_service
+
+    # SANC layer (fallback to ECM then BD)
+    sanc_atomic  = getattr(request, "sanc_schema_atomic_schema_name", None) or ecm_atomic
+    sanc_config  = getattr(request, "sanc_schema_config_schema_name", None) or ecm_config
+    sanc_service = getattr(request, "sanc_schema_jdbc_service", None) or ecm_service
+
+    _tag_map: dict = {
+        "BD":   (bd_atomic,   bd_config,   bd_service),
+        "ECM":  (ecm_atomic,  ecm_config,  ecm_service),
+        "SANC": (sanc_atomic, sanc_config, sanc_service),
+    }
+    if tag not in _tag_map:
+        raise ValueError(f"Unsupported backup tag: {tag!r}")
+
+    schema_atomic, schema_config, db_service = _tag_map[tag]
+
+    return BackupParams(
+        tag=tag,
+        db_service=db_service,
+        schema_atomic=schema_atomic,
+        schema_config=schema_config,
+        db_sys_password=getattr(request, "db_sys_password", None) or "",
+        oracle_sid=getattr(request, "oracle_sid", None) or DEFAULT_ORACLE_SID_BACKUP,
+        app_host=request.host,
+        app_username=request.username,
+        app_password=request.password,
+        db_ssh_host=getattr(request, "db_ssh_host", None),
+        db_ssh_username=getattr(request, "db_ssh_username", None),
+        db_ssh_password=getattr(request, "db_ssh_password", None),
+    )
 
 
 @dataclass(frozen=True)

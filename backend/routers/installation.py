@@ -268,7 +268,9 @@ async def _restore_on_sanc_failure(
         await tm.append_output(task_id, "[RECOVERY] WARNING: db_sys_password or schema_jdbc_service not provided.")
         await tm.append_output(task_id, "[RECOVERY] Cannot auto-restore DB schemas. Manual restore required.")
 
-    restore_tags = ["ECM", "BD"] if request.install_ecm else ["BD"]
+    # Always try ECM first — ECM may have been installed in a prior run even if install_ecm=False now.
+    # select_restore_manifest validates each tag and falls back gracefully if no ECM manifest exists.
+    restore_tags = ["ECM", "BD"]
     manifest_result = await svc.select_restore_manifest(
         request,
         restore_tags,
@@ -314,18 +316,20 @@ async def _take_backup(
     request: InstallationRequest,
     tag: str,
     trace,
-    *,
-    schema_config: Optional[str] = None,
-    schema_atomic: Optional[str] = None,
-    db_service: Optional[str] = None,
 ) -> None:
-    """Take application tar + DB schema backup with given tag."""
+    """Take application tar + DB schema backup with given tag.
+
+    All schema/DB parameters resolved via build_backup_params(request, tag) —
+    the single source of truth.  No schema names are passed as arguments.
+    """
+    from core.config import build_backup_params
+    params = build_backup_params(request, tag)
     app_backup_path: Optional[str] = None
 
     # Application backup
     await tm.update_status(task_id, "running", f"Taking application backup (tar) [{tag}]")
     app_result = await svc.backup_application(
-        request.host, request.username, request.password, backup_tag=tag,
+        params.app_host, params.app_username, params.app_password, backup_tag=tag,
     )
     await tm.append_output(task_id, "\n".join(app_result.get("logs", [])))
     if not app_result.get("success"):
@@ -335,20 +339,18 @@ async def _take_backup(
         await trace(f"{tag} application backup completed")
 
     # DB schema backup
-    db_sys_pass = request.db_sys_password
-    db_svc = db_service or request.schema_jdbc_service
-    if db_sys_pass and db_svc:
+    if params.db_sys_password and params.db_service:
         await tm.update_status(task_id, "running", f"Taking DB schema backup [{tag}]")
         db_result = await svc.backup_db_schemas(
-            request.host, request.username, request.password,
-            db_sys_password=db_sys_pass,
-            db_jdbc_service=db_svc,
-            db_oracle_sid=getattr(request, "oracle_sid", None) or "OFSAADB",
-            schema_config_schema_name=schema_config or request.schema_config_schema_name,
-            schema_atomic_schema_name=schema_atomic or request.schema_atomic_schema_name,
-            db_ssh_host=getattr(request, "db_ssh_host", None),
-            db_ssh_username=getattr(request, "db_ssh_username", None),
-            db_ssh_password=getattr(request, "db_ssh_password", None),
+            params.app_host, params.app_username, params.app_password,
+            db_sys_password=params.db_sys_password,
+            db_jdbc_service=params.db_service,
+            db_oracle_sid=params.oracle_sid,
+            schema_config_schema_name=params.schema_config,
+            schema_atomic_schema_name=params.schema_atomic,
+            db_ssh_host=params.db_ssh_host,
+            db_ssh_username=params.db_ssh_username,
+            db_ssh_password=params.db_ssh_password,
         )
         await tm.append_output(task_id, "\n".join(db_result.get("logs", [])))
         if not db_result.get("success"):
@@ -360,8 +362,6 @@ async def _take_backup(
             tm.bd_checkpoint["host"] = request.host
             tm.bd_checkpoint["timestamp"] = datetime.now().isoformat()
 
-            schema_names = [schema for schema in [schema_atomic or request.schema_atomic_schema_name, schema_config or request.schema_config_schema_name] if schema]
-            manifest_result = None
             if app_backup_path and db_result.get("timestamp") and db_result.get("dump_prefix"):
                 manifest_result = svc.record_backup_manifest(
                     request=request,
@@ -369,8 +369,8 @@ async def _take_backup(
                     app_backup_path=app_backup_path,
                     dump_prefix=db_result["dump_prefix"],
                     dump_timestamp=db_result["timestamp"],
-                    db_service=db_svc,
-                    schemas=schema_names,
+                    db_service=params.db_service,
+                    schemas=params.schemas,
                 )
                 manifest_path = manifest_result.get("manifest_path")
                 if manifest_path:
@@ -813,6 +813,18 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await tm.append_output(task_id, "[INFO] BD Pack backup phase complete")
             await tm.append_output(task_id, "[CHECKPOINT] BD Pack checkpoint saved. ECM can be restored to this point if it fails.")
 
+            # In force_reinstall mode, BD was wiped and reinstalled from scratch.
+            # Purge stale ECM and SANC manifests so the backup gate doesn't mistakenly
+            # reuse manifests that no longer represent the current server state.
+            if request.installation_mode == "force_reinstall":
+                purged = svc.backup_restore_governor.manifests.purge_manifests_for_tags(request.host, ["ECM", "SANC"])
+                if purged:
+                    await tm.append_output(task_id, f"[BACKUP-GOVERNOR] Force reinstall: purged {len(purged)} stale ECM/SANC manifest(s)")
+                    for p in purged:
+                        await tm.append_output(task_id, f"[BACKUP-GOVERNOR]   Removed: {p}")
+                else:
+                    await tm.append_output(task_id, "[BACKUP-GOVERNOR] Force reinstall: no stale ECM/SANC manifests to purge")
+
         else:
             if request.resume_from_checkpoint and tm.bd_checkpoint.get("completed"):
                 await tm.append_output(task_id, "[INFO] Resuming from BD Pack backup - skipping BD Pack installation")
@@ -976,12 +988,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
 
             # ECM success backup
             await tm.append_output(task_id, "\n[INFO] ==================== ECM SUCCESS BACKUP ====================")
-            await _take_backup(
-                task_id, svc, request, "ECM", trace,
-                schema_config=getattr(request, "ecm_schema_config_schema_name", None) or request.schema_config_schema_name,
-                schema_atomic=getattr(request, "ecm_schema_atomic_schema_name", None) or request.schema_atomic_schema_name,
-                db_service=getattr(request, "ecm_schema_jdbc_service", None) or request.schema_jdbc_service,
-            )
+            await _take_backup(task_id, svc, request, "ECM", trace)
             await tm.append_output(task_id, "[INFO] ECM backup phase complete")
 
             # Clear BD checkpoint after successful ECM
@@ -1120,12 +1127,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
 
             # SANC success backup
             await tm.append_output(task_id, "\n[INFO] ==================== SANC SUCCESS BACKUP ====================")
-            await _take_backup(
-                task_id, svc, request, "SANC", trace,
-                schema_config=request.sanc_schema_config_schema_name,
-                schema_atomic=request.sanc_schema_atomic_schema_name,
-                db_service=request.sanc_schema_jdbc_service,
-            )
+            await _take_backup(task_id, svc, request, "SANC", trace)
             await tm.append_output(task_id, "[INFO] SANC Pack backup phase complete")
 
         # ═══════════════════════════════════════════════════════════════════

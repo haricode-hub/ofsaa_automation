@@ -275,17 +275,19 @@ class RecoveryService:
         backup_tag: str = "BD",
         on_log: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> dict:
-        """Run DB schema backup using Data Pump (expdp) + metadata capture."""
-        # Build schemas string from UI fields
-        schemas = []
-        if schema_atomic_schema_name:
-            schemas.append(schema_atomic_schema_name)
-        else:
-            schemas.append("OFSATOMIC")
-        if schema_config_schema_name:
-            schemas.append(schema_config_schema_name)
-        else:
-            schemas.append("OFSCONFIG")
+        """Run DB schema backup using Data Pump (expdp) + metadata capture.
+
+        Schema names must be supplied explicitly by the caller.
+        Use build_backup_params() at the call site to guarantee correct values.
+        Hardcoded fallbacks have been intentionally removed.
+        """
+        schemas = [s for s in [schema_atomic_schema_name, schema_config_schema_name] if s]
+        if not schemas:
+            return {
+                "success": False,
+                "logs": ["[BACKUP] ERROR: No schema names provided. Use build_backup_params() to resolve them."],
+                "error": "No schema names provided for backup",
+            }
         schemas_str = ",".join(schemas)
 
         # Resolve DB host SSH credentials

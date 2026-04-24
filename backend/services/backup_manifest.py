@@ -1,5 +1,5 @@
 import json
-import tempfile
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -7,10 +7,14 @@ from typing import Any, Optional
 from services.ssh_service import SSHService
 from services.utils import shell_escape
 
+# Default: <backend_root>/backup_manifests/ — survives backend restarts.
+# Override with OFSAA_BACKUP_MANIFEST_DIR environment variable.
+_DEFAULT_MANIFEST_DIR = Path(os.getenv("OFSAA_BACKUP_MANIFEST_DIR", "")) if os.getenv("OFSAA_BACKUP_MANIFEST_DIR") else Path(__file__).resolve().parent.parent / "backup_manifests"
+
 
 class BackupManifestService:
     def __init__(self, manifest_dir: Optional[str] = None) -> None:
-        base_dir = Path(manifest_dir) if manifest_dir else Path(tempfile.gettempdir()) / "ofsaa_backup_manifests"
+        base_dir = Path(manifest_dir) if manifest_dir else _DEFAULT_MANIFEST_DIR
         self.manifest_dir = base_dir
         self.manifest_dir.mkdir(parents=True, exist_ok=True)
 
@@ -80,6 +84,22 @@ class BackupManifestService:
         data = json.loads(path.read_text(encoding="utf-8"))
         data["manifest_path"] = str(path)
         return data
+
+    def purge_manifests_for_tags(self, host: str, tags: list[str]) -> list[str]:
+        """Delete all manifest files for the given tags on a host.
+
+        Called after BD is force-reinstalled to invalidate stale ECM/SANC manifests
+        that no longer represent the current server state.
+
+        Returns list of deleted file paths.
+        """
+        host_dir = self._host_dir(host)
+        deleted: list[str] = []
+        for tag in tags:
+            for path in host_dir.glob(f"{tag}_*.json"):
+                path.unlink(missing_ok=True)
+                deleted.append(str(path))
+        return deleted
 
     async def validate_manifest(
         self,

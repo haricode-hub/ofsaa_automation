@@ -1,5 +1,6 @@
 from typing import Any, Callable, Awaitable, Optional
 
+from core.config import build_backup_params
 from services.backup_manifest import BackupManifestService
 from services.recovery_service import RecoveryService
 
@@ -9,55 +10,27 @@ class BackupRestoreGovernorService:
         self.recovery = recovery_service
         self.manifests = BackupManifestService()
 
-    def _resolve_backup_target(self, request, module_name: str) -> dict[str, Any]:
+    def _gate_tag_for_module(self, request, module_name: str) -> str:
+        """Return the backup tag to validate/create before running module_name.
+
+        ECM  always gates on BD.
+        SANC gates on ECM if an ECM manifest exists on disk, otherwise on BD.
+        In force_reinstall mode SANC always gates on BD (ECM state is gone).
+        """
         if module_name == "ECM":
-            return {
-                "tag": "BD",
-                "db_service": request.schema_jdbc_service,
-                "schema_config": request.schema_config_schema_name,
-                "schema_atomic": request.schema_atomic_schema_name,
-            }
+            return "BD"
 
         if module_name == "SANC":
-            if getattr(request, "install_ecm", False):
-                return {
-                    "tag": "ECM",
-                    "db_service": request.ecm_schema_jdbc_service or request.schema_jdbc_service,
-                    "schema_config": request.ecm_schema_config_schema_name or request.schema_config_schema_name,
-                    "schema_atomic": request.ecm_schema_atomic_schema_name or request.schema_atomic_schema_name,
-                }
-            return {
-                "tag": "BD",
-                "db_service": request.schema_jdbc_service,
-                "schema_config": request.schema_config_schema_name,
-                "schema_atomic": request.schema_atomic_schema_name,
-            }
+            # force_reinstall: BD just wiped + reinstalled — any ECM manifest is stale
+            if getattr(request, "installation_mode", "fresh") == "force_reinstall":
+                return "BD"
+            # Check for ECM manifest from a prior run (even if install_ecm=False this run)
+            ecm_manifest = self.manifests.load_latest_manifest(request.host, "ECM")
+            if ecm_manifest or getattr(request, "install_ecm", False):
+                return "ECM"
+            return "BD"
 
         raise ValueError(f"Unsupported module for backup gating: {module_name}")
-
-    def _resolve_tag_target(self, request, backup_tag: str) -> dict[str, Any]:
-        if backup_tag == "BD":
-            return {
-                "tag": "BD",
-                "db_service": request.schema_jdbc_service,
-                "schema_config": request.schema_config_schema_name,
-                "schema_atomic": request.schema_atomic_schema_name,
-            }
-        if backup_tag == "ECM":
-            return {
-                "tag": "ECM",
-                "db_service": request.ecm_schema_jdbc_service or request.schema_jdbc_service,
-                "schema_config": request.ecm_schema_config_schema_name or request.schema_config_schema_name,
-                "schema_atomic": request.ecm_schema_atomic_schema_name or request.schema_atomic_schema_name,
-            }
-        if backup_tag == "SANC":
-            return {
-                "tag": "SANC",
-                "db_service": request.sanc_schema_jdbc_service or request.ecm_schema_jdbc_service or request.schema_jdbc_service,
-                "schema_config": request.sanc_schema_config_schema_name or request.ecm_schema_config_schema_name or request.schema_config_schema_name,
-                "schema_atomic": request.sanc_schema_atomic_schema_name or request.ecm_schema_atomic_schema_name or request.schema_atomic_schema_name,
-            }
-        raise ValueError(f"Unsupported backup tag: {backup_tag}")
 
     async def select_restore_manifest(
         self,
@@ -72,30 +45,25 @@ class BackupRestoreGovernorService:
             if on_log is not None:
                 await on_log(message)
 
-        db_host = getattr(request, "db_ssh_host", None) or request.host
-        db_username = getattr(request, "db_ssh_username", None) or request.username
-        db_password = getattr(request, "db_ssh_password", None) or request.password
-
         for tag in restore_tags:
             manifest = self.manifests.load_latest_manifest(request.host, tag)
             if not manifest:
                 await log(f"[BACKUP-GOVERNOR] No manifest found for restore tag={tag}")
                 continue
 
-            target = self._resolve_tag_target(request, tag)
-            expected_schemas = [schema for schema in [target["schema_atomic"], target["schema_config"]] if schema]
+            params = build_backup_params(request, tag)
             validation = await self.manifests.validate_manifest(
                 manifest,
                 ssh_service=self.recovery.ssh_service,
-                app_ssh_host=request.host,
-                app_ssh_username=request.username,
-                app_ssh_password=request.password,
-                db_ssh_host=db_host,
-                db_ssh_username=db_username,
-                db_ssh_password=db_password,
+                app_ssh_host=params.app_host,
+                app_ssh_username=params.app_username,
+                app_ssh_password=params.app_password,
+                db_ssh_host=params.effective_db_host,
+                db_ssh_username=params.effective_db_username,
+                db_ssh_password=params.effective_db_password,
                 expected_tag=tag,
-                expected_db_service=target["db_service"],
-                expected_schemas=expected_schemas,
+                expected_db_service=params.db_service,
+                expected_schemas=params.schemas,
             )
             for entry in validation.get("logs", []):
                 await log(entry)
@@ -119,38 +87,29 @@ class BackupRestoreGovernorService:
             if on_log is not None:
                 await on_log(message)
 
-        target = self._resolve_backup_target(request, module_name)
-        backup_tag = target["tag"]
-        db_service = target["db_service"]
-        schema_config = target["schema_config"]
-        schema_atomic = target["schema_atomic"]
-        expected_schemas = [schema for schema in [schema_atomic, schema_config] if schema]
+        backup_tag = self._gate_tag_for_module(request, module_name)
+        params = build_backup_params(request, backup_tag)
 
-        if not db_service:
+        if not params.db_service:
             await log(f"[BACKUP-GOVERNOR] Cannot validate {backup_tag} backup: DB service is missing")
             return {"success": False, "logs": logs, "error": "DB service missing for backup validation"}
 
         manifest = self.manifests.load_latest_manifest(request.host, backup_tag)
-        db_host = getattr(request, "db_ssh_host", None) or request.host
-        db_username = getattr(request, "db_ssh_username", None) or request.username
-        db_password = getattr(request, "db_ssh_password", None) or request.password
 
         if manifest:
-            await log(
-                f"[BACKUP-GOVERNOR] Found latest {backup_tag} manifest: {manifest.get('manifest_path', 'unknown path')}"
-            )
+            await log(f"[BACKUP-GOVERNOR] Found latest {backup_tag} manifest: {manifest.get('manifest_path', 'unknown path')}")
             validation = await self.manifests.validate_manifest(
                 manifest,
                 ssh_service=self.recovery.ssh_service,
-                app_ssh_host=request.host,
-                app_ssh_username=request.username,
-                app_ssh_password=request.password,
-                db_ssh_host=db_host,
-                db_ssh_username=db_username,
-                db_ssh_password=db_password,
+                app_ssh_host=params.app_host,
+                app_ssh_username=params.app_username,
+                app_ssh_password=params.app_password,
+                db_ssh_host=params.effective_db_host,
+                db_ssh_username=params.effective_db_username,
+                db_ssh_password=params.effective_db_password,
                 expected_tag=backup_tag,
-                expected_db_service=db_service,
-                expected_schemas=expected_schemas,
+                expected_db_service=params.db_service,
+                expected_schemas=params.schemas,
             )
             for entry in validation.get("logs", []):
                 await log(entry)
@@ -166,14 +125,14 @@ class BackupRestoreGovernorService:
 
         await log(f"[BACKUP-GOVERNOR] No proper {backup_tag} backup found. Taking a fresh backup.")
 
-        if not request.db_sys_password:
+        if not params.db_sys_password:
             await log("[BACKUP-GOVERNOR] Cannot create backup: db_sys_password is missing")
             return {"success": False, "logs": logs, "error": "db_sys_password missing for backup creation"}
 
         app_result = await self.recovery.backup_application(
-            request.host,
-            request.username,
-            request.password,
+            params.app_host,
+            params.app_username,
+            params.app_password,
             backup_tag=backup_tag,
         )
         for entry in app_result.get("logs", []):
@@ -182,17 +141,17 @@ class BackupRestoreGovernorService:
             return {"success": False, "logs": logs, "error": app_result.get("error") or "Application backup failed"}
 
         db_result = await self.recovery.backup_db_schemas(
-            request.host,
-            request.username,
-            request.password,
-            db_sys_password=request.db_sys_password,
-            db_jdbc_service=db_service,
-            db_oracle_sid=getattr(request, "oracle_sid", None) or "OFSAADB",
-            schema_config_schema_name=schema_config,
-            schema_atomic_schema_name=schema_atomic,
-            db_ssh_host=getattr(request, "db_ssh_host", None),
-            db_ssh_username=getattr(request, "db_ssh_username", None),
-            db_ssh_password=getattr(request, "db_ssh_password", None),
+            params.app_host,
+            params.app_username,
+            params.app_password,
+            db_sys_password=params.db_sys_password,
+            db_jdbc_service=params.db_service,
+            db_oracle_sid=params.oracle_sid,
+            schema_config_schema_name=params.schema_config,
+            schema_atomic_schema_name=params.schema_atomic,
+            db_ssh_host=params.db_ssh_host,
+            db_ssh_username=params.db_ssh_username,
+            db_ssh_password=params.db_ssh_password,
             backup_tag=backup_tag,
         )
         for entry in db_result.get("logs", []):
@@ -208,11 +167,11 @@ class BackupRestoreGovernorService:
 
         metadata_path = f"/u01/backup/ofsaa/restore_metadata_{backup_tag}_{dump_timestamp}.sql"
         manifest_payload = self.manifests.build_manifest(
-            app_host=request.host,
-            db_host=db_host,
+            app_host=params.app_host,
+            db_host=params.effective_db_host,
             tag=backup_tag,
-            db_service=db_service,
-            schemas=expected_schemas,
+            db_service=params.db_service,
+            schemas=params.schemas,
             app_backup_path=app_result.get("backup_path", ""),
             dump_prefix=dump_prefix,
             dump_timestamp=dump_timestamp,
