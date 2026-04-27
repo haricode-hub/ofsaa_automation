@@ -234,49 +234,8 @@ class RestoreService:
         # ── Pre-flight checks ──
         await log("[RESTORE] Step 0: Pre-flight checks")
 
-        # ── Ensure Oracle CDB instance is running ──
-        # Connect locally as sysdba (no TNS) — works even when the instance is down.
-        instance_status = await self._run_sql_silent(
-            host, user, passwd, env, sys_pass,
-            "SELECT STATUS FROM v$instance;",
-        )
-        _inst_up = any(
-            kw in instance_status.upper()
-            for kw in ("OPEN", "MOUNTED", "STARTED", "NOMOUNT")
-        )
-        if not _inst_up:
-            await log(
-                f"[RESTORE] Oracle instance appears down (got: {instance_status.strip() or 'empty/error'}). "
-                f"Attempting STARTUP..."
-            )
-            startup_out = await self._run_sql(
-                host, user, passwd, env, sys_pass,
-                "STARTUP;",
-                timeout=300,
-            )
-            for _line in (startup_out or "").splitlines():
-                if _line.strip():
-                    await log(f"[RESTORE]   {_line}")
-            # Re-check instance
-            instance_status = await self._run_sql_silent(
-                host, user, passwd, env, sys_pass,
-                "SELECT STATUS FROM v$instance;",
-            )
-            _inst_up = any(
-                kw in instance_status.upper()
-                for kw in ("OPEN", "MOUNTED", "STARTED", "NOMOUNT")
-            )
-            if not _inst_up:
-                await log(
-                    f"[RESTORE] ERROR: Oracle instance still not available after STARTUP attempt. "
-                    f"Got: {instance_status.strip()}"
-                )
-                return {"success": False, "logs": logs, "error": "Oracle instance not available"}
-            await log("[RESTORE]   Oracle instance started ✓")
-        else:
-            await log(f"[RESTORE]   Oracle instance: {instance_status.strip()} ✓")
-
         # ── Ensure PDB is open READ WRITE ──
+        # (We connect as sysdba to the CDB — v$pdbs is visible from CDB$ROOT)
         pdb_status = await self._run_sql_silent(
             host, user, passwd, env, sys_pass,
             f"SELECT open_mode FROM v$pdbs WHERE name = '{pdb_name}';",
@@ -443,8 +402,10 @@ ORDER BY username;
 
         # ── Step 4: Run impdp ──
         await log(f"[RESTORE] Step 4: Running impdp (schemas={schemas}, parallel=4)")
-        impdp_cmd = (
-            f'{env} impdp "\'sys/{sys_pass}@{pdb_name} AS SYSDBA\'" '
+        await log("[RESTORE]   This may take several minutes...")
+        impdp_log = f"{BACKUP_DIR}/restore_{backup_tag.lower()}.log"
+        impdp_inner = (
+            f'impdp "\'sys/{sys_pass}@{pdb_name} AS SYSDBA\'" '
             f'directory=BACKUP_DIR_OBJ '
             f'dumpfile={dump_file} '
             f'logfile=restore_{backup_tag.lower()}.log '
@@ -452,19 +413,43 @@ ORDER BY username;
             f'parallel=4 '
             f'table_exists_action=REPLACE'
         )
+        # Run impdp via nohup background + PID tracking so SSH keepalive
+        # timeouts cannot kill a long-running import.
+        impdp_cmd = (
+            f'{env} nohup {impdp_inner} > {BACKUP_DIR}/impdp_shell.log 2>&1 & '
+            f'IMPDP_PID=$!; echo "IMPDP_PID=$IMPDP_PID"; '
+            f'while kill -0 $IMPDP_PID 2>/dev/null; do sleep 10; done; '
+            f'wait $IMPDP_PID; echo "IMPDP_EXIT=$?"'
+        )
 
         impdp_result = await self.ssh.execute_command(host, user, passwd, impdp_cmd, timeout=7200)
         impdp_out = (impdp_result.get("stdout") or "").strip()
-        impdp_err = (impdp_result.get("stderr") or "").strip()
 
         for line in impdp_out.splitlines():
             await log(f"[RESTORE] {line}")
-        if impdp_err.strip():
-            await log(f"[RESTORE] STDERR: {impdp_err}")
 
-        impdp_rc = impdp_result.get("exit_code", -1)
-        if impdp_rc != 0:
-            await log(f"[RESTORE] WARNING: impdp exit code = {impdp_rc} (may have warnings)")
+        if "IMPDP_EXIT=0" in impdp_out:
+            await log("[RESTORE]   impdp completed successfully ✓")
+        elif "IMPDP_EXIT=" in impdp_out:
+            await log("[RESTORE] WARNING: impdp finished with non-zero exit code (may have warnings)")
+            tail_result = await self.ssh.execute_command(
+                host, user, passwd, f"tail -30 {impdp_log} 2>/dev/null"
+            )
+            tail_out = (tail_result.get("stdout") or "").strip()
+            if tail_out:
+                await log(f"[RESTORE]   impdp log (last 30 lines):")
+                for line in tail_out.splitlines():
+                    await log(f"[RESTORE]     {line}")
+        else:
+            await log("[RESTORE] WARNING: Could not determine impdp exit status")
+            tail_result = await self.ssh.execute_command(
+                host, user, passwd, f"tail -30 {impdp_log} 2>/dev/null"
+            )
+            tail_out = (tail_result.get("stdout") or "").strip()
+            if tail_out:
+                await log(f"[RESTORE]   impdp log (last 30 lines):")
+                for line in tail_out.splitlines():
+                    await log(f"[RESTORE]     {line}")
 
         # ── Step 5: Recompile invalid objects ──
         await log("[RESTORE] Step 5: Recompiling invalid objects")
