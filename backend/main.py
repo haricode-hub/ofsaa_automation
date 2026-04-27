@@ -65,9 +65,6 @@ async def startup_recovery() -> None:
 # ── WebSocket ────────────────────────────────────────────────────────────────
 @app.websocket("/ws/{task_id}")
 async def websocket_endpoint(websocket: WebSocket, task_id: str):
-    # Cancel any pending disconnect grace timer (client reconnected)
-    tm.cancel_disconnect_timer(task_id)
-
     await tm.ws.connect(task_id, websocket)
     logger.info("WebSocket connected for task %s", task_id)
 
@@ -95,8 +92,6 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str):
     except WebSocketDisconnect:
         tm.ws.disconnect(task_id)
         logger.info("WebSocket disconnected for task %s", task_id)
-        # Start grace timer — if no reconnect within 2 min, cancel the task
-        tm.start_disconnect_timer(task_id)
 
 
 if __name__ == "__main__":
