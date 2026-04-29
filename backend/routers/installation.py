@@ -857,6 +857,10 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await tm.append_output(task_id, "[INFO] Clearing filesystem caches before ECM Pack...")
             await svc.ssh_service.execute_command(request.host, request.username, request.password, "echo 2 | sudo tee /proc/sys/vm/drop_caches")
 
+            await tm.append_output(task_id, "[INFO] Removing old ECM_PACK_INSTALLATION_KIT folder...")
+            await svc.ssh_service.execute_command(request.host, request.username, request.password, "sudo rm -rf /u01/Installation_Kit/ECM_PACK_INSTALLATION_KIT")
+            await tm.append_output(task_id, "[OK] ECM_PACK_INSTALLATION_KIT removed")
+
             if not await ensure_valid_backup_before_module("ECM"):
                 await handle_failure("ECM backup validation failed", "Could not verify or create a proper BD backup before ECM")
                 return
@@ -1018,6 +1022,10 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
 
             await tm.append_output(task_id, "[INFO] Clearing filesystem caches before SANC Pack...")
             await svc.ssh_service.execute_command(request.host, request.username, request.password, "echo 2 | sudo tee /proc/sys/vm/drop_caches")
+
+            await tm.append_output(task_id, "[INFO] Removing old SANC_PACK_INSTALLATION_KIT folder...")
+            await svc.ssh_service.execute_command(request.host, request.username, request.password, "sudo rm -rf /u01/Installation_Kit/SANC_PACK_INSTALLATION_KIT")
+            await tm.append_output(task_id, "[OK] SANC_PACK_INSTALLATION_KIT removed")
 
             if not await ensure_valid_backup_before_module("SANC"):
                 await handle_failure("SANC backup validation failed", "Could not verify or create a proper backup before SANC")

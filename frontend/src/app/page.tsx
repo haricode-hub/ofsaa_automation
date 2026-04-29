@@ -47,11 +47,11 @@ export default function HomePage() {
               transition={{ duration: 0.5, delay: 0.1 }}
             >
               <h1 className="text-5xl lg:text-6xl xl:text-7xl font-black text-text-primary mb-4 tracking-tighter leading-none">
-                OFSAA
+                SensAi
               </h1>
               <div className="w-20 h-px bg-white mx-auto mb-4" />
               <p className="text-xs lg:text-sm text-text-secondary font-light tracking-[0.25em] uppercase">
-                Remote Installation Gateway
+                OFSAA FCCM Installation
                 <span className="inline-block w-1.5 h-1.5 bg-success rounded-full ml-3 animate-blink" />
               </p>
             </motion.div>

@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'OFSAA Installation Portal',
+  title: 'SensAi - OFSAA FCCM Installation',
   description: 'Remote Installation Gateway for Oracle Financial Services',
 }
 

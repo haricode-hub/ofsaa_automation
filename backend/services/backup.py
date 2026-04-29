@@ -283,7 +283,7 @@ ORDER BY directory_name;
         await log(f"[BACKUP]   Metadata saved: {metadata_file} ({line_count} lines)")
 
         # ── Step 4: Run expdp ──
-        await log(f"[BACKUP] Step 4: Running expdp (schemas={schemas}, parallel=4, compression=ALL)")
+        await log(f"[BACKUP] Step 4: Running expdp (schemas={schemas}, parallel=4, compression=ALL, exclude=STATISTICS)")
         expdp_inner = (
             f'expdp "\'sys/{sys_pass}@{pdb_name} AS SYSDBA\'" '
             f'directory=BACKUP_DIR_OBJ '
@@ -291,7 +291,8 @@ ORDER BY directory_name;
             f'logfile={log_file} '
             f'schemas={schemas} '
             f'parallel=4 '
-            f'compression=ALL'
+            f'compression=ALL '
+            f'exclude=STATISTICS'
         )
         expdp_cmd = (
             f'{env} nohup {expdp_inner} > {BACKUP_DIR}/expdp_shell.log 2>&1 & '
