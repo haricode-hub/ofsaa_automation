@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { BackgroundMatrix } from '@/components/BackgroundMatrix'
 import { getApiUrl, getWebSocketUrl } from '@/lib/api'
@@ -11,7 +11,7 @@ type StatusPayload = {
   status: StatusType
   step?: string
   progress?: number
-  module?: 'BD_PACK' | 'ECM_PACK' | 'SANC_PACK' | 'EAR_CREATION' | 'DATASOURCE_CREATION'
+  module?: 'BD_PACK' | 'ECM_PACK' | 'SANC_PACK' | 'EAR_CREATION' | 'DATASOURCE_CREATION' | 'BACKUP' | 'RESTORE'
 }
 
 const BD_PACK_STEPS = [
@@ -59,6 +59,20 @@ const DATASOURCE_CREATION_STEPS = [
   // Dynamic steps like "Creating ANALYST" are added at runtime
 ]
 
+const BACKUP_STEPS = [
+  'Validating backup before ECM',
+  'Validating backup before SANC',
+  'Taking application backup (tar)',
+  'Taking DB schema backup',
+]
+
+const RESTORE_STEPS = [
+  'Restoring to BD state after ECM failure',
+  'Restoring to previous state after SANC failure',
+  'Restoring application',
+  'Restoring DB schemas',
+]
+
 export default function LogsPage() {
   const params = useParams()
   const router = useRouter()
@@ -73,11 +87,14 @@ export default function LogsPage() {
   const [outputLines, setOutputLines] = useState<string[]>([])
   const [autoFollowOutput, setAutoFollowOutput] = useState(true)
   const [redirectCountdown, setRedirectCountdown] = useState<number>(redirectDelaySec)
-  const [currentModule, setCurrentModule] = useState<'BD_PACK' | 'ECM_PACK' | 'SANC_PACK' | 'EAR_CREATION' | 'DATASOURCE_CREATION'>('BD_PACK')
+  const [currentModule, setCurrentModule] = useState<'BD_PACK' | 'ECM_PACK' | 'SANC_PACK' | 'EAR_CREATION' | 'DATASOURCE_CREATION' | 'BACKUP' | 'RESTORE'>('BD_PACK')
   const [dynamicDsSteps, setDynamicDsSteps] = useState<string[]>([...DATASOURCE_CREATION_STEPS])
   const [dynamicEarSteps, setDynamicEarSteps] = useState<string[]>([...EAR_CREATION_STEPS])
+  const [dynamicBackupSteps, setDynamicBackupSteps] = useState<string[]>([...BACKUP_STEPS])
+  const [dynamicRestoreSteps, setDynamicRestoreSteps] = useState<string[]>([...RESTORE_STEPS])
   const [maxStepReached, setMaxStepReached] = useState<number>(-1)
   const [isCancelling, setIsCancelling] = useState(false)
+  const [previousModule, setPreviousModule] = useState<string>('')
   const socketRef = useRef<WebSocket | null>(null)
   const outputEndRef = useRef<HTMLDivElement>(null)
   const outputContainerRef = useRef<HTMLDivElement>(null)
@@ -91,8 +108,10 @@ export default function LogsPage() {
     if (currentModule === 'SANC_PACK') return SANC_PACK_STEPS
     if (currentModule === 'EAR_CREATION') return dynamicEarSteps
     if (currentModule === 'DATASOURCE_CREATION') return dynamicDsSteps
+    if (currentModule === 'BACKUP') return dynamicBackupSteps
+    if (currentModule === 'RESTORE') return dynamicRestoreSteps
     return BD_PACK_STEPS
-  }, [currentModule, dynamicDsSteps, dynamicEarSteps])
+  }, [currentModule, dynamicDsSteps, dynamicEarSteps, dynamicBackupSteps, dynamicRestoreSteps])
 
   // Reset maxStepReached when module changes
   useEffect(() => {
@@ -112,6 +131,8 @@ export default function LogsPage() {
     if (currentModule === 'SANC_PACK') return 'SANC Pack'
     if (currentModule === 'EAR_CREATION') return 'Deployment'
     if (currentModule === 'DATASOURCE_CREATION') return 'Datasource Creation'
+    if (currentModule === 'BACKUP') return 'Backup'
+    if (currentModule === 'RESTORE') return 'Restore'
     return 'BD Pack'
   }, [currentModule])
 
@@ -188,6 +209,10 @@ export default function LogsPage() {
           }
           // Use authoritative module from backend if available, fallback to heuristic
           if (data?.module) {
+            // Remember the module before BACKUP/RESTORE so we can return to it
+            if (data.module !== 'BACKUP' && data.module !== 'RESTORE') {
+              setPreviousModule(data.module)
+            }
             setCurrentModule(data.module)
           } else if (data?.step) {
             if (EAR_CREATION_STEPS.some(s => s === data.step)) {
@@ -207,6 +232,21 @@ export default function LogsPage() {
           // For datasource creation, dynamically add step names (e.g. "Creating ANALYST")
           if (data?.module === 'DATASOURCE_CREATION' && data?.step) {
             setDynamicDsSteps(prev => {
+              if (prev.includes(data.step!)) return prev
+              return [...prev, data.step!]
+            })
+          }
+          // For BACKUP module, dynamically add step names (tag varies)
+          if (data?.module === 'BACKUP' && data?.step) {
+            setDynamicBackupSteps(prev => {
+              if (prev.includes(data.step!)) return prev
+              // Match base name: "Taking application backup (tar) [BD]" → keep all
+              return [...prev, data.step!]
+            })
+          }
+          // For RESTORE module, dynamically add step names
+          if (data?.module === 'RESTORE' && data?.step) {
+            setDynamicRestoreSteps(prev => {
               if (prev.includes(data.step!)) return prev
               return [...prev, data.step!]
             })
@@ -299,7 +339,7 @@ export default function LogsPage() {
     }
   }
 
-  const handleDownloadLogs = async () => {
+  const handleDownloadLogs = useCallback(async () => {
     // Try to fetch full logs from backend (disk-persisted, not capped)
     try {
       const resp = await fetch(`${getApiUrl()}/api/installation/logs/${taskId}/full`)
@@ -323,9 +363,9 @@ export default function LogsPage() {
     a.download = `installation-logs-${taskId.slice(0, 8)}.txt`
     a.click()
     URL.revokeObjectURL(url)
-  }
+  }, [taskId, outputLines])
 
-  // Auto-download logs on completion or failure
+  // Auto-download logs on completion or failure (including restore-then-fail scenarios)
   const autoDownloadedRef = useRef(false)
   useEffect(() => {
     if ((status === 'completed' || status === 'failed') && outputLines.length > 0 && !autoDownloadedRef.current) {
@@ -334,7 +374,7 @@ export default function LogsPage() {
       const timer = setTimeout(() => handleDownloadLogs(), 1500)
       return () => clearTimeout(timer)
     }
-  }, [status, outputLines.length])
+  }, [status, outputLines.length, handleDownloadLogs])
 
   // Warn user before leaving if task is running (browser close triggers backend grace timer)
   useEffect(() => {

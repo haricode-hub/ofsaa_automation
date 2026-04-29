@@ -200,7 +200,7 @@ async def _restore_bd_on_ecm_failure(
 ) -> None:
     """Restore to BD state after ECM failure."""
     await tm.append_output(task_id, "\n[RECOVERY] ==================== ECM FAILURE - RESTORING BD STATE ====================")
-    await tm.update_status(task_id, "running", "Restoring to BD state after ECM failure")
+    await tm.update_status(task_id, "running", "Restoring to BD state after ECM failure", module="RESTORE")
     tm.save_task_context(task_id, rollback_status="started", rollback_module="ECM", rollback_target="BD")
 
     db_sys_pass = request.db_sys_password or getattr(request, "schema_default_password", None)
@@ -265,7 +265,7 @@ async def _restore_on_sanc_failure(
     Tries ECM backup first; falls back to BD backup if ECM backup not found.
     """
     await tm.append_output(task_id, "\n[RECOVERY] ==================== SANC FAILURE - RESTORING PREVIOUS STATE ====================")
-    await tm.update_status(task_id, "running", "Restoring to previous state after SANC failure")
+    await tm.update_status(task_id, "running", "Restoring to previous state after SANC failure", module="RESTORE")
     tm.save_task_context(task_id, rollback_status="started", rollback_module="SANC")
 
     db_sys_pass = request.db_sys_password or getattr(request, "schema_default_password", None)
@@ -340,7 +340,7 @@ async def _take_backup(
     app_backup_path: Optional[str] = None
 
     # Application backup
-    await tm.update_status(task_id, "running", f"Taking application backup (tar) [{tag}]")
+    await tm.update_status(task_id, "running", f"Taking application backup (tar) [{tag}]", module="BACKUP")
     app_result = await svc.backup_application(
         params.app_host, params.app_username, params.app_password, backup_tag=tag,
     )
@@ -353,7 +353,7 @@ async def _take_backup(
 
     # DB schema backup
     if params.db_sys_password and params.db_service:
-        await tm.update_status(task_id, "running", f"Taking DB schema backup [{tag}]")
+        await tm.update_status(task_id, "running", f"Taking DB schema backup [{tag}]", module="BACKUP")
         db_result = await svc.backup_db_schemas(
             params.app_host, params.app_username, params.app_password,
             db_sys_password=params.db_sys_password,
@@ -456,7 +456,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
 
     async def ensure_valid_backup_before_module(module_name: str) -> bool:
         await tm.append_output(task_id, f"[INFO] Validating backup gate before {module_name}...")
-        await tm.update_status(task_id, "running", f"Validating backup before {module_name}")
+        await tm.update_status(task_id, "running", f"Validating backup before {module_name}", module="BACKUP")
         result = await svc.ensure_valid_backup_before_module(
             task_id,
             request,
@@ -550,8 +550,24 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
                 "/u01/SANC_Installer_Kit", "/u01/sanc_installer_kit",
                 "/u01/Installation_Kit", "/u01/installer_kit",
             ]
-            rm_cmd = "sudo rm -rf " + " ".join(kit_dirs)
-            await svc.ssh_service.execute_command(request.host, request.username, request.password, rm_cmd)
+            rm_cmd = (
+                "sudo rm -rf "
+                + " ".join(kit_dirs)
+                + " && "
+                + " && ".join(f"test ! -e {shell_escape(path)}" for path in kit_dirs)
+            )
+            bd_cleanup_result = await svc.ssh_service.execute_command(
+                request.host,
+                request.username,
+                request.password,
+                rm_cmd,
+            )
+            if not bd_cleanup_result.get("success"):
+                await handle_failure(
+                    "Failed to clean old installer kit folders",
+                    bd_cleanup_result.get("stderr") or bd_cleanup_result.get("stdout") or "One or more installer kit folders still exist",
+                )
+                return
             await tm.append_output(task_id, "[OK] Old installer kit folders cleaned")
 
             # Step 1: Oracle user and oinstall group
@@ -858,7 +874,18 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await svc.ssh_service.execute_command(request.host, request.username, request.password, "echo 2 | sudo tee /proc/sys/vm/drop_caches")
 
             await tm.append_output(task_id, "[INFO] Removing old ECM_PACK_INSTALLATION_KIT folder...")
-            await svc.ssh_service.execute_command(request.host, request.username, request.password, "sudo rm -rf /u01/Installation_Kit/ECM_PACK_INSTALLATION_KIT")
+            ecm_cleanup_result = await svc.ssh_service.execute_command(
+                request.host,
+                request.username,
+                request.password,
+                "sudo rm -rf /u01/Installation_Kit/ECM_PACK_INSTALLATION_KIT && test ! -e /u01/Installation_Kit/ECM_PACK_INSTALLATION_KIT",
+            )
+            if not ecm_cleanup_result.get("success"):
+                await handle_failure(
+                    "Failed to remove old ECM installer kit",
+                    ecm_cleanup_result.get("stderr") or ecm_cleanup_result.get("stdout") or "ECM_PACK_INSTALLATION_KIT still exists",
+                )
+                return
             await tm.append_output(task_id, "[OK] ECM_PACK_INSTALLATION_KIT removed")
 
             if not await ensure_valid_backup_before_module("ECM"):
@@ -1024,7 +1051,18 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             await svc.ssh_service.execute_command(request.host, request.username, request.password, "echo 2 | sudo tee /proc/sys/vm/drop_caches")
 
             await tm.append_output(task_id, "[INFO] Removing old SANC_PACK_INSTALLATION_KIT folder...")
-            await svc.ssh_service.execute_command(request.host, request.username, request.password, "sudo rm -rf /u01/Installation_Kit/SANC_PACK_INSTALLATION_KIT")
+            sanc_cleanup_result = await svc.ssh_service.execute_command(
+                request.host,
+                request.username,
+                request.password,
+                "sudo rm -rf /u01/Installation_Kit/SANC_PACK_INSTALLATION_KIT && test ! -e /u01/Installation_Kit/SANC_PACK_INSTALLATION_KIT",
+            )
+            if not sanc_cleanup_result.get("success"):
+                await handle_failure(
+                    "Failed to remove old SANC installer kit",
+                    sanc_cleanup_result.get("stderr") or sanc_cleanup_result.get("stdout") or "SANC_PACK_INSTALLATION_KIT still exists",
+                )
+                return
             await tm.append_output(task_id, "[OK] SANC_PACK_INSTALLATION_KIT removed")
 
             if not await ensure_valid_backup_before_module("SANC"):

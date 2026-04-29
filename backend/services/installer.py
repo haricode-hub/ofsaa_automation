@@ -18,6 +18,20 @@ class InstallerService:
         self.ssh_service = ssh_service
         self.validation = validation
 
+    def _ensure_oracle_owned_dir_cmd(self, path: str) -> str:
+        safe_path = shell_escape(path)
+        return (
+            "if command -v sudo >/dev/null 2>&1; then "
+            f"sudo mkdir -p {safe_path} && "
+            f"sudo chown -R oracle:oinstall {safe_path} && "
+            f"sudo chmod -R 775 {safe_path}; "
+            "else "
+            f"mkdir -p {safe_path} && "
+            f"if [ \"$(id -un)\" = \"oracle\" ]; then chmod -R 775 {safe_path}; "
+            f"else chown -R oracle:oinstall {safe_path} && chmod -R 775 {safe_path}; fi; "
+            "fi"
+        )
+
     async def download_and_extract_installer(
         self,
         host: str,
@@ -28,9 +42,10 @@ class InstallerService:
         target_dir = "/u01/Installation_Kit/BD_PACK_INSTALLATION_KIT"
         repo_dir = Config.REPO_DIR
         safe_dir_cfg = f"-c safe.directory={repo_dir}"
+        ensure_target_dir_cmd = self._ensure_oracle_owned_dir_cmd(target_dir)
 
         # If already extracted, skip repo pull/clone and unzip. Proceed directly to scripts.
-        await self.ssh_service.execute_command(host, username, password, f"mkdir -p {target_dir}", get_pty=True)
+        await self.ssh_service.execute_command(host, username, password, ensure_target_dir_cmd, get_pty=True)
         check_existing = await self.validation.check_directory_exists(host, username, password, f"{target_dir}/OFS_BD_PACK")
         if check_existing.get("exists"):
             logs.append("[OK] Installer kit already extracted")
@@ -84,21 +99,16 @@ class InstallerService:
         )
         unzip_cmd_shell = f"bash -lc {shell_escape(unzip_cmd)}"
         if username == "oracle":
-            unzip_as_oracle_cmd = f"mkdir -p {target_dir} && {unzip_cmd_shell}"
+            unzip_as_oracle_cmd = f"{ensure_target_dir_cmd} && {unzip_cmd_shell}"
         else:
             # Ensure target dir is writable by oracle; prefer sudo when available.
             # Note: if the connected user is neither root nor sudo-capable, this will likely fail.
             unzip_as_oracle_cmd = (
+                f"{ensure_target_dir_cmd} && "
                 "if command -v sudo >/dev/null 2>&1; then "
-                f"sudo mkdir -p {target_dir} && "
-                f"sudo chown -R oracle:oinstall {target_dir} && "
-                f"sudo chmod -R 775 {target_dir} && "
                 f"(sudo chmod a+r {shell_escape(zip_path)} 2>/dev/null || true) && "
                 f"sudo -u oracle {unzip_cmd_shell}; "
                 "else "
-                f"mkdir -p {target_dir} && "
-                f"chown -R oracle:oinstall {target_dir} && "
-                f"chmod -R 775 {target_dir} && "
                 f"(chmod a+r {shell_escape(zip_path)} 2>/dev/null || true) && "
                 f"su - oracle -c {shell_escape(unzip_cmd_shell)}; "
                 "fi"
@@ -282,15 +292,16 @@ class InstallerService:
         updated_repo_pathspecs: set[str] = set()
         repo_dir = Config.REPO_DIR
         kit_dir = "/u01/Installation_Kit/BD_PACK_INSTALLATION_KIT/OFS_BD_PACK"
+        kit_root_dir = "/u01/Installation_Kit/BD_PACK_INSTALLATION_KIT"
         safe_dir_cfg = f"-c safe.directory={repo_dir}"
         fast_config_apply = str(Config.FAST_CONFIG_APPLY).strip().lower() in {"1", "true", "yes", "y"}
-        enable_config_push = str(Config.ENABLE_CONFIG_PUSH).strip().lower() in {"1", "true", "yes", "y"}
+        ensure_kit_root_cmd = self._ensure_oracle_owned_dir_cmd(kit_root_dir)
 
         # Ensure repo is present. In fast mode we skip pull to reduce startup delay for osc.sh step.
         git_auth_setup = self._git_auth_setup_cmd()
         if fast_config_apply:
             cmd_prepare_repo = (
-                "mkdir -p /u01/Installation_Kit/BD_PACK_INSTALLATION_KIT && "
+                f"{ensure_kit_root_cmd} && "
                 f"{git_auth_setup}"
                 f"if [ -d {repo_dir}/.git ]; then "
                 "echo 'REPO_READY_FAST'; "
@@ -298,7 +309,7 @@ class InstallerService:
             )
         else:
             cmd_prepare_repo = (
-                "mkdir -p /u01/Installation_Kit/BD_PACK_INSTALLATION_KIT && "
+                f"{ensure_kit_root_cmd} && "
                 f"{git_auth_setup}"
                 f"if [ -d {repo_dir}/.git ]; then "
                 f"cd {repo_dir} && "
@@ -375,7 +386,7 @@ class InstallerService:
             return {"success": False, "logs": logs, "error": patch_result.get("error") or "Failed to patch schema XML"}
         schema_changed = bool(patch_result.get("changed"))
         schema_src = patch_result.get("source_path")
-        if isinstance(schema_src, str) and schema_src:
+        if schema_changed and isinstance(schema_src, str) and schema_src:
             updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, schema_src))
 
         pack_changed = False
@@ -392,7 +403,7 @@ class InstallerService:
                 return {"success": False, "logs": logs, "error": pack_patch.get("error") or "Failed to patch pack XML"}
             pack_changed = bool(pack_patch.get("changed"))
             pack_src = pack_patch.get("source_path")
-            if isinstance(pack_src, str) and pack_src:
+            if pack_changed and isinstance(pack_src, str) and pack_src:
                 updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, pack_src))
 
         silent_props = {
@@ -431,7 +442,7 @@ class InstallerService:
             return {"success": False, "logs": logs, "error": props_patch.get("error") or "Failed to patch default.properties"}
         props_changed = bool(props_patch.get("changed"))
         props_src = props_patch.get("source_path")
-        if isinstance(props_src, str) and props_src:
+        if props_changed and isinstance(props_src, str) and props_src:
             updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, props_src))
 
         aai_updates = {
@@ -469,7 +480,7 @@ class InstallerService:
             return {"success": False, "logs": logs, "error": aai_patch.get("error") or "Failed to patch OFSAAI_InstallConfig.xml"}
         aai_changed = bool(aai_patch.get("changed"))
         aai_src = aai_patch.get("source_path")
-        if isinstance(aai_src, str) and aai_src:
+        if aai_changed and isinstance(aai_src, str) and aai_src:
             updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, aai_src))
         logs.append(
             "[INFO] UI sync summary: "
@@ -478,6 +489,13 @@ class InstallerService:
             f"default.properties={'UPDATED' if props_changed else 'UNCHANGED'}, "
             f"OFSAAI_InstallConfig.xml={'UPDATED' if aai_changed else 'UNCHANGED'}"
         )
+        if updated_repo_pathspecs:
+            logs.append(
+                f"[INFO] Git update summary: {len(updated_repo_pathspecs)} BD repo file(s) changed: "
+                + ", ".join(sorted(updated_repo_pathspecs))
+            )
+        else:
+            logs.append("[INFO] Git update summary: 0 BD repo file(s) changed")
 
         for filename, dest_path in mappings:
             src_path = await self._resolve_repo_bd_pack_file_path(
@@ -502,18 +520,18 @@ class InstallerService:
                 }
             logs.append(f"[OK] Updated kit file: {dest_path}")
 
-        if enable_config_push:
+        if updated_repo_pathspecs:
             push_result = await self._commit_and_push_repo_changes(
                 host,
                 username,
                 password,
                 repo_dir=repo_dir,
                 commit_message="Update OFSAA installer configs from UI inputs",
-                pathspecs=sorted(updated_repo_pathspecs) if updated_repo_pathspecs else ["BD_PACK"],
+                pathspecs=sorted(updated_repo_pathspecs),
             )
             logs.extend(push_result.get("logs", []))
         else:
-            logs.append("[INFO] Config push skipped (OFSAA_ENABLE_CONFIG_PUSH is disabled)")
+            logs.append("[INFO] Config push skipped: no repo config files changed")
 
         return {"success": True, "logs": logs}
 
@@ -574,19 +592,18 @@ class InstallerService:
         safe_dir_cfg = f"-c safe.directory={repo_dir}"
         git_auth_setup = self._git_auth_setup_cmd()
         pathspec_items = pathspecs or ["BD_PACK"]
-        pathspec_str = " ".join(pathspec_items)
+        pathspec_str = " ".join(shell_escape(item) for item in pathspec_items)
         cmd = (
             f"cd {repo_dir} >/dev/null 2>&1 || exit 1; "
             f"(git config --global --add safe.directory {repo_dir} >/dev/null 2>&1 || true); "
             f"if ! git {safe_dir_cfg} rev-parse --is-inside-work-tree >/dev/null 2>&1; then "
             "echo 'NOT_A_GIT_REPO'; exit 0; "
             "fi; "
-            f"changes=$(git {safe_dir_cfg} status --porcelain -- {pathspec_str} 2>/dev/null | wc -l); "
-            "if [ \"$changes\" = \"0\" ]; then echo 'NO_CHANGES'; exit 0; fi; "
             f"if ! git {safe_dir_cfg} remote get-url origin >/dev/null 2>&1; then echo 'NO_ORIGIN_REMOTE'; exit 0; fi; "
             f"{git_auth_setup}"
             "export GIT_TERMINAL_PROMPT=0; "
-            f"git {safe_dir_cfg} add -u -- {pathspec_str} && "
+            f"git {safe_dir_cfg} add -A -- {pathspec_str} >/dev/null 2>&1; "
+            f"if git {safe_dir_cfg} diff --cached --quiet -- {pathspec_str}; then echo 'NO_CHANGES'; exit 0; fi; "
             f"git {safe_dir_cfg} -c user.name='ofsaa-ui' -c user.email='ofsaa-ui@local' "
             f"commit -m {shell_escape(commit_message)} >/dev/null 2>&1 || true; "
             f"git -c http.sslVerify=false {safe_dir_cfg} push"
@@ -1431,9 +1448,10 @@ class InstallerService:
         target_dir = "/u01/Installation_Kit/ECM_PACK_INSTALLATION_KIT"
         repo_dir = Config.REPO_DIR
         safe_dir_cfg = f"-c safe.directory={repo_dir}"
+        ensure_target_dir_cmd = self._ensure_oracle_owned_dir_cmd(target_dir)
 
         # Check if already extracted
-        await self.ssh_service.execute_command(host, username, password, f"mkdir -p {target_dir}", get_pty=True)
+        await self.ssh_service.execute_command(host, username, password, ensure_target_dir_cmd, get_pty=True)
         check_existing = await self.validation.check_directory_exists(host, username, password, f"{target_dir}/OFS_ECM_PACK")
         if check_existing.get("exists"):
             logs.append("[OK] ECM installer kit already extracted")
@@ -1480,19 +1498,14 @@ class InstallerService:
         )
         unzip_cmd_shell = f"bash -lc {shell_escape(unzip_cmd)}"
         if username == "oracle":
-            unzip_as_oracle_cmd = f"mkdir -p {target_dir} && {unzip_cmd_shell}"
+            unzip_as_oracle_cmd = f"{ensure_target_dir_cmd} && {unzip_cmd_shell}"
         else:
             unzip_as_oracle_cmd = (
+                f"{ensure_target_dir_cmd} && "
                 "if command -v sudo >/dev/null 2>&1; then "
-                f"sudo mkdir -p {target_dir} && "
-                f"sudo chown -R oracle:oinstall {target_dir} && "
-                f"sudo chmod -R 775 {target_dir} && "
                 f"(sudo chmod a+r {shell_escape(zip_path)} 2>/dev/null || true) && "
                 f"sudo -u oracle {unzip_cmd_shell}; "
                 "else "
-                f"mkdir -p {target_dir} && "
-                f"chown -R oracle:oinstall {target_dir} && "
-                f"chmod -R 775 {target_dir} && "
                 f"(chmod a+r {shell_escape(zip_path)} 2>/dev/null || true) && "
                 f"su - oracle -c {shell_escape(unzip_cmd_shell)}; "
                 "fi"
@@ -2144,15 +2157,16 @@ class InstallerService:
         updated_repo_pathspecs: set[str] = set()
         repo_dir = Config.REPO_DIR
         kit_dir = "/u01/Installation_Kit/ECM_PACK_INSTALLATION_KIT/OFS_ECM_PACK"
+        kit_root_dir = "/u01/Installation_Kit/ECM_PACK_INSTALLATION_KIT"
         safe_dir_cfg = f"-c safe.directory={repo_dir}"
         fast_config_apply = str(Config.FAST_CONFIG_APPLY).strip().lower() in {"1", "true", "yes", "y"}
-        enable_config_push = str(Config.ENABLE_CONFIG_PUSH).strip().lower() in {"1", "true", "yes", "y"}
+        ensure_kit_root_cmd = self._ensure_oracle_owned_dir_cmd(kit_root_dir)
 
         # Ensure repo is present
         git_auth_setup = self._git_auth_setup_cmd()
         if fast_config_apply:
             cmd_prepare_repo = (
-                "mkdir -p /u01/Installation_Kit/ECM_PACK_INSTALLATION_KIT && "
+                f"{ensure_kit_root_cmd} && "
                 f"{git_auth_setup}"
                 f"if [ -d {repo_dir}/.git ]; then "
                 "echo 'REPO_READY_FAST'; "
@@ -2160,7 +2174,7 @@ class InstallerService:
             )
         else:
             cmd_prepare_repo = (
-                "mkdir -p /u01/Installation_Kit/ECM_PACK_INSTALLATION_KIT && "
+                f"{ensure_kit_root_cmd} && "
                 f"{git_auth_setup}"
                 f"if [ -d {repo_dir}/.git ]; then "
                 f"cd {repo_dir} && "
@@ -2214,7 +2228,7 @@ class InstallerService:
         if not schema_patch.get("success"):
             return {"success": False, "logs": logs, "error": schema_patch.get("error")}
         schema_changed = bool(schema_patch.get("changed"))
-        if schema_patch.get("source_path"):
+        if schema_changed and schema_patch.get("source_path"):
             updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, schema_patch["source_path"]))
 
         # Patch ECM default.properties
@@ -2255,7 +2269,7 @@ class InstallerService:
         if not props_patch.get("success"):
             return {"success": False, "logs": logs, "error": props_patch.get("error")}
         props_changed = bool(props_patch.get("changed"))
-        if props_patch.get("source_path"):
+        if props_changed and props_patch.get("source_path"):
             updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, props_patch["source_path"]))
 
         # Patch ECM OFSAAI_InstallConfig.xml
@@ -2293,7 +2307,7 @@ class InstallerService:
         if not aai_patch.get("success"):
             return {"success": False, "logs": logs, "error": aai_patch.get("error")}
         aai_changed = bool(aai_patch.get("changed"))
-        if aai_patch.get("source_path"):
+        if aai_changed and aai_patch.get("source_path"):
             updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, aai_patch["source_path"]))
 
         logs.append(
@@ -2302,6 +2316,13 @@ class InstallerService:
             f"default.properties={'UPDATED' if props_changed else 'UNCHANGED'}, "
             f"OFSAAI_InstallConfig.xml={'UPDATED' if aai_changed else 'UNCHANGED'}"
         )
+        if updated_repo_pathspecs:
+            logs.append(
+                f"[INFO] Git update summary: {len(updated_repo_pathspecs)} ECM repo file(s) changed: "
+                + ", ".join(sorted(updated_repo_pathspecs))
+            )
+        else:
+            logs.append("[INFO] Git update summary: 0 ECM repo file(s) changed")
 
         # Copy files from repo to kit locations
         for filename, dest_path in mappings:
@@ -2340,17 +2361,17 @@ class InstallerService:
         await self.ssh_service.execute_command(host, username, password, fix_ownership_cmd, get_pty=True)
         logs.append("[OK] Fixed ECM kit ownership to oracle:oinstall")
 
-        # Push changes to git if enabled
-        if enable_config_push:
+        # Always push ECM config changes so the server-side clone stays aligned with UI-updated installer files.
+        if updated_repo_pathspecs:
             push_result = await self._commit_and_push_repo_changes(
                 host, username, password,
                 repo_dir=repo_dir,
                 commit_message="Update ECM installer configs from UI inputs",
-                pathspecs=sorted(updated_repo_pathspecs) if updated_repo_pathspecs else ["ECM_PACK"],
+                pathspecs=sorted(updated_repo_pathspecs),
             )
             logs.extend(push_result.get("logs", []))
         else:
-            logs.append("[INFO] ECM config push skipped (OFSAA_ENABLE_CONFIG_PUSH is disabled)")
+            logs.append("[INFO] ECM config push skipped: no repo config files changed")
 
         return {"success": True, "logs": logs}
 
@@ -2408,15 +2429,16 @@ class InstallerService:
         updated_repo_pathspecs: set[str] = set()
         repo_dir = Config.REPO_DIR
         kit_dir = "/u01/Installation_Kit/SANC_PACK_INSTALLATION_KIT/OFS_SANC_PACK"
+        kit_root_dir = "/u01/Installation_Kit/SANC_PACK_INSTALLATION_KIT"
         safe_dir_cfg = f"-c safe.directory={repo_dir}"
         fast_config_apply = str(Config.FAST_CONFIG_APPLY).strip().lower() in {"1", "true", "yes", "y"}
-        enable_config_push = str(Config.ENABLE_CONFIG_PUSH).strip().lower() in {"1", "true", "yes", "y"}
+        ensure_kit_root_cmd = self._ensure_oracle_owned_dir_cmd(kit_root_dir)
 
         # Ensure repo is present
         git_auth_setup = self._git_auth_setup_cmd()
         if fast_config_apply:
             cmd_prepare_repo = (
-                "mkdir -p /u01/Installation_Kit/SANC_PACK_INSTALLATION_KIT && "
+                f"{ensure_kit_root_cmd} && "
                 f"{git_auth_setup}"
                 f"if [ -d {repo_dir}/.git ]; then "
                 "echo 'REPO_READY_FAST'; "
@@ -2424,7 +2446,7 @@ class InstallerService:
             )
         else:
             cmd_prepare_repo = (
-                "mkdir -p /u01/Installation_Kit/SANC_PACK_INSTALLATION_KIT && "
+                f"{ensure_kit_root_cmd} && "
                 f"{git_auth_setup}"
                 f"if [ -d {repo_dir}/.git ]; then "
                 f"cd {repo_dir} && "
@@ -2465,7 +2487,7 @@ class InstallerService:
         if not sanc_schema_patch.get("success"):
             return {"success": False, "logs": logs, "error": sanc_schema_patch.get("error")}
         if sanc_schema_patch.get("changed") and sanc_schema_patch.get("source_path"):
-            updated_repo_pathspecs.add("SANC")
+            updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, sanc_schema_patch["source_path"]))
             src_path = sanc_schema_patch["source_path"]
             dest_path = f"{kit_dir}/schema_creator/conf/OFS_SANC_SCHEMA_IN.xml"
             copy_cmd = f"mkdir -p {os.path.dirname(dest_path)} && cp -f {shell_escape(src_path)} {shell_escape(dest_path)}"
@@ -2495,7 +2517,7 @@ class InstallerService:
                 if not write_cs.get("success"):
                     return {"success": False, "logs": logs, "error": write_cs.get("error")}
                 logs.append("[OK] Updated default.properties_CS in repo")
-                updated_repo_pathspecs.add("SANC")
+                updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, cs_src))
             dest_cs = f"{kit_dir}/OFS_CS/conf/default.properties"
             copy_cs_cmd = f"mkdir -p {os.path.dirname(dest_cs)} && cp -f {shell_escape(cs_src)} {shell_escape(dest_cs)}"
             copy_cs = await self.ssh_service.execute_command(host, username, password, copy_cs_cmd, get_pty=True)
@@ -2522,7 +2544,7 @@ class InstallerService:
                 if not write_tflt.get("success"):
                     return {"success": False, "logs": logs, "error": write_tflt.get("error")}
                 logs.append("[OK] Updated default.properties_TFLT in repo")
-                updated_repo_pathspecs.add("SANC")
+                updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, tflt_src))
             dest_tflt = f"{kit_dir}/OFS_TFLT/conf/default.properties"
             copy_tflt_cmd = f"mkdir -p {os.path.dirname(dest_tflt)} && cp -f {shell_escape(tflt_src)} {shell_escape(dest_tflt)}"
             copy_tflt = await self.ssh_service.execute_command(host, username, password, copy_tflt_cmd, get_pty=True)
@@ -2571,7 +2593,7 @@ class InstallerService:
         if not aai_patch.get("success"):
             return {"success": False, "logs": logs, "error": aai_patch.get("error")}
         if aai_patch.get("changed") and aai_patch.get("source_path"):
-            updated_repo_pathspecs.add("OFS_AAI")
+            updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, aai_patch["source_path"]))
             aai_src = aai_patch["source_path"]
             dest_aai = f"{kit_dir}/OFS_AAI/conf/OFSAAI_InstallConfig.xml"
             copy_aai_cmd = f"mkdir -p {os.path.dirname(dest_aai)} && cp -f {shell_escape(aai_src)} {shell_escape(dest_aai)}"
@@ -2579,25 +2601,32 @@ class InstallerService:
             if not copy_aai.get("success"):
                 return {"success": False, "logs": logs, "error": copy_aai.get("stderr") or "Failed to copy OFSAAI_InstallConfig.xml to SANC kit"}
             logs.append(f"[OK] Updated SANC kit OFSAAI_InstallConfig.xml: {dest_aai}")
+        if updated_repo_pathspecs:
+            logs.append(
+                f"[INFO] Git update summary: {len(updated_repo_pathspecs)} SANC repo file(s) changed: "
+                + ", ".join(sorted(updated_repo_pathspecs))
+            )
+        else:
+            logs.append("[INFO] Git update summary: 0 SANC repo file(s) changed")
 
         # Fix ownership of SANC kit directory
         fix_ownership_cmd = "chown -R oracle:oinstall /u01/Installation_Kit/SANC_PACK_INSTALLATION_KIT/OFS_SANC_PACK && chmod -R 775 /u01/Installation_Kit/SANC_PACK_INSTALLATION_KIT/OFS_SANC_PACK"
         await self.ssh_service.execute_command(host, username, password, fix_ownership_cmd, get_pty=True)
         logs.append("[OK] Fixed SANC kit ownership to oracle:oinstall")
 
-        # Push repo changes (same pattern as BD Pack and ECM)
-        if enable_config_push:
+        # Always push SANC config changes so the server-side clone stays aligned with UI-updated installer files.
+        if updated_repo_pathspecs:
             push_result = await self._commit_and_push_repo_changes(
                 host,
                 username,
                 password,
                 repo_dir=repo_dir,
                 commit_message="Update SANC installer configs from UI inputs",
-                pathspecs=sorted(updated_repo_pathspecs) if updated_repo_pathspecs else ["SANC_PACK"],
+                pathspecs=sorted(updated_repo_pathspecs),
             )
             logs.extend(push_result.get("logs", []))
         else:
-            logs.append("[INFO] SANC config push skipped (OFSAA_ENABLE_CONFIG_PUSH is disabled)")
+            logs.append("[INFO] SANC config push skipped: no repo config files changed")
 
         return {"success": True, "logs": logs}
 
@@ -2863,9 +2892,10 @@ class InstallerService:
         target_dir = "/u01/Installation_Kit/SANC_PACK_INSTALLATION_KIT"
         repo_dir = Config.REPO_DIR
         safe_dir_cfg = f"-c safe.directory={repo_dir}"
+        ensure_target_dir_cmd = self._ensure_oracle_owned_dir_cmd(target_dir)
 
         # Check if already extracted
-        await self.ssh_service.execute_command(host, username, password, f"mkdir -p {target_dir}", get_pty=True)
+        await self.ssh_service.execute_command(host, username, password, ensure_target_dir_cmd, get_pty=True)
         check_existing = await self.validation.check_directory_exists(
             host, username, password, f"{target_dir}/OFS_SANC_PACK"
         )
@@ -2917,19 +2947,14 @@ class InstallerService:
         )
         unzip_cmd_shell = f"bash -lc {shell_escape(unzip_cmd)}"
         if username == "oracle":
-            unzip_as_oracle_cmd = f"mkdir -p {target_dir} && {unzip_cmd_shell}"
+            unzip_as_oracle_cmd = f"{ensure_target_dir_cmd} && {unzip_cmd_shell}"
         else:
             unzip_as_oracle_cmd = (
+                f"{ensure_target_dir_cmd} && "
                 "if command -v sudo >/dev/null 2>&1; then "
-                f"sudo mkdir -p {target_dir} && "
-                f"sudo chown -R oracle:oinstall {target_dir} && "
-                f"sudo chmod -R 775 {target_dir} && "
                 f"(sudo chmod a+r {shell_escape(zip_path)} 2>/dev/null || true) && "
                 f"sudo -u oracle {unzip_cmd_shell}; "
                 "else "
-                f"mkdir -p {target_dir} && "
-                f"chown -R oracle:oinstall {target_dir} && "
-                f"chmod -R 775 {target_dir} && "
                 f"(chmod a+r {shell_escape(zip_path)} 2>/dev/null || true) && "
                 f"su - oracle -c {shell_escape(unzip_cmd_shell)}; "
                 "fi"
@@ -3199,13 +3224,11 @@ class InstallerService:
             summary_logs.append(f"[WARN] SANC Pack_Install.log not found at: {pack_log_path}")
         else:
             summary_logs = ["", f"--- SANC Pack_Install.log ({pack_log_path}) ---"] + summary_out.splitlines()
-
         setup_fatal_patterns = [
             re.compile(r"Installation terminated", re.IGNORECASE),
             re.compile(r"Pre-?Check failed", re.IGNORECASE),
             re.compile(r"APP Pre-?Check failed", re.IGNORECASE),
             re.compile(r"Installation\s+failed", re.IGNORECASE),
-            re.compile(r"INSTALLATION.*FAIL", re.IGNORECASE),
             re.compile(r"Exception in thread", re.IGNORECASE),
             re.compile(r"NoClassDefFoundError", re.IGNORECASE),
             re.compile(r"ClassNotFoundException", re.IGNORECASE),
@@ -3213,7 +3236,6 @@ class InstallerService:
         fatal_output_lines = [
             line for line in captured_lines if any(p.search(line) for p in setup_fatal_patterns)
         ]
-
         if not result.get("success") or fatal_output_lines:
             error_detail = "SANC setup.sh SILENT failed"
             if fatal_output_lines:
