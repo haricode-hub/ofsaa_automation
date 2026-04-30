@@ -1004,7 +1004,7 @@ export function InstallationForm() {
                     />
                   </div>
                 </div>
-                <p className="text-[10px] text-text-muted mt-2">Used exclusively for expdp/impdp backup and restore operations across all modules (BD, ECM, SANC).</p>
+                <p className="text-[10px] text-text-muted mt-2">Used exclusively for expdp/impdp backup and restore operations across all modules (BD, ECM, SANC). Schema accounts are unlocked after restore using the Default Schema Password above.</p>
               </div>
 
               <div className="space-y-2">

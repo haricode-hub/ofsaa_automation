@@ -358,6 +358,7 @@ class InstallationService:
         schemas: Optional[list[str]] = None,
         dump_prefix: Optional[str] = None,
         metadata_path: Optional[str] = None,
+        schema_password: Optional[str] = None,
     ) -> dict:
         """Restore DB schemas using Data Pump (impdp)."""
         return await self.recovery.restore_db_schemas(
@@ -373,6 +374,7 @@ class InstallationService:
             schemas=schemas,
             dump_prefix=dump_prefix,
             metadata_path=metadata_path,
+            schema_password=schema_password,
         )
 
     async def select_restore_manifest(self, request, restore_tags: list[str], **kwargs) -> dict:
@@ -390,6 +392,7 @@ class InstallationService:
         db_ssh_host: Optional[str] = None,
         db_ssh_username: Optional[str] = None,
         db_ssh_password: Optional[str] = None,
+        schema_password: Optional[str] = None,
     ) -> dict:
         return await self.recovery.full_restore_from_manifest(
             host,
@@ -401,6 +404,7 @@ class InstallationService:
             db_ssh_host=db_ssh_host,
             db_ssh_username=db_ssh_username,
             db_ssh_password=db_ssh_password,
+            schema_password=schema_password,
         )
 
     # ============== ECM MODULE METHODS ==============

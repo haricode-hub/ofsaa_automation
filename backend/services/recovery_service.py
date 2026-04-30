@@ -431,6 +431,7 @@ class RecoveryService:
         schemas: Optional[list[str]] = None,
         dump_prefix: Optional[str] = None,
         metadata_path: Optional[str] = None,
+        schema_password: Optional[str] = None,
         on_log: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> dict:
         """Run DB schema restore using Data Pump (impdp) + metadata replay."""
@@ -462,6 +463,7 @@ class RecoveryService:
             backup_tag=backup_tag,
             dump_prefix=dump_prefix,
             metadata_path=metadata_path,
+            schema_password=schema_password,
             on_log=on_log,
         )
 
@@ -478,6 +480,7 @@ class RecoveryService:
         db_ssh_username: Optional[str] = None,
         db_ssh_password: Optional[str] = None,
         ofsaa_dir: str = "/u01",
+        schema_password: Optional[str] = None,
     ) -> dict:
         logs = [f"[RESTORE] ===== FULL RESTORE FROM MANIFEST ({manifest.get('tag', 'UNKNOWN')}) ====="]
         failed_steps = []
@@ -522,6 +525,7 @@ class RecoveryService:
             schemas=manifest_schemas,
             dump_prefix=dump_prefix,
             metadata_path=metadata_path,
+            schema_password=schema_password,
         )
         logs.extend(db_result.get("logs", []))
         if not db_result.get("success"):

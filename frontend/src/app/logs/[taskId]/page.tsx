@@ -59,19 +59,50 @@ const DATASOURCE_CREATION_STEPS = [
   // Dynamic steps like "Creating ANALYST" are added at runtime
 ]
 
-const BACKUP_STEPS = [
-  'Validating backup before ECM',
-  'Validating backup before SANC',
-  'Taking application backup (tar)',
-  'Taking DB schema backup',
-]
+const BACKUP_STEPS: string[] = []
 
-const RESTORE_STEPS = [
-  'Restoring to BD state after ECM failure',
-  'Restoring to previous state after SANC failure',
-  'Restoring application',
-  'Restoring DB schemas',
-]
+const RESTORE_STEPS: string[] = []
+
+function buildBackupTrackerSteps(step: string, previousSteps: string[]): string[] {
+  const normalized = step.trim()
+  if (!normalized) return previousSteps
+
+  if (normalized.startsWith('Validating backup before ')) {
+    return [normalized]
+  }
+
+  const taggedAppMatch = normalized.match(/^Taking application backup \(tar\)(?: \[(.+)\])?$/)
+  const taggedDbMatch = normalized.match(/^Taking DB schema backup(?: \[(.+)\])?$/)
+  if (taggedAppMatch || taggedDbMatch) {
+    const existingValidation = previousSteps.find(item => item.startsWith('Validating backup before '))
+    const backupTag = (taggedAppMatch?.[1] || taggedDbMatch?.[1] || '').trim()
+    const appStep = backupTag ? `Taking application backup (tar) [${backupTag}]` : 'Taking application backup (tar)'
+    const dbStep = backupTag ? `Taking DB schema backup [${backupTag}]` : 'Taking DB schema backup'
+    return existingValidation ? [existingValidation, appStep, dbStep] : [appStep, dbStep]
+  }
+
+  if (previousSteps.includes(normalized)) return previousSteps
+  return [...previousSteps, normalized]
+}
+
+function buildRestoreTrackerSteps(step: string, previousSteps: string[]): string[] {
+  const normalized = step.trim()
+  if (!normalized) return previousSteps
+
+  if (normalized.startsWith('Restoring to ') && normalized.includes(' state after ')) {
+    return [normalized, 'Restoring application', 'Restoring DB schemas']
+  }
+
+  if (normalized === 'Restoring application' || normalized === 'Restoring DB schemas') {
+    const restoreHeader = previousSteps.find(item => item.startsWith('Restoring to '))
+    return restoreHeader
+      ? [restoreHeader, 'Restoring application', 'Restoring DB schemas']
+      : ['Restoring application', 'Restoring DB schemas']
+  }
+
+  if (previousSteps.includes(normalized)) return previousSteps
+  return [...previousSteps, normalized]
+}
 
 export default function LogsPage() {
   const params = useParams()
@@ -238,18 +269,11 @@ export default function LogsPage() {
           }
           // For BACKUP module, dynamically add step names (tag varies)
           if (data?.module === 'BACKUP' && data?.step) {
-            setDynamicBackupSteps(prev => {
-              if (prev.includes(data.step!)) return prev
-              // Match base name: "Taking application backup (tar) [BD]" → keep all
-              return [...prev, data.step!]
-            })
+            setDynamicBackupSteps(prev => buildBackupTrackerSteps(data.step!, prev))
           }
           // For RESTORE module, dynamically add step names
           if (data?.module === 'RESTORE' && data?.step) {
-            setDynamicRestoreSteps(prev => {
-              if (prev.includes(data.step!)) return prev
-              return [...prev, data.step!]
-            })
+            setDynamicRestoreSteps(prev => buildRestoreTrackerSteps(data.step!, prev))
           }
           // For EAR_CREATION module, dynamically add datasource steps (e.g. "Creating ANALYST")
           if (data?.module === 'EAR_CREATION' && data?.step) {

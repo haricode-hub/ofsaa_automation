@@ -142,6 +142,7 @@ class RestoreService:
         backup_tag: str = "BD",
         dump_prefix: Optional[str] = None,
         metadata_path: Optional[str] = None,
+        schema_password: Optional[str] = None,
         on_log: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> dict:
         """
@@ -498,6 +499,26 @@ WHERE owner IN ({schema_in_clause})
 GROUP BY owner ORDER BY owner;
 """, container=pdb_name)
         await log(f"[RESTORE]   Segment space: {seg_space}")
+
+        # ── Step 7: Unlock schema accounts ──
+        if schema_password:
+            await log("[RESTORE] Step 7: Unlocking schema accounts with provided password")
+            for schema in schema_list:
+                sql = (
+                    f"ALTER USER {schema} IDENTIFIED BY {schema_password} ACCOUNT UNLOCK;"
+                )
+                unlock_out = await self._run_sql(
+                    host, user, passwd, env, sys_pass,
+                    sql,
+                    container=pdb_name,
+                    timeout=60,
+                )
+                for _line in (unlock_out or "").splitlines():
+                    if _line.strip():
+                        await log(f"[RESTORE]   {_line}")
+                await log(f"[RESTORE]   {schema}: account unlocked ✓")
+        else:
+            await log("[RESTORE] Step 7: Skipped (no schema_password provided)")
 
         await log("[RESTORE] DB schema restore completed")
         return {"success": True, "logs": logs}

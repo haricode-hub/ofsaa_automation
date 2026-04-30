@@ -233,6 +233,7 @@ async def _restore_bd_on_ecm_failure(
             db_ssh_host=getattr(request, "db_ssh_host", None),
             db_ssh_username=getattr(request, "db_ssh_username", None),
             db_ssh_password=getattr(request, "db_ssh_password", None),
+            schema_password=getattr(request, "schema_default_password", None),
         )
     except BaseException as _frm_exc:
         import traceback as _tb
@@ -290,6 +291,7 @@ async def _restore_on_sanc_failure(
         return
 
     selected_tag = manifest_result["manifest"].get("tag", "unknown")
+    await tm.update_status(task_id, "running", f"Restoring to {selected_tag} state after SANC failure", module="RESTORE")
     tm.save_task_context(task_id, restore_manifest_path=manifest_result.get("manifest_path"), restore_target_tag=selected_tag)
     try:
         restore_result = await svc.full_restore_from_manifest(
@@ -302,6 +304,7 @@ async def _restore_on_sanc_failure(
             db_ssh_host=getattr(request, "db_ssh_host", None),
             db_ssh_username=getattr(request, "db_ssh_username", None),
             db_ssh_password=getattr(request, "db_ssh_password", None),
+            schema_password=getattr(request, "schema_default_password", None),
         )
     except BaseException as _frm_exc:
         import traceback as _tb
@@ -364,6 +367,7 @@ async def _take_backup(
             db_ssh_host=params.db_ssh_host,
             db_ssh_username=params.db_ssh_username,
             db_ssh_password=params.db_ssh_password,
+            backup_tag=tag,
         )
         await tm.append_output(task_id, "\n".join(db_result.get("logs", [])))
         if not db_result.get("success"):
@@ -448,6 +452,14 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
         await tm.append_output(task_id, f"[ERROR] {message}")
         if error and error != message:
             await tm.append_output(task_id, f"[ERROR] {error}")
+        await tm.update_status(task_id, "failed")
+
+    async def mark_restored_and_failed(reason: str) -> None:
+        """Mark task as failed after a restore completed successfully.
+        Does NOT emit [ERROR] lines — the [RECOVERY] logs already explain what happened."""
+        tm.save_task_context(task_id, failure_message=reason)
+        task.status = "failed"
+        task.error = reason
         await tm.update_status(task_id, "failed")
 
     async def trace(message: str) -> None:
@@ -894,14 +906,14 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
 
             # ECM Step 1: Download and extract
             _check_cancelled(task_id)
-            await tm.update_status(task_id, "running", "Downloading and extracting ECM installer kit")
+            await tm.update_status(task_id, "running", "Downloading and extracting ECM installer kit", module="ECM_PACK")
             await trace("Starting ECM installer download/extract step")
             ecm_download_result = await svc.download_and_extract_ecm_installer(request.host, request.username, request.password)
             await tm.append_output(task_id, "\n".join(ecm_download_result.get("logs", [])))
             if not ecm_download_result.get("success"):
                 await tm.append_output(task_id, "\n[RECOVERY] ECM download failed. Initiating restore to BD state...")
                 await _restore_bd_on_ecm_failure(task_id, request, svc, trace)
-                await handle_failure("ECM installer download failed - restored to BD state", ecm_download_result.get("error"))
+                await mark_restored_and_failed("ECM installer download failed - restored to BD state")
                 return
             await trace("ECM installer download/extract step completed")
 
@@ -913,7 +925,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             if not ecm_perm_result.get("success"):
                 await tm.append_output(task_id, "\n[RECOVERY] ECM permissions failed. Initiating restore to BD state...")
                 await _restore_bd_on_ecm_failure(task_id, request, svc, trace)
-                await handle_failure("ECM permission setup failed - restored to BD state", ecm_perm_result.get("error"))
+                await mark_restored_and_failed("ECM permission setup failed - restored to BD state")
                 return
 
             # ECM Step 3: Apply config files
@@ -989,7 +1001,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             if not ecm_cfg_result.get("success"):
                 await tm.append_output(task_id, "\n[RECOVERY] ECM config apply failed. Initiating restore to BD state...")
                 await _restore_bd_on_ecm_failure(task_id, request, svc, trace)
-                await handle_failure("ECM config files apply failed - restored to BD state", ecm_cfg_result.get("error"))
+                await mark_restored_and_failed("ECM config files apply failed - restored to BD state")
                 return
             await trace("ECM config apply step completed")
 
@@ -1008,7 +1020,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             if not ecm_osc_result.get("success"):
                 await tm.append_output(task_id, "\n[RECOVERY] ECM osc.sh failed. Initiating restore to BD state...")
                 await _restore_bd_on_ecm_failure(task_id, request, svc, trace)
-                await handle_failure("ECM osc.sh execution failed - restored to BD state", ecm_osc_result.get("error"))
+                await mark_restored_and_failed("ECM osc.sh execution failed - restored to BD state")
                 return
             await trace("ECM osc.sh step completed")
 
@@ -1025,7 +1037,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             if not ecm_setup_result.get("success"):
                 await tm.append_output(task_id, "\n[RECOVERY] ECM setup.sh failed. Initiating restore to BD state...")
                 await _restore_bd_on_ecm_failure(task_id, request, svc, trace)
-                await handle_failure("ECM setup.sh SILENT execution failed - restored to BD state", ecm_setup_result.get("error"))
+                await mark_restored_and_failed("ECM setup.sh SILENT execution failed - restored to BD state")
                 return
             await trace("ECM setup.sh SILENT step completed")
             await tm.append_output(task_id, "[OK] ECM Module installation completed")
@@ -1071,14 +1083,14 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
 
             # SANC Step 1: Download and extract
             _check_cancelled(task_id)
-            await tm.update_status(task_id, "running", "Downloading and extracting SANC installer kit")
+            await tm.update_status(task_id, "running", "Downloading and extracting SANC installer kit", module="SANC_PACK")
             await trace("Starting SANC installer download/extract step")
             sanc_download_result = await svc.download_and_extract_sanc_installer(request.host, request.username, request.password)
             await tm.append_output(task_id, "\n".join(sanc_download_result.get("logs", [])))
             if not sanc_download_result.get("success"):
                 await tm.append_output(task_id, "\n[RECOVERY] SANC download failed. Initiating restore to previous state...")
                 await _restore_on_sanc_failure(task_id, request, svc, trace)
-                await handle_failure("SANC installer download failed - restored to previous state", sanc_download_result.get("error"))
+                await mark_restored_and_failed("SANC installer download failed - restored to previous state")
                 return
             await trace("SANC installer download/extract step completed")
 
@@ -1090,7 +1102,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             if not sanc_perm_result.get("success"):
                 await tm.append_output(task_id, "\n[RECOVERY] SANC permissions failed. Initiating restore to previous state...")
                 await _restore_on_sanc_failure(task_id, request, svc, trace)
-                await handle_failure("SANC permission setup failed - restored to previous state", sanc_perm_result.get("error"))
+                await mark_restored_and_failed("SANC permission setup failed - restored to previous state")
                 return
 
             # SANC Step 3: Apply config files
@@ -1143,7 +1155,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             if not sanc_cfg_result.get("success"):
                 await tm.append_output(task_id, "\n[RECOVERY] SANC config apply failed. Initiating restore to previous state...")
                 await _restore_on_sanc_failure(task_id, request, svc, trace)
-                await handle_failure("SANC config files apply failed - restored to previous state", sanc_cfg_result.get("error"))
+                await mark_restored_and_failed("SANC config files apply failed - restored to previous state")
                 return
             await trace("SANC config apply step completed")
 
@@ -1162,7 +1174,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             if not sanc_osc_result.get("success"):
                 await tm.append_output(task_id, "\n[RECOVERY] SANC osc.sh failed. Initiating restore to previous state...")
                 await _restore_on_sanc_failure(task_id, request, svc, trace)
-                await handle_failure("SANC osc.sh execution failed - restored to previous state", sanc_osc_result.get("error"))
+                await mark_restored_and_failed("SANC osc.sh execution failed - restored to previous state")
                 return
             await trace("SANC osc.sh step completed")
 
@@ -1179,7 +1191,7 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
             if not sanc_setup_result.get("success"):
                 await tm.append_output(task_id, "\n[RECOVERY] SANC setup.sh failed. Initiating restore to previous state...")
                 await _restore_on_sanc_failure(task_id, request, svc, trace)
-                await handle_failure("SANC setup.sh SILENT execution failed - restored to previous state", sanc_setup_result.get("error"))
+                await mark_restored_and_failed("SANC setup.sh SILENT execution failed - restored to previous state")
                 return
             await trace("SANC setup.sh SILENT step completed")
             await tm.append_output(task_id, "[OK] SANC Module installation completed")
@@ -1194,7 +1206,15 @@ async def run_installation_process(task_id: str, request: InstallationRequest):
         # ═══════════════════════════════════════════════════════════════════
         task.status = "completed"
         task.progress = 100
-        await tm.update_status(task_id, "completed", steps[9])
+        final_module = "BD_PACK"
+        final_step = steps[9]
+        if request.install_sanc:
+            final_module = "SANC_PACK"
+            final_step = "Running SANC setup (setup.sh SILENT)"
+        elif request.install_ecm:
+            final_module = "ECM_PACK"
+            final_step = "Running ECM setup (setup.sh SILENT)"
+        await tm.update_status(task_id, "completed", final_step, module=final_module)
         await tm.append_output(task_id, "[OK] Installation completed successfully")
         return
 

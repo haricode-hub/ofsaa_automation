@@ -6,10 +6,11 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
 import main
+import routers.installation as installation_router
 from core.task_manager import task_manager as tm
 from core.task_state_store import TaskStateStore
 from core.websocket_manager import WebSocketManager
-from schemas.installation import InstallationStatus
+from schemas.installation import InstallationRequest, InstallationStatus
 from services.log_persistence import LogPersistence
 
 
@@ -192,3 +193,36 @@ def test_cancel_endpoint_delegates_to_task_manager():
         assert response.status_code == 200
         assert response.json()["success"] is True
         cancel_mock.assert_awaited_once_with("task-cancel", "Cancelled by user")
+
+
+def test_take_backup_passes_requested_tag_to_db_backup():
+    class FakeSvc:
+        def __init__(self):
+            self.db_kwargs = []
+
+        async def backup_application(self, host, username, password, **kwargs):
+            return {"success": True, "logs": [], "backup_path": f"/u01/OFSAA_BKP_{kwargs['backup_tag']}.tar.gz"}
+
+        async def backup_db_schemas(self, host, username, password, **kwargs):
+            self.db_kwargs.append(kwargs)
+            return {
+                "success": True,
+                "logs": [],
+                "timestamp": "20260430_135335",
+                "dump_prefix": f"ofs_{kwargs['backup_tag']}_bkp_20260430_135335",
+            }
+
+        def record_backup_manifest(self, **kwargs):
+            return {"manifest_path": f"/tmp/{kwargs['backup_tag'].lower()}.json"}
+
+    async def fake_trace(_message):
+        return None
+
+    for tag in ["BD", "ECM", "SANC"]:
+        svc = FakeSvc()
+        request = InstallationRequest(**build_request_payload())
+
+        with isolated_task_manager():
+            asyncio.run(installation_router._take_backup("task-backup", svc, request, tag, fake_trace))
+
+        assert svc.db_kwargs[0]["backup_tag"] == tag

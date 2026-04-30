@@ -32,6 +32,19 @@ class InstallerService:
             "fi"
         )
 
+    def _patch_datafile_paths(self, content: str, datafile_dir: Optional[str]) -> str:
+        if not datafile_dir:
+            return content
+
+        base_dir = datafile_dir.rstrip("/")
+
+        def _repl_datafile(m: re.Match) -> str:
+            prefix, path, suffix = m.group(1), m.group(2), m.group(3)
+            filename = os.path.basename(path)
+            return f'{prefix}{base_dir}/{filename}{suffix}'
+
+        return re.sub(r'(\bDATAFILE=")([^"]+)(")', _repl_datafile, content)
+
     async def download_and_extract_installer(
         self,
         host: str,
@@ -728,15 +741,7 @@ class InstallerService:
                 updated,
             )
 
-        if schema_datafile_dir:
-            base_dir = schema_datafile_dir.rstrip("/")
-
-            def _repl_datafile(m: re.Match) -> str:
-                prefix, path, suffix = m.group(1), m.group(2), m.group(3)
-                filename = os.path.basename(path)
-                return f'{prefix}{base_dir}/{filename}{suffix}'
-
-            updated = re.sub(r'(\bDATAFILE=")([^"]+)(")', _repl_datafile, updated)
+        updated = self._patch_datafile_paths(updated, schema_datafile_dir)
 
         if schema_external_directory_value is not None:
             updated = re.sub(
@@ -1686,15 +1691,7 @@ class InstallerService:
             )
 
         # Update DATAFILE paths
-        if ecm_schema_datafile_dir:
-            base_dir = ecm_schema_datafile_dir.rstrip("/")
-
-            def _repl_datafile(m: re.Match) -> str:
-                prefix, path, suffix = m.group(1), m.group(2), m.group(3)
-                filename = os.path.basename(path)
-                return f'{prefix}{base_dir}/{filename}{suffix}'
-
-            updated = re.sub(r'(\bDATAFILE=")([^"]+)(")', _repl_datafile, updated)
+        updated = self._patch_datafile_paths(updated, ecm_schema_datafile_dir)
 
         # Update CONFIG schema name
         if ecm_schema_config_schema_name is not None:
@@ -1852,15 +1849,7 @@ class InstallerService:
             )
 
         # DATAFILE directory
-        if sanc_schema_datafile_dir:
-            base_dir = sanc_schema_datafile_dir.rstrip("/")
-
-            def _repl_datafile(m: re.Match) -> str:
-                prefix, path, suffix = m.group(1), m.group(2), m.group(3)
-                filename = os.path.basename(path)
-                return f"{prefix}{base_dir}/{filename}{suffix}"
-
-            updated = re.sub(r'(\bDATAFILE=")([^"]+)(")', _repl_datafile, updated)
+        updated = self._patch_datafile_paths(updated, sanc_schema_datafile_dir)
 
         # DIRECTORY VALUE (no strict ID match – SANC XML may use its own IDs)
         if sanc_schema_external_directory_value is not None:
@@ -2076,6 +2065,45 @@ class InstallerService:
             return {"success": False, "logs": logs, "error": write.get("error")}
 
         logs.append("[OK] Updated ECM OFSAAI_InstallConfig.xml in repo")
+        return {"success": True, "logs": logs, "changed": True, "source_path": src_path}
+
+    async def _patch_sanc_ofsaai_install_config_repo(
+        self,
+        host: str,
+        username: str,
+        password: str,
+        *,
+        repo_dir: str,
+        updates: dict[str, Optional[str]],
+    ) -> dict:
+        """Patch SANC OFSAAI_InstallConfig.xml in the repo."""
+        logs: list[str] = []
+        src_path = await self._resolve_repo_sanc_pack_file_path(
+            host, username, password, repo_dir=repo_dir, filename="OFSAAI_InstallConfig.xml"
+        )
+        if not src_path:
+            return {"success": False, "logs": logs, "error": "SANC OFSAAI_InstallConfig.xml not found in repo"}
+        logs.append(f"[INFO] Patching SANC OFSAAI XML: {src_path}")
+
+        read = await self._read_remote_file(host, username, password, src_path)
+        if not read.get("success"):
+            return {"success": False, "logs": logs, "error": read.get("error")}
+
+        original = read.get("content", "")
+        patched, warnings = self._patch_ofsaai_install_config_content(original, updates=updates)
+        logs.extend(warnings)
+
+        if patched == original:
+            logs.append("[INFO] No changes needed for SANC OFSAAI_InstallConfig.xml")
+            return {"success": True, "logs": logs, "changed": False, "source_path": src_path}
+
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        await self.ssh_service.execute_command(host, username, password, f"cp -f {src_path} {src_path}.backup.{ts}", get_pty=True)
+        write = await self._write_remote_file(host, username, password, src_path, patched)
+        if not write.get("success"):
+            return {"success": False, "logs": logs, "error": write.get("error")}
+
+        logs.append("[OK] Updated SANC OFSAAI_InstallConfig.xml in repo")
         return {"success": True, "logs": logs, "changed": True, "source_path": src_path}
 
     async def apply_ecm_config_files_from_repo(
@@ -2464,11 +2492,25 @@ class InstallerService:
             return {"success": False, "logs": logs, "error": result.get("stderr") or "Failed to prepare SANC installer repo"}
         logs.append("[OK] Repository ready for SANC configs")
 
-        # 1) Patch SANC schema XML in repo and copy to kit
-        sanc_schema_patch = await self._patch_ofs_sanc_schema_in_repo(
-            host,
-            username,
-            password,
+        # SANC file mappings (source in repo -> destination in kit)
+        mappings = [
+            ("OFS_SANC_SCHEMA_IN.xml",   f"{kit_dir}/schema_creator/conf/OFS_SANC_SCHEMA_IN.xml"),
+            ("default.properties_CS",    f"{kit_dir}/OFS_CS/conf/default.properties"),
+            ("default.properties_TFLT",  f"{kit_dir}/OFS_TFLT/conf/default.properties"),
+            ("OFSAAI_InstallConfig.xml",  f"{kit_dir}/OFS_AAI/conf/OFSAAI_InstallConfig.xml"),
+        ]
+
+        # Sanity checks
+        check_repo = await self.ssh_service.execute_command(host, username, password, f"test -d {repo_dir}")
+        if not check_repo["success"]:
+            return {"success": False, "logs": logs, "error": f"Repo dir not found: {repo_dir}"}
+        check_kit = await self.ssh_service.execute_command(host, username, password, f"test -d {kit_dir}")
+        if not check_kit["success"]:
+            return {"success": False, "logs": logs, "error": f"SANC installer kit not found: {kit_dir}"}
+
+        # Patch OFS_SANC_SCHEMA_IN.xml
+        schema_patch = await self._patch_ofs_sanc_schema_in_repo(
+            host, username, password,
             repo_dir=repo_dir,
             sanc_schema_jdbc_host=sanc_schema_jdbc_host,
             sanc_schema_jdbc_port=sanc_schema_jdbc_port,
@@ -2483,27 +2525,18 @@ class InstallerService:
             sanc_schema_config_schema_name=sanc_schema_config_schema_name,
             sanc_schema_atomic_schema_name=sanc_schema_atomic_schema_name,
         )
-        logs.extend(sanc_schema_patch.get("logs", []))
-        if not sanc_schema_patch.get("success"):
-            return {"success": False, "logs": logs, "error": sanc_schema_patch.get("error")}
-        if sanc_schema_patch.get("changed") and sanc_schema_patch.get("source_path"):
-            updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, sanc_schema_patch["source_path"]))
-            src_path = sanc_schema_patch["source_path"]
-            dest_path = f"{kit_dir}/schema_creator/conf/OFS_SANC_SCHEMA_IN.xml"
-            copy_cmd = f"mkdir -p {os.path.dirname(dest_path)} && cp -f {shell_escape(src_path)} {shell_escape(dest_path)}"
-            copy_result = await self.ssh_service.execute_command(host, username, password, copy_cmd, get_pty=True)
-            if not copy_result.get("success"):
-                return {
-                    "success": False,
-                    "logs": logs,
-                    "error": copy_result.get("stderr") or "Failed to copy OFS_SANC_SCHEMA_IN.xml to kit",
-                }
-            logs.append(f"[OK] Updated SANC kit schema: {dest_path}")
+        logs.extend(schema_patch.get("logs", []))
+        if not schema_patch.get("success"):
+            return {"success": False, "logs": logs, "error": schema_patch.get("error")}
+        schema_changed = bool(schema_patch.get("changed"))
+        if schema_changed and schema_patch.get("source_path"):
+            updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, schema_patch["source_path"]))
 
-        # 2) Patch default.properties_CS (SWIFTINFO only)
+        # Patch default.properties_CS (SWIFTINFO)
         cs_src = await self._resolve_repo_sanc_pack_file_path(
             host, username, password, repo_dir=repo_dir, filename="default.properties_CS"
         )
+        cs_changed = False
         if cs_src:
             read_cs = await self._read_remote_file(host, username, password, cs_src)
             if not read_cs.get("success"):
@@ -2518,19 +2551,15 @@ class InstallerService:
                     return {"success": False, "logs": logs, "error": write_cs.get("error")}
                 logs.append("[OK] Updated default.properties_CS in repo")
                 updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, cs_src))
-            dest_cs = f"{kit_dir}/OFS_CS/conf/default.properties"
-            copy_cs_cmd = f"mkdir -p {os.path.dirname(dest_cs)} && cp -f {shell_escape(cs_src)} {shell_escape(dest_cs)}"
-            copy_cs = await self.ssh_service.execute_command(host, username, password, copy_cs_cmd, get_pty=True)
-            if not copy_cs.get("success"):
-                return {"success": False, "logs": logs, "error": copy_cs.get("stderr") or "Failed to copy CS default.properties to kit"}
-            logs.append(f"[OK] Updated SANC kit CS default.properties: {dest_cs}")
+                cs_changed = True
         else:
             logs.append("[WARN] default.properties_CS not found in repo - CS SWIFTINFO will not be patched")
 
-        # 3) Patch default.properties_TFLT (SWIFTINFO only)
+        # Patch default.properties_TFLT (SWIFTINFO)
         tflt_src = await self._resolve_repo_sanc_pack_file_path(
             host, username, password, repo_dir=repo_dir, filename="default.properties_TFLT"
         )
+        tflt_changed = False
         if tflt_src:
             read_tflt = await self._read_remote_file(host, username, password, tflt_src)
             if not read_tflt.get("success"):
@@ -2545,20 +2574,15 @@ class InstallerService:
                     return {"success": False, "logs": logs, "error": write_tflt.get("error")}
                 logs.append("[OK] Updated default.properties_TFLT in repo")
                 updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, tflt_src))
-            dest_tflt = f"{kit_dir}/OFS_TFLT/conf/default.properties"
-            copy_tflt_cmd = f"mkdir -p {os.path.dirname(dest_tflt)} && cp -f {shell_escape(tflt_src)} {shell_escape(dest_tflt)}"
-            copy_tflt = await self.ssh_service.execute_command(host, username, password, copy_tflt_cmd, get_pty=True)
-            if not copy_tflt.get("success"):
-                return {"success": False, "logs": logs, "error": copy_tflt.get("stderr") or "Failed to copy TFLT default.properties to kit"}
-            logs.append(f"[OK] Updated SANC kit TFLT default.properties: {dest_tflt}")
+                tflt_changed = True
         else:
             logs.append("[WARN] default.properties_TFLT not found in repo - TFLT SWIFTINFO will not be patched")
 
-        # 4) OFSAAI_InstallConfig.xml – reuse BD Pack structure and copy into SANC kit
+        # Patch OFSAAI_InstallConfig.xml
         aai_updates = {
             "WEBAPPSERVERTYPE": aai_webappservertype,
             "DBSERVER_IP": aai_dbserver_ip,
-            "ORACLE_SID": aai_oracle_service_name,
+            "ORACLE_SID/SERVICE_NAME": aai_oracle_service_name,
             "ABS_DRIVER_PATH": aai_abs_driver_path,
             "OLAP_SERVER_IMPLEMENTATION": aai_olap_server_implementation,
             "SFTP_ENABLE": aai_sftp_enable,
@@ -2582,25 +2606,23 @@ class InstallerService:
             "OFSAAI_FTPSHARE_PATH": aai_ftspshare_path,
             "OFSAAI_SFTP_USER_ID": aai_sftp_user_id,
         }
-        aai_patch = await self._patch_ofsaai_install_config_repo(
-            host,
-            username,
-            password,
-            repo_dir=repo_dir,
-            updates=aai_updates,
+        aai_patch = await self._patch_sanc_ofsaai_install_config_repo(
+            host, username, password, repo_dir=repo_dir, updates=aai_updates,
         )
         logs.extend(aai_patch.get("logs", []))
         if not aai_patch.get("success"):
             return {"success": False, "logs": logs, "error": aai_patch.get("error")}
-        if aai_patch.get("changed") and aai_patch.get("source_path"):
+        aai_changed = bool(aai_patch.get("changed"))
+        if aai_changed and aai_patch.get("source_path"):
             updated_repo_pathspecs.add(self._repo_rel_path(repo_dir, aai_patch["source_path"]))
-            aai_src = aai_patch["source_path"]
-            dest_aai = f"{kit_dir}/OFS_AAI/conf/OFSAAI_InstallConfig.xml"
-            copy_aai_cmd = f"mkdir -p {os.path.dirname(dest_aai)} && cp -f {shell_escape(aai_src)} {shell_escape(dest_aai)}"
-            copy_aai = await self.ssh_service.execute_command(host, username, password, copy_aai_cmd, get_pty=True)
-            if not copy_aai.get("success"):
-                return {"success": False, "logs": logs, "error": copy_aai.get("stderr") or "Failed to copy OFSAAI_InstallConfig.xml to SANC kit"}
-            logs.append(f"[OK] Updated SANC kit OFSAAI_InstallConfig.xml: {dest_aai}")
+
+        logs.append(
+            "[INFO] SANC UI sync summary: "
+            f"OFS_SANC_SCHEMA_IN.xml={'UPDATED' if schema_changed else 'UNCHANGED'}, "
+            f"default.properties_CS={'UPDATED' if cs_changed else 'UNCHANGED'}, "
+            f"default.properties_TFLT={'UPDATED' if tflt_changed else 'UNCHANGED'}, "
+            f"OFSAAI_InstallConfig.xml={'UPDATED' if aai_changed else 'UNCHANGED'}"
+        )
         if updated_repo_pathspecs:
             logs.append(
                 f"[INFO] Git update summary: {len(updated_repo_pathspecs)} SANC repo file(s) changed: "
@@ -2609,17 +2631,49 @@ class InstallerService:
         else:
             logs.append("[INFO] Git update summary: 0 SANC repo file(s) changed")
 
-        # Fix ownership of SANC kit directory
-        fix_ownership_cmd = "chown -R oracle:oinstall /u01/Installation_Kit/SANC_PACK_INSTALLATION_KIT/OFS_SANC_PACK && chmod -R 775 /u01/Installation_Kit/SANC_PACK_INSTALLATION_KIT/OFS_SANC_PACK"
+        # Copy all files from repo to kit locations (always — kit is re-extracted fresh after restore)
+        for filename, dest_path in mappings:
+            src_path = await self._resolve_repo_sanc_pack_file_path(
+                host, username, password, repo_dir=repo_dir, filename=filename
+            )
+            if not src_path:
+                logs.append(f"[WARN] SANC file not found in repo, skipping copy: {filename}")
+                continue
+            logs.append(f"[INFO] Using SANC {filename} from repo: {src_path}")
+
+            backup_cmd = (
+                f"if [ -f {dest_path} ]; then "
+                f"cp -f {dest_path} {dest_path}.backup.$(date +%Y%m%d_%H%M%S); "
+                "fi"
+            )
+            await self.ssh_service.execute_command(host, username, password, backup_cmd, get_pty=True)
+
+            copy_cmd = (
+                f"mkdir -p $(dirname {dest_path}) && "
+                f"cp -f {src_path} {dest_path} && "
+                f"chown oracle:oinstall {dest_path} && "
+                f"chmod 664 {dest_path}"
+            )
+            copy_result = await self.ssh_service.execute_command(host, username, password, copy_cmd, get_pty=True)
+            if not copy_result["success"]:
+                return {
+                    "success": False,
+                    "logs": logs,
+                    "error": copy_result.get("stderr") or f"Failed to copy SANC {filename} to kit",
+                }
+            logs.append(f"[OK] Updated SANC kit file: {dest_path}")
+
+        # Fix ownership of entire SANC kit directory to oracle
+        fix_ownership_cmd = (
+            f"chown -R oracle:oinstall {kit_dir} && chmod -R 775 {kit_dir}"
+        )
         await self.ssh_service.execute_command(host, username, password, fix_ownership_cmd, get_pty=True)
         logs.append("[OK] Fixed SANC kit ownership to oracle:oinstall")
 
-        # Always push SANC config changes so the server-side clone stays aligned with UI-updated installer files.
+        # Push SANC config changes to git
         if updated_repo_pathspecs:
             push_result = await self._commit_and_push_repo_changes(
-                host,
-                username,
-                password,
+                host, username, password,
                 repo_dir=repo_dir,
                 commit_message="Update SANC installer configs from UI inputs",
                 pathspecs=sorted(updated_repo_pathspecs),
